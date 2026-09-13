@@ -264,6 +264,8 @@ def _progress(value: dict[str, Any]) -> None:
             value.get("attempt", "?"),
             value.get("timeoutSeconds", "?"),
         )
+    elif event_type == "validation-repair":
+        LOGGER.warning("Repairing generated output: %s", value.get("reason", "validation failed"))
     elif event_type == "thread-complete":
         log_success(
             LOGGER,

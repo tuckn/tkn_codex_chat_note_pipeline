@@ -249,7 +249,8 @@ def _notes(
                     }
                 )
         finally:
-            _save_ledger(config, ledger, provenance.dry_run)
+            if ledger["threads"].get(key, {}) != prior:
+                _save_ledger(config, ledger, provenance.dry_run)
     return attempted
 
 

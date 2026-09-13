@@ -574,3 +574,28 @@ def test_branch_append_updates_same_note_and_archived_alias_does_not_regenerate(
     assert second["threads"][0]["sourceSetSha256"] != first["threads"][0]["sourceSetSha256"]
     assert len(second["threads"][0]["historyBranches"]) == 2
     assert validate_provenance(config.data_root)["ok"]
+
+
+def test_ledger_is_written_only_when_a_thread_state_changes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tkn_codex_chat_note.pipeline as pipeline
+
+    config = config_for(tmp_path)
+    for name in ["a", "b", "c"]:
+        write_chat(config.sessions_root / f"{name}.jsonl", thread_id=name, cwd=tmp_path)
+    original_write = pipeline.atomic_write_json
+    ledger_writes = []
+
+    def record_write(path: Path, value: Any) -> None:
+        if path.name == "ledger.json":
+            ledger_writes.append(path)
+        original_write(path, value)
+
+    monkeypatch.setattr(pipeline, "atomic_write_json", record_write)
+    first = execute(config, limit=1)
+    assert first["generatedSessionNoteCount"] == 1
+    assert len(ledger_writes) == 2
+    execute(config, "pull")
+    ledger_writes.clear()
+    unchanged = execute(config, "pull")
+    assert unchanged["complete"]
+    assert not ledger_writes

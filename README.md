@@ -461,6 +461,14 @@ normalized but excluded from notes. Cloud-only ChatGPT/Work history is not
 fetched. Unsupported records and invalid JSONL remain visible in reports.
 Legacy logs are supported; missing event timestamps remain unknown in notes.
 Unicode string separators are not mistaken for JSONL record boundaries.
+Embedded image payloads remain intact in Raw and canonical evidence. Text inference
+receives the image format, byte size, and hash instead of base64 characters; notes
+explicitly state that visual content was not inspected. Ordinary long text is
+preserved and split into bounded inputs.
+
+On Windows, transient file replacement failures are retried briefly while keeping
+the old file intact. Unchanged thread ledger entries are not repeatedly rewritten.
+Persistent errors remain failures in the run report.
 
 When multiple files share a conversation ID, identical captures and provable
 byte-prefix versions are coalesced. Other histories and branches are retained

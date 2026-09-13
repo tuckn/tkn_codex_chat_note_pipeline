@@ -103,6 +103,16 @@ Consumers must use the plural fields and canonical event locators for complete
 coverage of branched notes. These are additive fields within the existing schemas.
 All retained captures are checked for changes before publishing the note.
 
+### Text inference preparation (0.16.1)
+
+Raw and canonical events retain embedded images byte-for-byte. Text inference
+replaces recognized image data URIs, typed image blocks, and image-generation
+results with format, decoded byte count, SHA-256 of decoded bytes, and an explicit
+statement that visual content was not inspected. This does not interpret images.
+Surrounding text, event IDs, history IDs, and Raw locators are retained. Untyped
+base64 strings and ordinary long text are not discarded. Notes list affected
+events in Source Notes; split offsets refer to the prepared text.
+
 ## Provenance
 
 Entity records contain schemaVersion, id, version, sha256, ref, kind, mediaType,

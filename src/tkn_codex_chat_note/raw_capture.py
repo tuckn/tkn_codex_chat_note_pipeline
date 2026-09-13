@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -13,6 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from .chat_logs import read_thread_source, source_ref
+from .file_io import replace_file
 
 RAW_MANIFEST_SCHEMA_VERSION = 3
 # Stable storage ownership identifier; retained across the CLI/package rename.
@@ -45,7 +45,7 @@ def _atomic_write_bytes(path: Path, content: bytes) -> None:
     temporary = path.parent / f".tmp-{uuid4().hex[:12]}"
     try:
         temporary.write_bytes(content)
-        os.replace(temporary, path)
+        replace_file(temporary, path)
     finally:
         if temporary.exists():
             temporary.unlink()

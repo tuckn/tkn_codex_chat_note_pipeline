@@ -1,7 +1,7 @@
 ---
 type: prompt
 id: 3824e517-c328-4d44-950c-ca5ab7f697c6
-version: "1.1"
+version: "1.2"
 ---
 
 # English Session Note instructions
@@ -15,6 +15,10 @@ Keep a short overview and the final observable state, but preserve the path take
 The application supplies a `MODE`; apply only its matching procedure below.
 
 ## Source fidelity
+
+- Embedded image placeholders identify media retained in the original source.
+  Their bytes were not visually interpreted. Describe only the image operation
+  and surrounding textual evidence; never claim to have seen image contents.
 
 - When events have `branchId`, they belong to distinct histories of the same
   conversation ID. Preserve every history and its internal order. Identify the
