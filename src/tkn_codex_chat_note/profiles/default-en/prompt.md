@@ -1,7 +1,7 @@
 ---
 type: prompt
 id: 3824e517-c328-4d44-950c-ca5ab7f697c6
-version: "1.2"
+version: "1.3"
 ---
 
 # English Session Note instructions
@@ -15,6 +15,12 @@ Keep a short overview and the final observable state, but preserve the path take
 The application supplies a `MODE`; apply only its matching procedure below.
 
 ## Source fidelity
+
+- An `aggregated_output` object with `duplicateOfEventId` replaces only an identical
+  command output from the same invocation. Its full text remains at that source event.
+  Keep the completion metadata; do not count the duplicate logging as another execution.
+  If the referenced event is in another input part, do not invent its text or claim
+  missing source data. The complete record retains every original event ID.
 
 - Embedded image placeholders identify media retained in the original source.
   Their bytes were not visually interpreted. Describe only the image operation
@@ -56,14 +62,13 @@ The application supplies a `MODE`; apply only its matching procedure below.
 - `summaryItems`: one to five short bullets giving an overview, not the full history.
 - `timeline`: entries in source order, with no fixed per-task or per-thread item count.
   Length should follow meaningful developments, not an arbitrary compression target.
-- Each timeline entry has `label`, `text`, `eventIds`, `startEventId`, `endEventId`.
-  The endpoints identify WHEN that act occurred, not an earlier supporting document.
-  Include both endpoints in `eventIds`; cite other supporting events as needed.
-  The application derives timestamps and actors from these endpoints; never invent them.
-- Usually use a single event for both endpoints. You may combine related tool operations
-  within the same turn and day, with the same actor and event kind at both endpoints.
-  Never combine different user messages, or a request, response, and execution into one
-  entry. Do not span an intervening user message. Preserve failures and retries separately.
+- Each generated timeline entry has `label`, `text`, `eventIds`, and `eventId`.
+  Choose one supplied `eventId` that identifies WHEN the recorded act occurred;
+  supporting citations in `eventIds` can include earlier evidence. The application
+  derives both published endpoints, the timestamp, and actor from that single anchor.
+  Do not generate `startEventId` or `endEventId`. Do not combine different user messages.
+  Describe a routine operation and outcome at the result event, citing its invocation
+  as supporting evidence. Preserve distinct failures, retries, and corrections separately.
 - Cover every substantive user message in the timeline. For a multi-part request, retain
   its separate concerns in the text or several entries with the same source event.
   When a message contains both requests/questions and explicitly chosen policies, create
@@ -153,6 +158,8 @@ Do not invent facts or recommendations.
 
 Correct the supplied draft only enough to satisfy the reported validation error.
 Preserve valid developments. Use the supplied source events when available to repair
-missing coverage or invalid endpoints. Never cite IDs outside those events. When no
+missing coverage or invalid anchors. A draft may use the published endpoint fields;
+regenerate timeline entries using a single `eventId` as required by the inference
+schema. Never cite IDs outside those events. When no
 source events are supplied, do not add new IDs or facts. Return a complete replacement
 object matching the supplied schema.

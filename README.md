@@ -66,14 +66,37 @@ deferral of active conversations. `--limit 20` bounds note generation attempts.
 
 Press `Ctrl+C` to interrupt `clone` or `pull`. Saved Raw files and completed
 notes remain; the next `pull` skips successfully generated notes whose inputs,
-generation settings, and note content are unchanged. Chunks are not checkpointed,
-so a conversation interrupted during summary generation restarts from its first
-chunk. To avoid repeating that work, stop when `Completed thread` appears.
+generation settings, and note content are unchanged. Validated chunks and merges
+are checkpointed in the cache. With identical inputs and generation settings,
+a retry reuses saved stages and repeats the unfinished stage. Changed inputs,
+models, prompts, or chunk settings and `--force` bypass stage reuse. Corrupt
+checkpoints are regenerated. Deleting the cache removes this resume capability.
 Interruption may display `KeyboardInterrupt` and leave the run report unfinished.
 
 Open the note and report paths shown in the result. `status` reads the last-run
 record, not live source state. Completion now depends only on eligible Session
 Notes; no Scope, Decision, or Working Context build is required.
+
+### Generation cost and comparison baselines
+
+When completion and result records have the same invocation ID, turn and history,
+identical command output is represented once with an original event reference.
+All event IDs, completion metadata, Raw and Canonical Events remain available;
+actual retries and different output are retained. The model selects one timeline
+anchor event; code derives its time, actor and both public endpoints. Content and
+source validation still apply.
+
+Each report thread exposes `generationMetrics`: input characters removed, chunks,
+model calls, repairs, checkpoint reuse and elapsed time. `submittedPromptCharacters`
+counts prompt characters across repairs and transport attempts; it excludes schema
+or other material added by the provider and is not a billing token count.
+
+Version 0.17.0 changes generation conditions: unreviewed notes made with older
+conditions become regeneration candidates on the next normal run. Before installing
+and running, preserve comparison notes, source snapshots from provenance, hashes
+and generation settings in a separate evaluation area. Current Raw paths may change.
+Compare the same source version and judge against the original evidence rather than
+treating the previous note as ground truth. Reviewed/edited-note protections remain.
 
 ### Weekly updates with Windows Task Scheduler
 
