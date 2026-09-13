@@ -64,6 +64,13 @@ resumes unfinished work. Repeating a successful unchanged run makes no model
 calls. The default idle interval is 30 minutes; Raw capture still precedes
 deferral of active conversations. `--limit 20` bounds note generation attempts.
 
+Press `Ctrl+C` to interrupt `clone` or `pull`. Saved Raw files and completed
+notes remain; the next `pull` skips successfully generated notes whose inputs,
+generation settings, and note content are unchanged. Chunks are not checkpointed,
+so a conversation interrupted during summary generation restarts from its first
+chunk. To avoid repeating that work, stop when `Completed thread` appears.
+Interruption may display `KeyboardInterrupt` and leave the run report unfinished.
+
 Open the note and report paths shown in the result. `status` reads the last-run
 record, not live source state. Completion now depends only on eligible Session
 Notes; no Scope, Decision, or Working Context build is required.
