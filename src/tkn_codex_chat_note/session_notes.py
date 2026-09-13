@@ -32,6 +32,7 @@ from .chat_logs import (
     source_ref,
 )
 from .common import frontmatter, slugify
+from .file_io import replace_file
 from .frontmatter import (
     canonical_uuid4,
     frontmatter_list_value,
@@ -44,6 +45,7 @@ from .inference import (
     provider_name,
     resolve_provider_executable,
 )
+from .media_inputs import describe_embedded_images
 from .prompting import (
     render_chunk_prompt,
     render_reduction_prompt,
@@ -74,7 +76,7 @@ DEFAULT_IDLE_MINUTES = 30
 DEFAULT_RUNTIME_MINUTES = 230
 DEFAULT_MODEL_TIMEOUT_SECONDS = 1800
 DEFAULT_CHUNK_CHARACTERS = 120_000
-GENERATOR_PROMPT_VERSION = 7
+GENERATOR_PROMPT_VERSION = 8
 RENDERER_VERSION = 13
 REBUILD_WORK_SCHEMA_VERSION = 1
 IN_FLIGHT_GRACE_MINUTES = 9
@@ -186,6 +188,8 @@ class PreparedEvent:
 
     branch_id: str = ""
     raw_ref: str = ""
+    embedded_image_count: int = 0
+    image_encoded_characters: int = 0
     text_part: int = 1
     text_part_count: int = 1
     text_start: int = 0
@@ -204,6 +208,8 @@ class PreparedEvent:
         }
         if self.branch_id:
             value.update(branchId=self.branch_id, rawRef=self.raw_ref)
+        if self.embedded_image_count:
+            value["embeddedImageCount"] = self.embedded_image_count
         if self.text_part_count > 1:
             value["textPart"] = {
                 "index": self.text_part, "count": self.text_part_count,
@@ -259,7 +265,7 @@ def atomic_write_bytes(path: Path, content: bytes) -> None:
     temporary = path.parent / f".tmp-{uuid.uuid4().hex[:12]}"
     try:
         temporary.write_bytes(content)
-        os.replace(temporary, path)
+        replace_file(temporary, path)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -872,13 +878,16 @@ def prepare_events(events: Sequence[ChatEvent]) -> list[PreparedEvent]:
             kind=event.kind,
             actor=event.actor,
             name=event.name,
-            text=redact_secret_like_content(event.text),
+            text=redact_secret_like_content(prepared.text),
             timestamp=event.timestamp,
             turn_id=event.turn_id,
             branch_id=event.branch_id,
             raw_ref=event.raw_ref,
+            embedded_image_count=prepared.image_count,
+            image_encoded_characters=prepared.encoded_characters,
         )
         for event in events
+        for prepared in [describe_embedded_images(event.text)]
     ]
 
 
@@ -1116,6 +1125,8 @@ class ProviderSummarizer:
         allowed_ids = {event.id for event in prepared}
         chunks = chunk_events(prepared, self.chunk_characters)
         self.last_metrics["chunkCount"] = len(chunks)
+        self.last_metrics["embeddedImageCount"] = sum(e.embedded_image_count for e in prepared)
+        self.last_metrics["imageEncodedCharacters"] = sum(e.image_encoded_characters for e in prepared)
         self.last_metrics["splitEventCount"] = len({e.id for c in chunks for e in c if e.text_part_count > 1})
         self.last_metrics["inputPartCount"] = sum(len(chunk) for chunk in chunks)
         self.last_metrics["preparedTextCharacters"] = sum(len(e.text) for e in prepared)
@@ -1156,6 +1167,15 @@ class ProviderSummarizer:
             # Timeline entries never pass through lossy model reduction a second time.
             result["timeline"] = [item for partial in partials for item in partial["timeline"]]
         limitations = list(result["sourceLimitations"])
+        image_events = [event.id for event in prepared if event.embedded_image_count]
+        if image_events:
+            label = (
+                "Embedded image bytes were retained in the source and represented by metadata in text input; "
+                "their visual content was not inspected. Events: " if self.profile.language == "en" else
+                "埋め込み画像の本体は元の記録に保持し、要約入力には形式・サイズ・ハッシュを渡しました。"
+                "画像の視覚的内容は確認していません。イベント："
+            )
+            limitations.append(label + ", ".join(image_events))
         unknown_times = [event.id for event in candidate.events if event_time(event.timestamp) is None]
         if unknown_times:
             label = (
