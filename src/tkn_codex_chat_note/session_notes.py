@@ -39,12 +39,14 @@ from .frontmatter import (
     parse_simple_frontmatter,
     split_frontmatter_lines,
 )
+from .generation_cache import GenerationCache, content_hash
 from .inference import (
     InferenceExecutionError,
     invoke_structured,
     provider_name,
     resolve_provider_executable,
 )
+from .inference_inputs import compact_duplicate_outputs
 from .media_inputs import describe_embedded_images
 from .prompting import (
     render_chunk_prompt,
@@ -76,7 +78,7 @@ DEFAULT_IDLE_MINUTES = 30
 DEFAULT_RUNTIME_MINUTES = 230
 DEFAULT_MODEL_TIMEOUT_SECONDS = 1800
 DEFAULT_CHUNK_CHARACTERS = 120_000
-GENERATOR_PROMPT_VERSION = 8
+GENERATOR_PROMPT_VERSION = 9
 RENDERER_VERSION = 13
 REBUILD_WORK_SCHEMA_VERSION = 1
 IN_FLIGHT_GRACE_MINUTES = 9
@@ -195,6 +197,7 @@ class PreparedEvent:
     text_start: int = 0
     text_end: int = 0
     full_text_characters: int = 0
+    duplicate_characters_removed: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -871,23 +874,28 @@ def scan_candidates(
     return round_robin(groups), counts, excluded
 
 
-def prepare_events(events: Sequence[ChatEvent]) -> list[PreparedEvent]:
+def prepare_events(events: Sequence[ChatEvent], *, deduplicate: bool = True) -> list[PreparedEvent]:
+    replacements = compact_duplicate_outputs(events) if deduplicate else {}
     return [
         PreparedEvent(
             id=event.id,
             kind=event.kind,
             actor=event.actor,
             name=event.name,
-            text=redact_secret_like_content(prepared.text),
+            text=redact_secret_like_content(compacted.text),
             timestamp=event.timestamp,
             turn_id=event.turn_id,
             branch_id=event.branch_id,
             raw_ref=event.raw_ref,
             embedded_image_count=prepared.image_count,
             image_encoded_characters=prepared.encoded_characters,
+            duplicate_characters_removed=max(
+                0, len(redact_secret_like_content(prepared.text)) - len(redact_secret_like_content(compacted.text)),
+            ),
         )
         for event in events
         for prepared in [describe_embedded_images(event.text)]
+        for compacted in [describe_embedded_images(replacements[event.id]) if event.id in replacements else prepared]
     ]
 
 
@@ -1014,6 +1022,7 @@ class ProviderSummarizer:
         chunk_characters: int = DEFAULT_CHUNK_CHARACTERS,
         sleeper: Callable[[float], None] = time.sleep,
         observer: Callable[[dict[str, Any]], None] | None = None,
+        cache_root: Path | None = None,
     ) -> None:
         self.config = config
         self.chunk_characters = chunk_characters
@@ -1022,11 +1031,24 @@ class ProviderSummarizer:
         self.profile = config.summary_profile
         self.prompt = self.profile.prompt
         self.schema = self.profile.schema.value
+        self.inference_schema = deepcopy(self.schema)
+        timeline = self.inference_schema["properties"]["timeline"]["items"]
+        for name in ("startEventId", "endEventId"):
+            timeline["properties"].pop(name)
+            timeline["required"].remove(name)
+        timeline["properties"]["eventId"] = {"type": "string"}
+        timeline["required"].append("eventId")
         self.overview_schema = deepcopy(self.schema)
         self.overview_schema["properties"].pop("timeline")
         self.overview_schema["required"].remove("timeline")
         self.deadline: datetime | None = None
         self.last_metrics: dict[str, int] = {}
+        self.cache_root = cache_root
+        self.reuse_cache = True
+
+    def set_cache_root(self, root: Path, *, reuse: bool = True) -> None:
+        self.cache_root = root
+        self.reuse_cache = reuse
 
     def set_deadline(self, deadline: datetime) -> None:
         self.deadline = deadline
@@ -1047,6 +1069,9 @@ class ProviderSummarizer:
                         raise PartialPipelineError("rebuild deadline reached during model generation")
                     timeout = min(timeout, remaining)
                 self.last_metrics["modelCalls"] = self.last_metrics.get("modelCalls", 0) + 1
+                self.last_metrics["submittedPromptCharacters"] = (
+                    self.last_metrics.get("submittedPromptCharacters", 0) + len(prompt)
+                )
                 if attempt:
                     self.last_metrics["transportRetries"] = self.last_metrics.get("transportRetries", 0) + 1
                 self._emit(
@@ -1054,13 +1079,14 @@ class ProviderSummarizer:
                         "type": "model-attempt",
                         "attempt": attempt + 1,
                         "timeoutSeconds": timeout,
+                        "provider": provider_name(self.config.provider),
                     }
                 )
                 try:
                     return invoke_structured(
                         self.config,
                         prompt,
-                        self.overview_schema if overview_only else self.schema,
+                        self.overview_schema if overview_only else self.inference_schema,
                         cwd=temp,
                         timeout=timeout,
                     )
@@ -1081,9 +1107,24 @@ class ProviderSummarizer:
         input_events: Sequence[PreparedEvent] | None = None,
     ) -> dict[str, Any]:
         current_prompt = prompt
+        self.inference_schema["properties"]["timeline"]["items"]["properties"]["eventId"] = {
+            "type": "string", "enum": sorted(allowed_event_ids),
+        }
         for semantic_attempt in range(3):
             value = self._invoke(current_prompt, overview_only=overview_only)
             try:
+                # An inference anchor determines both public endpoints. Supporting
+                # citations never determine the time/actor of the recorded action.
+                if not overview_only and isinstance(value, dict) and isinstance(value.get("timeline"), list):
+                    value = deepcopy(value)
+                    for item in value["timeline"]:
+                        if isinstance(item, dict) and "eventId" in item:
+                            anchor = item.pop("eventId")
+                            if not isinstance(anchor, str) or anchor not in allowed_event_ids:
+                                raise PipelineError("timeline anchor must refer to a supplied event")
+                            item["startEventId"] = item["endEventId"] = anchor
+                            if isinstance(item.get("eventIds"), list) and anchor not in item["eventIds"]:
+                                item["eventIds"].append(anchor)
                 # Check shape first so independent semantic checks can all run safely.
                 validate_summary_output_schema(value, self.overview_schema if overview_only else self.schema)
                 errors: list[str] = []
@@ -1114,13 +1155,55 @@ class ProviderSummarizer:
                 )
         raise PipelineError("Inference semantic validation did not produce a valid note")
 
+    def _stage_invoke(
+        self, prompt: str, allowed_ids: set[str], thread_id: str, *, cache: GenerationCache | None,
+        events: Sequence[ChatEvent] = (), input_events: Sequence[PreparedEvent] | None = None,
+        overview_only: bool = False,
+    ) -> dict[str, Any]:
+        key = content_hash({"prompt": prompt, "allowedIds": sorted(allowed_ids), "overview": overview_only})
+        if cache is not None:
+            cached = cache.read(key)
+            if cached is not None:
+                try:
+                    validate_note_data(cached, allowed_ids, overview_only=overview_only, profile=self.profile)
+                    if not overview_only:
+                        validate_timeline(cached["timeline"], events)
+                except (PipelineError, ValueError):
+                    self.last_metrics["rejectedCheckpoints"] += 1
+                else:
+                    metric = "reusedReductions" if overview_only else "reusedChunks"
+                    self.last_metrics[metric] += 1
+                    self._emit({"type": "stage-resumed", "threadId": thread_id, "stage": metric})
+                    return cached
+        value = self._validated_invoke(
+            prompt, allowed_ids, thread_id, events=events, input_events=input_events, overview_only=overview_only,
+        )
+        if cache is not None:
+            cache.write(key, value)
+        return value
+
     def generate(self, candidate: Candidate) -> dict[str, Any]:
         self.last_metrics = {
             "chunkCount": 0,
             "modelCalls": 0,
             "transportRetries": 0,
             "semanticRetries": 0,
+            "submittedPromptCharacters": 0,
+            "reusedChunks": 0,
+            "reusedReductions": 0,
+            "rejectedCheckpoints": 0,
         }
+        cache = None if self.cache_root is None else GenerationCache(
+            self.cache_root,
+            {
+                "generation": generation_fingerprint(self.config, candidate),
+                "sourceId": self.config.source_id, "sourceRef": candidate.source_ref,
+                "projectId": candidate.project.project_id, "threadId": candidate.thread_id,
+                "chunkCharacters": self.chunk_characters,
+                "events": [event.__dict__ for event in candidate.events],
+            },
+            reuse=self.reuse_cache,
+        )
         prepared = prepare_events(candidate.events)
         allowed_ids = {event.id for event in prepared}
         chunks = chunk_events(prepared, self.chunk_characters)
@@ -1130,6 +1213,11 @@ class ProviderSummarizer:
         self.last_metrics["splitEventCount"] = len({e.id for c in chunks for e in c if e.text_part_count > 1})
         self.last_metrics["inputPartCount"] = sum(len(chunk) for chunk in chunks)
         self.last_metrics["preparedTextCharacters"] = sum(len(e.text) for e in prepared)
+        self.last_metrics["deduplicatedCharacters"] = sum(e.duplicate_characters_removed for e in prepared)
+        self.last_metrics["deduplicatedEventCount"] = sum(e.duplicate_characters_removed > 0 for e in prepared)
+        self.last_metrics["inputCharactersBeforeDeduplication"] = (
+            self.last_metrics["preparedTextCharacters"] + self.last_metrics["deduplicatedCharacters"]
+        )
         self.last_metrics["submittedTextCharacters"] = sum(len(e.text) for c in chunks for e in c)
         source_by_id = {event.id: event for event in candidate.events}
         partials: list[dict[str, Any]] = []
@@ -1151,8 +1239,9 @@ class ProviderSummarizer:
                 events=[event.as_dict() for event in chunk],
             )
             partials.append(
-                self._validated_invoke(
+                self._stage_invoke(
                     prompt, chunk_ids, candidate.thread_id,
+                    cache=cache,
                     events=tuple(replace(source_by_id[event.id], text=event.text) for event in chunk),
                     input_events=chunk,
                 )
@@ -1161,8 +1250,9 @@ class ProviderSummarizer:
             result = partials[0]
         else:
             reduction_prompt = render_reduction_prompt(self.prompt, thread_id=candidate.thread_id, partials=partials)
-            result = self._validated_invoke(
+            result = self._stage_invoke(
                 reduction_prompt, allowed_ids, candidate.thread_id, overview_only=True,
+                cache=cache,
             )
             # Timeline entries never pass through lossy model reduction a second time.
             result["timeline"] = [item for partial in partials for item in partial["timeline"]]
@@ -1499,6 +1589,8 @@ def write_candidate_note(
             if work_root.parent != pending_parent:
                 raise PipelineError(f"refusing to remove unmanaged pending cache: {work_root}")
             shutil.rmtree(work_root)
+        if isinstance(summarizer, ProviderSummarizer):
+            summarizer.set_cache_root(work_cache_root, reuse=not force)
         data = summarizer.generate(candidate)
         allowed_ids = {event.id for event in candidate.events}
         validate_note_data(data, allowed_ids, profile=profile)
@@ -2369,6 +2461,8 @@ def execute_rebuild(
         existing_ids=existing_ids,
     )
     rebuild_cache = (work_cache_root or cache_root or default_cache_root()).expanduser().absolute()
+    if isinstance(summarizer, ProviderSummarizer):
+        summarizer.set_cache_root(rebuild_cache, reuse=not force)
     work_root, work_manifest, reused_work = prepare_rebuild_work(
         project,
         signature,

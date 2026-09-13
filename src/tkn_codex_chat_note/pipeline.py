@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import replace
@@ -117,6 +118,7 @@ def _notes(
             continue
         prior = ledger["threads"].get(key, {})
         candidate = replace(candidate, artifact_id=prior.get("noteId"))
+        generation_started = False
         try:
             existing = _existing_note(candidate)
             if existing:
@@ -174,10 +176,14 @@ def _notes(
                 continue
             attempted += 1
             started = now_iso()
+            thread_started = time.monotonic()
             ledger["threads"][key] = {**prior, "status": "running", "attemptedAt": started}
             _save_ledger(config, ledger, False)
             if summarizer is None:
                 summarizer = ProviderSummarizer(pipeline_config, observer=progress)
+            if isinstance(summarizer, ProviderSummarizer):
+                summarizer.last_metrics = {"modelCalls": 0}
+            generation_started = True
             if hasattr(summarizer, "set_deadline"):
                 summarizer.set_deadline(deadline + timedelta(minutes=9))
             if progress:
@@ -225,10 +231,14 @@ def _notes(
                 "appliedAt": now_iso(),
             }
             entry.update(status="current", reason=None, noteRef=output["ref"], noteId=output["id"], generated=True)
+            metrics = {**getattr(summarizer, "last_metrics", {}),
+                       "durationSeconds": round(time.monotonic() - thread_started, 3)}
+            entry["generationMetrics"] = metrics
             if progress:
                 progress(
                     {
                         "type": "thread-complete",
+                        **metrics,
                         "threadId": entry["threadId"],
                         "sessionNotePath": str(note),
                         "index": attempted,
@@ -237,6 +247,8 @@ def _notes(
                 )
         except Exception as exc:
             entry.update(status="failed", reason="session-note-failed", error=str(exc))
+            if generation_started and summarizer is not None:
+                entry["generationMetrics"] = dict(getattr(summarizer, "last_metrics", {}))
             ledger["threads"][key] = {**prior, "status": "failed", "error": str(exc), "attemptedAt": now_iso()}
             if progress:
                 progress(

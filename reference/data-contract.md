@@ -1,6 +1,6 @@
 # Data contract: chat evidence and Session Notes
 
-CLI 0.15.0 · config 7.0.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
+CLI 0.17.0 · config 7.0.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
 
 This is the file-based interface specification for tools that consume this CLI's
 output, including context curation and insight. It defines stable identities,
@@ -112,6 +112,40 @@ statement that visual content was not inspected. This does not interpret images.
 Surrounding text, event IDs, history IDs, and Raw locators are retained. Untyped
 base64 strings and ordinary long text are not discarded. Notes list affected
 events in Source Notes; split offsets refer to the prepared text.
+
+## Inference preparation and private checkpoints
+
+Session Note schema 6 and Canonical Events retain their existing public contracts.
+Generator prompt version 9 uses single-event inference anchors; the renderer still
+publishes `startEventId` / `endEventId` and can read older valid ranges. The Japanese
+prompt is 3.7 and English prompt is 1.3. Identical same-invocation command output
+may be replaced with `duplicateOfEventId` in inference input only. Completion
+metadata and source event IDs remain; ambiguous identity and different output are
+never compacted. Debug-escaped output must match a whole-string encoding of the
+response (with transport newline normalization), not a loose text similarity.
+
+Validated chunks and overview merges are cached below the source cache's
+`generation/` directory. Keys bind exact prepared prompts and event IDs; the
+namespace also binds the complete source events, capture/generation fingerprints,
+source identity, thread, project and chunk size. Entries use atomic replacement,
+content hashes and repeated schema/source validation. A changed source invalidates
+the whole thread's stage namespace; this is not an append-only incremental summary.
+`--force` bypasses stage reuse. Invalid entries are regenerated. Checkpoints are
+disposable, contain derived private text, persist across successful runs and are
+not published consumer inputs. Cache deletion affects reuse, not existing notes.
+Dry runs never create or read inference-stage checkpoints or call the model.
+
+Pipeline report schema 2 adds optional `threads[].generationMetrics` for generation
+attempts: `modelCalls`, `transportRetries`, `semanticRetries`, `reusedChunks`,
+`reusedReductions`, `rejectedCheckpoints` (checksum-valid but semantically invalid),
+`inputCharactersBeforeDeduplication`, `deduplicatedCharacters`,
+`deduplicatedEventCount`, `preparedTextCharacters`, `submittedTextCharacters`,
+`submittedPromptCharacters` and `durationSeconds` when available. Character counts
+are not token/cost estimates. `submittedTextCharacters` describes the planned event
+parts including reused parts; `submittedPromptCharacters` counts actual attempted
+prompts including repairs/retries, excluding provider-added schema/overhead. Missing
+metrics are unavailable, not measured zeros. Hard interruption can leave the run
+report unfinished while already saved generation stages remain reusable.
 
 ## Provenance
 

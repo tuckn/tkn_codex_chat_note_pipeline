@@ -220,6 +220,9 @@ def _metric_summary(value: dict[str, Any]) -> str:
     semantic_retries = value.get("semanticRetries")
     if isinstance(semantic_retries, int) and semantic_retries:
         metrics.append(f"{semantic_retries} semantic retries")
+    for name, label in (("reusedChunks", "cached chunks"), ("reusedReductions", "cached merges")):
+        if value.get(name):
+            metrics.append(f"{value[name]} {label}")
     return f" ({', '.join(metrics)})" if metrics else ""
 
 
@@ -260,10 +263,14 @@ def _progress(value: dict[str, Any]) -> None:
         )
     elif event_type == "model-attempt":
         LOGGER.info(
-            "Calling Codex (attempt %s, timeout %ss)",
+            "Calling %s (attempt %s, timeout %ss)",
+            value.get("provider", "Codex"),
             value.get("attempt", "?"),
             value.get("timeoutSeconds", "?"),
         )
+    elif event_type == "stage-resumed":
+        LOGGER.info("Reusing validated %s for thread %s",
+                    "merge" if value.get("stage") == "reusedReductions" else "chunk", value["threadId"])
     elif event_type == "validation-repair":
         LOGGER.warning("Repairing generated output: %s", value.get("reason", "validation failed"))
     elif event_type == "thread-complete":
