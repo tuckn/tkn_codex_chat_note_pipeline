@@ -139,7 +139,9 @@ Build commands support `--dry-run`, `--force`, `--allow-edited`, and
 reviewed files. `--allow-edited` explicitly permits replacing manually edited,
 unreviewed notes. Raw ingest supports `--dry-run` and `--full-output`.
 
-Progress uses stderr; stdout is JSON. `-q` suppresses progress, `-v` adds
+Generation and Raw ingest use stderr for concise results and saved report paths; stdout is empty by default.
+`--full-output` explicitly prints the full JSON report. Read-only inspection commands such as `config show` retain JSON output.
+`-q` suppresses progress, `-v` adds
 diagnostics. Exit codes: `0` successful command/plan, `1` failure, `2` incomplete
 clone/pull (for example deferred or protected work). A leaf build's report
 describes overall note coverage even when one thread was selected.
@@ -494,7 +496,7 @@ edited/protected and deferred notes do not add inference cost. It reads validate
 checkpoints and excludes reusable chunks. A final merge reserves one call until its exact
 input is known, even if a merge or staged note might later be reusable. Nothing is written,
 no login occurs, and no network request is made. `--full-output` includes each thread's
-`generationEstimate`; the compact JSON retains the aggregate estimate.
+`generationEstimate`; saved reports retain the aggregate estimate.
 
 All providers show prepared input characters, pending prompt characters and base calls.
 Codex/other command providers have unknown token counts/prices because their own context,
@@ -527,8 +529,8 @@ compact JSON whitespace without changing source strings or facts.
 Any missing usage makes its complete total null; known subtotals remain available.
 Source reports have unique run IDs under `<state_root>/reports/`; use `reportPath` or
 `reportPaths` to find them. Aggregate unique run reports to include earlier failed runs
-and resumed work; do not also count `last-run.json` or duplicate compact stdout copies.
-Dry-run prints JSON but creates no report file; redirect stdout yourself to retain a plan.
+and resumed work; do not also count `last-run.json` or duplicate exported reports.
+Dry-run prints a concise summary and creates no report file. Use `--full-output` and redirect stdout to retain the full plan.
 
 ### Reading estimates, actual usage, and budget stops
 
@@ -758,7 +760,8 @@ Local `sessions` and, by default, `archived_sessions` are scanned. Projectless,
 unmatched, and ambiguous conversations remain eligible. Internal/approval
 conversations and sources without a clean user message are retained and
 normalized but excluded from notes. Cloud-only ChatGPT/Work history is not
-fetched. Unsupported records and invalid JSONL remain visible in reports.
+fetched. Agent communication metadata (`inter_agent_communication_metadata`, including `trigger_turn`) is recognized as control data, retained in Raw, and excluded from summary evidence.
+Unsupported records and invalid JSONL remain visible in reports.
 Legacy logs are supported; missing event timestamps remain unknown in notes.
 Unicode string separators are not mistaken for JSONL record boundaries.
 Embedded image payloads remain intact in Raw and canonical evidence. Text inference

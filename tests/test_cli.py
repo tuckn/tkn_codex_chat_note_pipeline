@@ -55,7 +55,7 @@ def test_clone_dry_run_and_pull_initialization_boundary(tmp_path: Path, capsys: 
 
 
 @pytest.mark.parametrize("complete,failed,expected", [(True, False, 0), (False, False, 2), (False, True, 1)])
-def test_pipeline_exit_codes_and_compact_output(
+def test_pipeline_exit_codes_and_summary_output(
     monkeypatch: pytest.MonkeyPatch,
     capsys: CaptureFixture[str],
     complete: bool,
@@ -74,13 +74,19 @@ def test_pipeline_exit_codes_and_compact_output(
             "threads": [{"private": "detail"}],
             "scopeResults": [],
             "rawIngest": {},
-            "reportPath": None,
+            "reportPath": "C:/reports/run.json",
         }
 
     monkeypatch.setattr(pipeline, "run_pipeline", fake_run)
     assert main(["clone"]) == expected
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Run report: C:/reports/run.json" in captured.err
+    assert "clone: generated 0 notes;" in captured.err
+    assert "private" not in captured.err
+    assert main(["clone", "--full-output"]) == expected
     result = json.loads(capsys.readouterr().out)
-    assert "threads" not in result and result["complete"] == complete
+    assert result["threads"] == [{"private": "detail"}]
 
 
 def test_logging_uses_readable_stderr_prefixes(

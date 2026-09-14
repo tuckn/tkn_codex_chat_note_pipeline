@@ -287,11 +287,17 @@ def test_cli_multi_source_show_status_selection_and_compact_output(
     shown = json.loads(capsys.readouterr().out)
     assert set(shown["storage"]["sourceRoots"]) == set(config.sources)
     assert main([*args, "clone", "--dry-run"]) == 0
-    compact = json.loads(capsys.readouterr().out)
-    assert len(compact["sourceResults"]) == 2
-    assert all("threads" not in result and "rawIngest" not in result for result in compact["sourceResults"])
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "plan validated (no report saved)" in output.err
+    assert main([*args, "clone", "--dry-run", "--full-output"]) == 0
+    full = json.loads(capsys.readouterr().out)
+    assert len(full["sourceResults"]) == 2
+    assert all("threads" in result and "rawIngest" in result for result in full["sourceResults"])
     assert main([*args, "--source", "pc-windows", "raw", "ingest", "--dry-run"]) == 0
-    assert json.loads(capsys.readouterr().out)["sourceId"] == "pc-windows"
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "Source: codex/pc-windows" in output.err
     assert main([*args, "--source", "missing", "status"]) == 1
     assert "unknown source_id" in json.loads(capsys.readouterr().out)["error"]
     assert main([*args, "session-notes", "build", "--thread-id", "same-thread", "--dry-run"]) == 1

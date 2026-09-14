@@ -147,6 +147,7 @@ def _diagnostics(path: Path) -> dict[str, Any]:
         if kind not in {
             "session_meta", "turn_context", "response_item", "event_msg", "compacted",
             "world_state", "token_usage_record", "message", "reasoning", "function_call", "function_call_output",
+            "inter_agent_communication_metadata",
         } and not legacy_meta and not (not kind and value.get("record_type")):
             unknown.add(kind)
         if kind == "session_meta" and isinstance(value.get("payload"), dict):
