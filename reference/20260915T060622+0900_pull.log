@@ -1,0 +1,261 @@
+[SUCCESS] Completed thread 1/349: 019dd75b-7bc8-7cf2-8d7e-632f569586b4 (782.933s, 18 chunks, 23 model calls, 8 semantic retries, 4 cached chunks, input 617,419 tokens, output 107,624 tokens, estimated JPY 40.25) — Session Note: C:\tkn\home\personal\formats\data\sourceAligned\activities\chats\Codex\gaou-pc-2023-windows\data\session-notes\2026\04\20260429T124950+0900-pl200-280-questions-ocr-ja-markdown.md
+[INFO] Estimate for 019dd7f6-377b-72f2-8c03-43d729889c23: 1,531,365 input characters; 37 base calls; 0 cached chunks; total input estimate 1,038,501 tokens; output ceiling 592,000 tokens; base cost ceiling JPY 146.27 (repairs/retries extra); merge input reserves its limit; command limit JPY 100.00 / 30 calls; completion may require more than this command budget
+[INFO] Starting thread 2/349: 019dd7f6-377b-72f2-8c03-43d729889c23
+[INFO] Generating chunk 1/36 for thread 019dd7f6-377b-72f2-8c03-43d729889c23
+[INFO] Calling Azure OpenAI (attempt 1, timeout 1800s, 64149 prompt characters)
+[INFO] InteractiveBrowserCredential.get_token succeeded
+[INFO] API input estimate 26414 tokens; call reserve JPY 3.90; command reserve JPY 98.75
+[INFO] HTTP Request: POST https://oai-online-genai-prd-je-001.openai.azure.com/openai/v1/chat/completions "HTTP/1.1 200 OK"
+[INFO] API received: input 21,374 tokens, output 5,721 tokens, estimated JPY 1.77
+[INFO] Generating chunk 2/36 for thread 019dd7f6-377b-72f2-8c03-43d729889c23
+[INFO] Calling Azure OpenAI (attempt 1, timeout 1800s, 72192 prompt characters)
+[WARNING] Generation paused at thread 019dd7f6-377b-72f2-8c03-43d729889c23: API command estimated cost budget reached; no request submitted. Remaining generation is deferred; validated checkpoints are kept. Run pull again without --force to resume with a new command budget.
+[INFO] Source: codex/gaou-pc-2023-wsl
+[INFO] Run report: C:\tkn\home\personal\formats\data\sourceAligned\activities\chats\Codex\gaou-pc-2023-windows\state\reports\90ad614a-1511-4947-a18e-913e93541885.json
+[INFO] Run report: C:\tkn\home\personal\formats\data\sourceAligned\activities\chats\Codex\gaou-pc-2023-wsl\state\reports\0aa41050-fd4e-4735-a777-6a2a90cdb525.json
+[INFO] Thread states: {'current': 3, 'deferred': 487, 'excluded': 322}
+[WARNING] codex/gaou-pc-2023-windows: Thread 019f7df4-c229-7ab2-9385-cacf3eea9a85: unknown record types retained in Raw: ['inter_agent_communication_metadata']
+[WARNING] codex/gaou-pc-2023-windows: Thread 019f7e13-b2d1-79d0-8cfc-577d03f76cac: unknown record types retained in Raw: ['inter_agent_communication_metadata']
+[WARNING] codex/gaou-pc-2023-windows: Thread 019f7e13-e569-79b1-982e-562e61cfa74a: unknown record types retained in Raw: ['inter_agent_communication_metadata']
+[WARNING] codex/gaou-pc-2023-windows: Thread 019f820d-3dbb-7d80-83bd-b648e4ab808a: unknown record types retained in Raw: ['inter_agent_communication_metadata']
+[WARNING] codex/gaou-pc-2023-windows: Thread 019f820d-6837-7cd2-8b8b-48d1f03e7a9c: unknown record types retained in Raw: ['inter_agent_communication_metadata']
+[WARNING] codex/gaou-pc-2023-wsl: Codex app metadata is unavailable; conversations are still ingested
+{
+  "schemaVersion": 3,
+  "mode": "pull",
+  "generationProfile": "azure-high",
+  "generationProvider": "azure-openai",
+  "dryRun": false,
+  "startedAt": "2026-09-15T05:16:10.260187+09:00",
+  "finishedAt": "2026-09-15T05:30:51+09:00",
+  "ok": true,
+  "complete": false,
+  "sourceResults": [
+    {
+      "schemaVersion": 2,
+      "sourceProvider": "codex",
+      "sourceId": "gaou-pc-2023-windows",
+      "runId": "90ad614a-1511-4947-a18e-913e93541885",
+      "mode": "pull",
+      "generationProfile": "azure-high",
+      "generationProvider": "azure-openai",
+      "dryRun": false,
+      "startedAt": "2026-09-15T05:16:10.261767+09:00",
+      "complete": false,
+      "ok": true,
+      "failed": [],
+      "reportPath": "C:\\tkn\\home\\personal\\formats\\data\\sourceAligned\\activities\\chats\\Codex\\gaou-pc-2023-windows\\state\\reports\\90ad614a-1511-4947-a18e-913e93541885.json",
+      "coverage": {
+        "provider": "codex",
+        "cloudHistoryFetched": false,
+        "includesArchivedDirectory": true,
+        "internalThreads": "captured-and-normalized-but-not-summarized"
+      },
+      "warnings": [
+        "Thread 019f7df4-c229-7ab2-9385-cacf3eea9a85: unknown record types retained in Raw: ['inter_agent_communication_metadata']",
+        "Thread 019f7e13-b2d1-79d0-8cfc-577d03f76cac: unknown record types retained in Raw: ['inter_agent_communication_metadata']",
+        "Thread 019f7e13-e569-79b1-982e-562e61cfa74a: unknown record types retained in Raw: ['inter_agent_communication_metadata']",
+        "Thread 019f820d-3dbb-7d80-83bd-b648e4ab808a: unknown record types retained in Raw: ['inter_agent_communication_metadata']",
+        "Thread 019f820d-6837-7cd2-8b8b-48d1f03e7a9c: unknown record types retained in Raw: ['inter_agent_communication_metadata']"
+      ],
+      "attemptedSessionNoteCount": 2,
+      "generationStop": {
+        "reason": "api-cost-budget",
+        "message": "API command estimated cost budget reached; no request submitted",
+        "requestCount": 24,
+        "maxCalls": 30,
+        "reservedCostJpy": 98.75144305599999,
+        "nextCallReserveJpy": 3.980100376,
+        "maxCostJpy": 100.0
+      },
+      "generationEstimate": {
+        "threadCount": 2,
+        "preparedTextCharacters": 2348583,
+        "pendingPromptCharacters": 3221282,
+        "pendingChunkCount": 50,
+        "cachedChunkCount": 4,
+        "baseCalls": 52,
+        "inputTokensEstimate": 1502457,
+        "outputTokensCeiling": 832000,
+        "baseCostCeilingJpy": 206.939377848,
+        "commandMaxCalls": 30,
+        "commandMaxCostJpy": 100.0,
+        "mayExceedCommandBudget": true,
+        "excludesRetries": true,
+        "mergeUsesInputCeiling": true,
+        "unavailableCount": 0
+      },
+      "usageTotals": {
+        "requestCount": 24,
+        "inputTokens": 638793,
+        "knownInputTokens": 638793,
+        "inputTokensMissingRequests": 0,
+        "outputTokens": 113345,
+        "knownOutputTokens": 113345,
+        "outputTokensMissingRequests": 0,
+        "reasoningTokens": 53444,
+        "knownReasoningTokens": 53444,
+        "reasoningTokensMissingRequests": 0,
+        "cachedInputTokens": 6400,
+        "knownCachedInputTokens": 6400,
+        "cachedInputTokensMissingRequests": 0,
+        "estimatedCostJpy": 42.024250632,
+        "knownEstimatedCostJpy": 42.024250632,
+        "estimatedCostJpyMissingRequests": 0,
+        "reservedCostJpy": 98.751443056
+      },
+      "threadCounts": {
+        "current": 3,
+        "deferred": 346,
+        "excluded": 311
+      },
+      "generatedSessionNoteCount": 1,
+      "finishedAt": "2026-09-15T05:30:40+09:00"
+    },
+    {
+      "schemaVersion": 2,
+      "sourceProvider": "codex",
+      "sourceId": "gaou-pc-2023-wsl",
+      "runId": "0aa41050-fd4e-4735-a777-6a2a90cdb525",
+      "mode": "pull",
+      "generationProfile": "azure-high",
+      "generationProvider": "azure-openai",
+      "dryRun": false,
+      "startedAt": "2026-09-15T05:30:40.439356+09:00",
+      "complete": false,
+      "ok": true,
+      "failed": [],
+      "reportPath": "C:\\tkn\\home\\personal\\formats\\data\\sourceAligned\\activities\\chats\\Codex\\gaou-pc-2023-wsl\\state\\reports\\0aa41050-fd4e-4735-a777-6a2a90cdb525.json",
+      "coverage": {
+        "provider": "codex",
+        "cloudHistoryFetched": false,
+        "includesArchivedDirectory": true,
+        "internalThreads": "captured-and-normalized-but-not-summarized"
+      },
+      "warnings": [
+        "Codex app metadata is unavailable; conversations are still ingested"
+      ],
+      "attemptedSessionNoteCount": 0,
+      "generationStop": {
+        "reason": "api-cost-budget",
+        "message": "API command estimated cost budget reached; no request submitted",
+        "requestCount": 24,
+        "maxCalls": 30,
+        "reservedCostJpy": 98.75144305599999,
+        "nextCallReserveJpy": 3.980100376,
+        "maxCostJpy": 100.0
+      },
+      "generationEstimate": {
+        "threadCount": 0,
+        "preparedTextCharacters": 0,
+        "pendingPromptCharacters": 0,
+        "pendingChunkCount": 0,
+        "cachedChunkCount": 0,
+        "baseCalls": 0,
+        "inputTokensEstimate": 0,
+        "outputTokensCeiling": 0,
+        "baseCostCeilingJpy": 0,
+        "commandMaxCalls": null,
+        "commandMaxCostJpy": null,
+        "mayExceedCommandBudget": false,
+        "excludesRetries": true,
+        "mergeUsesInputCeiling": false,
+        "unavailableCount": 0
+      },
+      "usageTotals": {
+        "requestCount": 0,
+        "inputTokens": 0,
+        "knownInputTokens": 0,
+        "inputTokensMissingRequests": 0,
+        "outputTokens": 0,
+        "knownOutputTokens": 0,
+        "outputTokensMissingRequests": 0,
+        "reasoningTokens": 0,
+        "knownReasoningTokens": 0,
+        "reasoningTokensMissingRequests": 0,
+        "cachedInputTokens": 0,
+        "knownCachedInputTokens": 0,
+        "cachedInputTokensMissingRequests": 0,
+        "estimatedCostJpy": 0,
+        "knownEstimatedCostJpy": 0,
+        "estimatedCostJpyMissingRequests": 0,
+        "reservedCostJpy": 0
+      },
+      "threadCounts": {
+        "excluded": 11,
+        "deferred": 141
+      },
+      "generatedSessionNoteCount": 0,
+      "finishedAt": "2026-09-15T05:30:51+09:00"
+    }
+  ],
+  "generationStop": {
+    "reason": "api-cost-budget",
+    "message": "API command estimated cost budget reached; no request submitted",
+    "requestCount": 24,
+    "maxCalls": 30,
+    "reservedCostJpy": 98.75144305599999,
+    "nextCallReserveJpy": 3.980100376,
+    "maxCostJpy": 100.0
+  },
+  "generationEstimate": {
+    "threadCount": 2,
+    "preparedTextCharacters": 2348583,
+    "pendingPromptCharacters": 3221282,
+    "pendingChunkCount": 50,
+    "cachedChunkCount": 4,
+    "baseCalls": 52,
+    "inputTokensEstimate": 1502457,
+    "outputTokensCeiling": 832000,
+    "baseCostCeilingJpy": 206.939377848,
+    "commandMaxCalls": 30,
+    "commandMaxCostJpy": 100.0,
+    "mayExceedCommandBudget": true,
+    "excludesRetries": true,
+    "mergeUsesInputCeiling": true,
+    "unavailableCount": 0
+  },
+  "usageTotals": {
+    "requestCount": 24,
+    "inputTokens": 638793,
+    "knownInputTokens": 638793,
+    "inputTokensMissingRequests": 0,
+    "outputTokens": 113345,
+    "knownOutputTokens": 113345,
+    "outputTokensMissingRequests": 0,
+    "reasoningTokens": 53444,
+    "knownReasoningTokens": 53444,
+    "reasoningTokensMissingRequests": 0,
+    "cachedInputTokens": 6400,
+    "knownCachedInputTokens": 6400,
+    "cachedInputTokensMissingRequests": 0,
+    "estimatedCostJpy": 42.024250632,
+    "knownEstimatedCostJpy": 42.024250632,
+    "estimatedCostJpyMissingRequests": 0,
+    "reservedCostJpy": 98.751443056
+  },
+  "threadCounts": {
+    "current": 3,
+    "deferred": 487,
+    "excluded": 322
+  },
+  "generatedSessionNoteCount": 1,
+  "attemptedSessionNoteCount": 2,
+  "failed": [],
+  "warnings": [
+    "codex/gaou-pc-2023-windows: Thread 019f7df4-c229-7ab2-9385-cacf3eea9a85: unknown record types retained in Raw: ['inter_agent_communication_metadata']",
+    "codex/gaou-pc-2023-windows: Thread 019f7e13-b2d1-79d0-8cfc-577d03f76cac: unknown record types retained in Raw: ['inter_agent_communication_metadata']",
+    "codex/gaou-pc-2023-windows: Thread 019f7e13-e569-79b1-982e-562e61cfa74a: unknown record types retained in Raw: ['inter_agent_communication_metadata']",
+    "codex/gaou-pc-2023-windows: Thread 019f820d-3dbb-7d80-83bd-b648e4ab808a: unknown record types retained in Raw: ['inter_agent_communication_metadata']",
+    "codex/gaou-pc-2023-windows: Thread 019f820d-6837-7cd2-8b8b-48d1f03e7a9c: unknown record types retained in Raw: ['inter_agent_communication_metadata']",
+    "codex/gaou-pc-2023-wsl: Codex app metadata is unavailable; conversations are still ingested"
+  ],
+  "reportPaths": [
+    "C:\\tkn\\home\\personal\\formats\\data\\sourceAligned\\activities\\chats\\Codex\\gaou-pc-2023-windows\\state\\reports\\90ad614a-1511-4947-a18e-913e93541885.json",
+    "C:\\tkn\\home\\personal\\formats\\data\\sourceAligned\\activities\\chats\\Codex\\gaou-pc-2023-wsl\\state\\reports\\0aa41050-fd4e-4735-a777-6a2a90cdb525.json"
+  ]
+}
+[INFO] Run estimate: 2,348,583 input characters; 52 base calls; 4 cached chunks; total input estimate 1,502,457 tokens; output ceiling 832,000 tokens; base cost ceiling JPY 206.94 (repairs/retries extra); merge input reserves its limit; command limit JPY 100.00 / 30 calls; completion may require more than this command budget
+[INFO] Run API usage: input 638,793 tokens, output 113,345 tokens, estimated JPY 42.02
+[WARNING] Pipeline is incomplete; the next pull resumes pending work
+PS C:\Users\Tuckn\.tkn\codex_chat_note_pipeline>
