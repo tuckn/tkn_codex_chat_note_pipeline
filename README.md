@@ -356,7 +356,7 @@ use schema 8 or supported schema 7.0–7.2; `--config` does not bypass validatio
 
 ## Azure API and bounded Ollama generation
 
-Version 0.21.0 uses configuration schema 8.0.0. Azure CLI is not required.
+Version 0.21.1 uses configuration schema 8.0.0. Azure CLI is not required.
 Azure authentication follows the same SDK browser/persistent-cache approach as the
 local audio transcriber: try cached credentials, open a browser only when interaction
 is required, then retain the account record and encrypted token cache for later runs.
@@ -527,6 +527,57 @@ Source reports have unique run IDs under `<state_root>/reports/`; use `reportPat
 `reportPaths` to find them. Aggregate unique run reports to include earlier failed runs
 and resumed work; do not also count `last-run.json` or duplicate compact stdout copies.
 Dry-run prints JSON but creates no report file; redirect stdout yourself to retain a plan.
+
+### Reading estimates, actual usage, and budget stops
+
+For a 12-chunk note, `13 base calls` means 12 summaries plus one merge.
+`output ceiling 208,000 tokens` is 13 × the 16,000-token output limit.
+`base cost ceiling JPY 53.64 (repairs/retries extra)` prices estimated input plus
+maximum output for those base calls. It is a conservative planning figure, not an
+expected bill; semantic repairs and transport retries are extra.
+A completion line with `16 model calls, 3 semantic retries, ... estimated JPY 28.69`
+includes all 16 submitted calls for that note: 12 chunks, one merge and three repairs.
+The input/output token totals come from API usage; the yen amount is calculated from
+configured prices, not retrieved from Azure billing. With input 410,889 and output
+81,574 tokens at 31.864/191.184 JPY per million, the calculation is 28.688210712 JPY.
+The configured units/prices may differ from these illustrative values.
+
+`command reserve` accumulates each request's estimated input plus maximum output
+across the whole command, including previous notes and selected sources. Successful
+shorter responses do not release unused reservations in the current implementation.
+Consequently, a command can hit its default JPY 100 reservation cap even when the
+actual-usage-based cost estimate is much lower. `no request submitted` means that
+blocked call was not sent or charged; previously submitted calls remain in usage.
+
+Before 0.21.1 this command-level stop appeared as repeated thread failures. From
+0.21.1 the first cost/call budget denial pauses all subsequent generation in that
+command, marks unfinished work `deferred`, and logs one warning. Further candidates
+are not estimated or submitted. Current/reviewed notes retain their normal status;
+source capture and final status/report persistence may still finish. All selected
+sources share the stop. Reports include `generationStop` (reason, reservation and
+call counts/limits), with `api-cost-budget` or `api-call-budget` as the deferred reason.
+The exit code is 2 (incomplete), unless an independent failure also occurred.
+A cheaper later call could sometimes fit the remaining cost budget, but the command
+deliberately stops at its first budget denial instead of probing every later note.
+
+To resume, keep the same profile/settings and run without `--force`:
+
+```console
+tkn-codex-chat-note --profile azure-high pull --dry-run --limit 1
+tkn-codex-chat-note --profile azure-high pull --limit 1
+```
+
+Completed unchanged notes are skipped; validated chunks are reused. Each new command
+gets a fresh budget and additional submitted requests incur additional cost. `--limit 1`
+limits attempted notes, not API calls or yen. A 36-chunk note plus merge can progress
+across several commands despite a 30-call cap. Reuse requires unchanged input and
+generation settings and intact checkpoints; the blocked chunk itself is not cached.
+If even one necessary call cannot fit a fresh budget, repeating the command cannot
+solve that condition. Review the profile's `limits.max_cost_jpy` and `limits.max_calls`.
+Increasing only the cost cap does not remove the call cap. In the current cache contract,
+limits are part of generation identity, so changing them invalidates previous checkpoints
+and may regenerate completed unreviewed notes. Prefer same-setting resume first; do not
+use `--force` for normal budget recovery. The application never increases your cap automatically.
 
 ### Preserve pending state across merges
 
