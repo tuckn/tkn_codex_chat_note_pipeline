@@ -25,6 +25,14 @@ class ApiError(InferenceExecutionError):
         self.retry_after = retry_after
 
 
+class ApiBudgetExceeded(ApiError):
+    """A command-wide stop, not a provider failure or a retryable request."""
+
+    def __init__(self, details: dict[str, Any]) -> None:
+        super().__init__(str(details["message"]))
+        self.details = deepcopy(details)
+
+
 def strict_schema(schema: dict[str, Any], allowed_ids: list[str] | None = None) -> dict[str, Any]:
     # These constraints remain enforced by the application validator.
     unsupported = {
@@ -129,6 +137,7 @@ class ApiClient:
         self.stage = "unknown"
         self.records: list[dict[str, Any]] = []
         self.reserved_jpy = 0.0
+        self.budget_stop: dict[str, Any] | None = None
         self.observer: Any = None
         self.response_model: str | None = None
         self.pricing = self.azure.pricing.get(config.model) if self.azure else None
@@ -178,7 +187,19 @@ class ApiClient:
         count, self.estimator = token_estimate(body, azure=self.azure is not None)
         return count
 
+    def _stop_budget(self, reason: str, message: str, reserve: float | None) -> None:
+        self.budget_stop = {
+            "reason": reason, "message": message,
+            "requestCount": len(self.records), "maxCalls": self.limits.max_calls,
+            "reservedCostJpy": self.reserved_jpy if self.pricing else None,
+            "nextCallReserveJpy": reserve,
+            "maxCostJpy": self.limits.max_cost_jpy if self.pricing else None,
+        }
+        raise ApiBudgetExceeded(self.budget_stop)
+
     def invoke(self, prompt: str, schema: dict[str, Any], *, timeout: int) -> dict[str, Any]:
+        if self.budget_stop is not None:
+            raise ApiBudgetExceeded(self.budget_stop)
         estimated = self.estimate(prompt, schema)
         if estimated > self.limits.input_tokens:
             raise ApiError(
@@ -186,10 +207,12 @@ class ApiClient:
                 "reduce chunks or raise the explicitly configured limits (also applies to merge/repair)"
             )
         if len(self.records) >= self.limits.max_calls:
-            raise ApiError("API command max_calls budget reached; checkpointed work can be resumed")
+            self._stop_budget("api-call-budget",
+                              "API command max_calls budget reached; checkpointed work can be resumed", None)
         reserve = self.pricing.cost(estimated, self.limits.output_tokens) if self.pricing else 0.0
         if self.pricing and self.reserved_jpy + reserve > self.limits.max_cost_jpy:
-            raise ApiError("API command estimated cost budget reached; no request submitted")
+            self._stop_budget("api-cost-budget",
+                              "API command estimated cost budget reached; no request submitted", reserve)
         headers = {"Content-Type": "application/json"}
         if self.azure:
             try:

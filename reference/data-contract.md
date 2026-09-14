@@ -1,6 +1,6 @@
 # Data contract: chat evidence and Session Notes
 
-CLI 0.21.0 · config 8.0.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
+CLI 0.21.1 · config 8.0.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
 
 This is the file-based interface specification for tools that consume this CLI's
 output, including context curation and insight. It defines stable identities,
@@ -397,3 +397,18 @@ Thread estimates and provenance agent records add generationProfile; the existin
 agent.profile still means the application-owned Session Note language/template profile.
 These fields are additive. Source, artifact and note identities remain unchanged.
 CLI --profile selects a name; compatibility --provider rejects ambiguous matches.
+
+
+## Command budget pause (0.21.1)
+
+Cost/call budget exhaustion is a command-wide generation pause, not a per-thread
+provider failure. The interrupted thread and later generation candidates have status
+deferred with reason api-cost-budget or api-call-budget. Current/protected notes retain
+their normal state. A generationStop object on source/multi-source reports records
+reason, message, requestCount, maxCalls, reservedCostJpy, nextCallReserveJpy and maxCostJpy.
+Missing cost information remains null. API records include only submitted requests.
+One generation-budget-stop progress event is emitted; subsequent candidates do not
+estimate or invoke the model. Capture and report finalization can continue.
+Exit code 2 means incomplete; independent failures still produce failure status.
+Checkpoint format, generation fingerprint, configured caps and reservation accounting
+are unchanged. Same-setting pull can reuse validated chunks with a fresh command budget.

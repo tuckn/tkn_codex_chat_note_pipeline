@@ -19,7 +19,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol
 
-from .api_inference import ApiClient, ApiError
+from .api_inference import ApiBudgetExceeded, ApiClient, ApiError
 from .chat_logs import (
     ChatEvent,
     default_sessions_root,
@@ -1128,6 +1128,8 @@ class ProviderSummarizer:
                         cwd=temp,
                         timeout=timeout,
                     )
+                except ApiBudgetExceeded:
+                    raise
                 except InferenceExecutionError as exc:
                     last_error = str(exc)
                     if isinstance(exc, ApiError) and not exc.retryable:

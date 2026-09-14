@@ -13,7 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from . import __version__
-from .api_inference import ApiClient
+from .api_inference import ApiBudgetExceeded, ApiClient
 from .catalog import CATALOG_SCHEMA_VERSION, Discovery, capture_sources, discover
 from .config import AppConfig
 from .frontmatter import parse_simple_frontmatter
@@ -95,6 +95,12 @@ def _existing_note(candidate: Candidate) -> Path | None:
     return matches[0] if matches else None
 
 
+def _budget_stop(summarizer: Summarizer | None) -> dict[str, Any] | None:
+    if isinstance(summarizer, ProviderSummarizer) and summarizer.api_client is not None:
+        return summarizer.api_client.budget_stop
+    return None
+
+
 def _notes(
     config: AppConfig,
     pipeline_config: PipelineConfig,
@@ -173,6 +179,10 @@ def _notes(
                 if prior.get("noteHash") != _hash(existing) and not allow_edited and not recoverable:
                     entry.update(status="blocked", reason="edited-session-note")
                     continue
+            stop = _budget_stop(summarizer)
+            if stop is not None:
+                entry.update(status="deferred", reason=stop["reason"])
+                continue
             if now_local() >= deadline or limit is not None and attempted >= limit:
                 entry.update(status="deferred", reason="runtime-deadline" if now_local() >= deadline else "limit")
                 continue
@@ -262,6 +272,14 @@ def _notes(
                         "total": len(discovery.candidates),
                     }
                 )
+        except ApiBudgetExceeded as exc:
+            entry.update(status="deferred", reason=exc.details["reason"], generationStop=exc.details)
+            if generation_started and summarizer is not None:
+                entry["generationMetrics"] = dict(getattr(summarizer, "last_metrics", {}))
+            ledger["threads"][key] = {**prior, "status": "deferred", "reason": exc.details["reason"],
+                                       "attemptedAt": now_iso()}
+            if progress:
+                progress({"type": "generation-budget-stop", "threadId": entry["threadId"], **exc.details})
         except Exception as exc:
             entry.update(status="failed", reason="session-note-failed", error=str(exc))
             if generation_started and summarizer is not None:
@@ -367,6 +385,8 @@ def _run_source_pipeline(
             summarizer=summarizer,
             progress=progress,
         )
+        if _budget_stop(summarizer) is not None:
+            report["generationStop"] = dict(_budget_stop(summarizer) or {})
         report["threads"] = discovery.entries
         report["generationEstimate"] = estimate_totals(
             [entry["generationEstimate"] for entry in discovery.entries if "generationEstimate" in entry])
@@ -566,6 +586,7 @@ def run_pipeline(
         "ok": all(report["ok"] for report in reports),
         "complete": all(report["complete"] for report in reports),
         "sourceResults": reports,
+        **({"generationStop": shared_api.budget_stop} if shared_api and shared_api.budget_stop else {}),
         "generationEstimate": estimate_totals(
             [entry["generationEstimate"] for report in reports for entry in report.get("threads", [])
              if "generationEstimate" in entry]),

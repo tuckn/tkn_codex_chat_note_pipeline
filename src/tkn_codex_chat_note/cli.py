@@ -337,6 +337,12 @@ def _progress(value: dict[str, Any]) -> None:
             _metric_summary(value),
             _session_note_path_summary(value),
         )
+    elif event_type == "generation-budget-stop":
+        LOGGER.warning(
+            "Generation paused at thread %s: %s. Remaining generation is deferred; "
+            "validated checkpoints are kept. Run pull again without --force to resume with a new command budget.",
+            value.get("threadId"), value.get("message"),
+        )
     elif event_type == "thread-failed":
         LOGGER.error(
             "Failed thread %s/%s: %s — %s",
@@ -509,7 +515,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             LOGGER.info("Run estimate: %s", _estimate_summary(report["generationEstimate"]))
         if report.get("usageTotals", {}).get("requestCount"):
             LOGGER.info("Run API usage: %s", _usage_summary(report["usageTotals"]))
-        if not report["ok"] or (not args.dry_run and args.command in {"clone", "pull"} and not report["complete"]):
+        if (report.get("generationStop") or not report["ok"]
+            or (not args.dry_run and args.command in {"clone", "pull"} and not report["complete"])):
             LOGGER.warning("Pipeline is incomplete; the next pull resumes pending work")
             return 2
         log_success(LOGGER, "Plan validated" if args.dry_run else "Run completed")
