@@ -17,6 +17,7 @@ from .api_inference import ApiClient
 from .catalog import CATALOG_SCHEMA_VERSION, Discovery, capture_sources, discover
 from .config import AppConfig
 from .frontmatter import parse_simple_frontmatter
+from .generation_usage import estimate_totals, usage_totals
 from .provenance import ProvenanceStore, json_bytes
 from .raw_capture import RawCaptureError
 from .session_notes import (
@@ -111,6 +112,8 @@ def _notes(
     progress: Progress | None,
 ) -> int:
     attempted = 0
+    planner = ProviderSummarizer(pipeline_config, cache_root=config.source_cache_root)
+    planner.reuse_cache = not force
     if thread_id and thread_id not in {entry["threadId"] for entry in discovery.entries}:
         raise PipelineError(f"unknown thread ID: {thread_id}")
     for entry in discovery.entries:
@@ -172,6 +175,14 @@ def _notes(
             if now_local() >= deadline or limit is not None and attempted >= limit:
                 entry.update(status="deferred", reason="runtime-deadline" if now_local() >= deadline else "limit")
                 continue
+            try:
+                estimate = planner.estimate(candidate)
+            except (PipelineError, ValueError) as exc:
+                estimate = {"status": "unavailable", "reason": str(exc), "provider": pipeline_config.provider,
+                            "inputTokensEstimate": None, "outputTokensCeiling": None, "baseCostCeilingJpy": None}
+            entry["generationEstimate"] = estimate
+            if progress:
+                progress({"type": "generation-estimate", "threadId": entry["threadId"], **estimate})
             if provenance.dry_run:
                 entry.update(status="planned", reason="session-note-needs-build")
                 attempted += 1
@@ -219,7 +230,10 @@ def _notes(
                 started_at=started,
                 used=used,
                 generated=[output],
-                agent=_agent(pipeline_config, "session-note"),
+                agent={**_agent(pipeline_config, "session-note"),
+                       **({"requestedDeployment": pipeline_config.model,
+                           "model": parse_simple_frontmatter(note.read_text(encoding="utf-8"))["generatorModel"]}
+                          if pipeline_config.provider == "azure-openai" else {})},
             )
             ledger["threads"][key] = {
                 "status": "current",
@@ -351,6 +365,11 @@ def _run_source_pipeline(
             progress=progress,
         )
         report["threads"] = discovery.entries
+        report["generationEstimate"] = estimate_totals(
+            [entry["generationEstimate"] for entry in discovery.entries if "generationEstimate" in entry])
+        report["usageTotals"] = usage_totals(
+            [request for entry in discovery.entries
+             for request in entry.get("generationMetrics", {}).get("apiRequests", [])])
         report["threadCounts"] = dict(Counter(entry["status"] for entry in discovery.entries))
         report["generatedSessionNoteCount"] = sum(bool(entry.get("generated")) for entry in discovery.entries)
         failures = [entry for entry in discovery.entries if entry["status"] in {"failed", "blocked"}]
@@ -542,6 +561,12 @@ def run_pipeline(
         "ok": all(report["ok"] for report in reports),
         "complete": all(report["complete"] for report in reports),
         "sourceResults": reports,
+        "generationEstimate": estimate_totals(
+            [entry["generationEstimate"] for report in reports for entry in report.get("threads", [])
+             if "generationEstimate" in entry]),
+        "usageTotals": usage_totals(
+            [request for report in reports for entry in report.get("threads", [])
+             for request in entry.get("generationMetrics", {}).get("apiRequests", [])]),
         "threadCounts": dict(counts),
         "generatedSessionNoteCount": sum(report["generatedSessionNoteCount"] for report in reports),
         "attemptedSessionNoteCount": sum(report["attemptedSessionNoteCount"] for report in reports),

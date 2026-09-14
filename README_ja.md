@@ -151,7 +151,7 @@ tkn-codex-chat-note --idle-minutes 0 --runtime-minutes 60 pull --limit 20
 なお、`cache_root`は共通で使用され、取得元ごとには設定できません。
 
 ```yaml
-schema_version: "7.1.0"
+schema_version: "7.2.0"
 cache_root: ~/.cache/codex_chat_note_pipeline
 sources:
   my-windows-pc:
@@ -302,46 +302,66 @@ tkn-codex-chat-note --config "C:\path\to\rebuild.yaml" config init
 
 ## Azure APIとOllamaの入力・費用制御
 
-0.18.0では `azure-openai` とAPI用の上限設定を追加し、config schemaを7.1.0にしました。
-7.0.xはファイルを書き換えずに読み込めます。Codexの取得元と通常のCodex生成設定は維持します。
-比較用の基準を保存した後、インストール済みCLIは `uv tool install . --reinstall` で更新できます。
+0.20.0ではconfig schema 7.2.0を使い、Azure CLIへの依存をなくしました。
+音声文字起こしCLIと同じSDKのブラウザ認証・永続cache方式です。まず保存済みの認証でtokenを取得し、
+対話が必要な場合だけブラウザを開きます。認証後はアカウント情報と暗号化cacheを次回にも使います。
+認証の取消・組織の方針変更などでは再認証が必要です。対話認証にはブラウザとローカルの接続先が必要です。
+取消・タイムアウト時は推論送信前に停止します。ただし`pull`の履歴取り込みは先に進んでいる場合があります。
+dry-runは認証せず、ブラウザも開きません。
 
-AzureはAzure CLIの保存済みサインインを使います。必要なときに一度 `az login` を実行すれば、
-各ノート・各分割でブラウザーを開かず、同じアカウントでtokenを更新します。
-設定したtenantと有効なsubscriptionを照合してから取得します。サインインの失効・取消時には
-再ログインが必要です。APIキーへの切替や別の資格情報ファイルは使いません。
-他アプリは自身の認証cacheを継続利用できます。このCLIはAzure CLIの認証を使い、他アプリのcacheをコピー・変更しません。
+アカウント記録は`~/.tkn/codex_chat_note_pipeline/authentication/`へ保存します。access/refresh tokenは
+SDKの暗号化cacheに保存し、平文保存には切り替えません。cache名は本アプリ・endpoint・任意tenantで分離し、
+他アプリやAzure CLIの認証をコピー・変更しません。アカウントを選び直す場合は実行を終了し、
+本アプリの該当アカウント記録だけを削除すると、次回生成時にブラウザで選択できます。
 
-比較には別の `--config` ファイルを使います。次を `generation.providers` 配下に設定し、
-`generation.active_provider: azure-openai` を指定します。
+最小のAzure設定は次の通りです。`generation.providers`配下へ置き、
+`generation.active_provider: azure-openai`を指定します。
 
 ```yaml
 azure-openai:
-  model: <underlying-model-name>
+  model: <deployment-name>
   reasoning_effort: high
   azure:
     endpoint: https://<resource>.openai.azure.com/openai/v1/
-    deployment: <deployment-name>
-    model_version: <model-version>
-    tenant_id: <tenant-guid>
-    subscription_id: <subscription-guid>
-    input_jpy_per_million: 100.0   # 適用される確認済み単価に置き換える。
-    output_jpy_per_million: 500.0
-    pricing_date: YYYY-MM-DD
-  limits:
-    input_tokens: 60000
-    output_tokens: 16000
-    context_tokens: 100000
-    chunk_characters: 120000
-    max_calls: 20
-    max_cost_jpy: 100
 ```
 
+Azureの`model`は呼び出すdeployment名です。実モデル名を別途設定する必要はありません。
+`deployment`・`model_version`・`subscription_id`は指定しません。tenantを明示する必要がある環境では
+`azure.tenant_id`を任意で指定できます。実モデル名と版を含む識別子はAPI応答から記録し、版を推測しません。
+ノートの`generatorModel`は実応答モデル、`generatorDeployment`は要求deploymentです。
+provenanceも`model`と`requestedDeployment`を分けて記録します。
+
+金額表示が必要な場合だけ、`azure`配下にdeployment別の単価を追加します。
+`--model`等でdeploymentを変えても、別deploymentの単価は流用しません。
+一致する単価がなければtokenの見積もり・実績を表示し、料金は不明、**JPY上限は適用しない**と表示します。
+入力・出力・呼び出し回数の上限は引き続き適用します。
+
+```yaml
+pricing:
+  <deployment-name>:
+    input_jpy_per_million: 100.0  # 仮の値。適用される確認済み単価へ置き換える。
+    output_jpy_per_million: 500.0
+    pricing_date: YYYY-MM-DD
+```
+
+`limits`も省略できます。既定値は入力60,000／出力16,000／context100,000 token、
+分割120,000文字、30呼び出し、単価がある場合の確保額上限100円です。
+すべてのdeploymentの対応能力を表す値ではありません。単価は利用者設定による概算で、Azureの請求情報を
+自動取得するものではありません。同じdeployment内でモデルを更新した場合も、適用単価を見直します。
+
+旧schema 7.0/7.1のAzure設定はメモリ内で変換します。`azure.deployment`を`model`へ移し、
+実モデル名・版・subscriptionの必須指定を除き、旧単価をdeployment別のpricingへ移します。
+設定ファイルは自動で書き換えません。明示的に設定を更新し、`config show`で有効な値を確認できます。
+
 v1 Chat Completionsへ厳密なJSON形式、`store=false`、推論分を含む回答上限とdeployment名を渡します。
-応答の実model/versionは設定値と照合します。API非対応のschema制約は送信形式からのみ除き、
-ローカルでは引き続き検証します。拒否・回答打ち切り・401/403・モデル不一致は通信再試行せず失敗にします。
-429と一時的なサーバー／通信エラーは最大3試行とし、Retry-Afterの秒数・日時・ミリ秒指定を尊重します。
-待機指定が60秒を超える場合は、指定時間後の再開を案内して停止します。
+返答には実モデルの識別子が必要です。途中結果にも識別子を保存し、後の応答・途中結果と異なる場合は
+異なるモデルの生成結果を混ぜず停止します。同じdeployment内のモデル変更後は`--force`で再生成してください。
+全てcacheから再利用できる場合や既存ノートが最新の場合はAzureへ接続しないため、サーバー側の変更を検知できません。
+endpoint・deployment・設定の変更では生成条件が変わり、以前の途中結果を再利用しません。
+
+API非対応のschema制約は送信形式からのみ除き、ローカルでは引き続き検証します。
+拒否・回答打ち切り・401/403は通信再試行せず失敗にします。429と一時的なサーバー／通信エラーは最大3試行とし、
+Retry-Afterの秒数・日時・ミリ秒指定を尊重します。待機指定が60秒を超える場合は、指定時間後の再開を案内して停止します。
 生成内容の修正呼び出しも予算に含めます。
 
 Ollamaはprovider内に `limits` と固定した `model_digest` を設定できます。
@@ -351,10 +371,10 @@ PC性能に対する推奨値ではありません。tokenizerに依存しない
 多くの小さな分割になる場合があります。`limits` を省略した場合は従来のOllama動作を維持します。
 
 分割・統合・修正のすべてで、指示文とschema込みの入力を送信前に確認します。
-Azureの見積もりは `o200k_base` と余裕分を用います。初回の実API実行時には公開tokenizerデータを
-取得する場合があります。見積もりは請求token数ではありません。分割は枠に収まるまで自動調整します。
+Azureの見積もりは検証済みのローカル `o200k_base` cacheと余裕分を使い、利用できなければ
+byte数の上限を使います。請求token数ではありません。分割は枠に収まるまで自動調整します。
 統合・修正が枠を超える場合は、保存済み分割を残して停止します。適切な上限への調整、または
-統合方式の変更後に再開してください。dry-runではtoken取得・認証・AI呼び出しを行いません。
+統合方式の変更後に再開してください。dry-runでは認証用token取得・認証・AI呼び出しを行いません。
 
 予算は1つの生成runner／コマンドに適用し、選択した取得元間でも共有して、順番に呼び出します。送信するたびに推定入力と
 最大出力の費用を確保し、課金結果が不明な失敗時も確保分を残します。確保額は請求額や返金額ではありません。
@@ -364,8 +384,8 @@ Azureの費用通知も課金を停止しません。適用される最新の単
 
 run reportの `generationMetrics.apiRequests` に、取得できた実入力・出力・推論・cached input token数、
 応答model、時間、推定JPY費用を保存します。未知のusageはnullです。cached inputは通常入力単価で
-保守的に計算し、cache writeは報告されない限り不明とします。接続先・model/version・上限・digestは
-生成条件のfingerprintとprovenanceへ反映します。
+保守的に計算し、cache writeは報告されない限り不明とします。接続先・deployment・設定・上限・digestは
+生成条件のfingerprintとprovenanceへ反映します。実応答モデルは呼び出し記録・検証済み途中結果へ別途保存します。
 
 実データ保存領域と分けた比較には `scripts/evaluate_session_notes.py --manifest <private-baseline-manifest.json>
 --config <generation-config.yaml> --output <fresh-evaluation-directory> --thread <thread-id>` を使えます。
@@ -375,13 +395,72 @@ run reportの `generationMetrics.apiRequests` に、取得できた実入力・�
 `activity` と、SHA-256をファイル名にした複製を指す `files.sessionNote` / `raw` / `canonicalEvents` を持たせます。
 
 実装上の参照: [Azure構造化出力](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs)、
-[Azure CLIの資格情報](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.azureclicredential)、
+[ブラウザ認証](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.interactivebrowsercredential)、
 [Ollama chat API](https://docs.ollama.com/api/chat)。
 
 API送信時は構造化された出典IDだけを短い可逆な別名へ変換し、全出典を共通のJSON Schema enumから
 選ばせます。返答を元のIDへ戻してから検証し、原文の本文・Raw・Canonical Eventsは変更しません。
 長いIDの反復入力を減らし、IDの省略・捏造を防ぎます。統合の修正には、Rawを再送せず許可されたIDを
 添えます。送信形式は `apiRequests` の `event-id-aliases-v1` で識別できます。
+
+### 入力量・費用の事前確認と実測ログ（0.19.0）
+
+```console
+tkn-codex-chat-note clone --dry-run
+tkn-codex-chat-note pull --dry-run --limit 1
+tkn-codex-chat-note pull --limit 1
+```
+
+dry-runは、選択したうち生成が必要なノートを見積もります。最新・レビュー済み・編集保護対象・
+延期したノートを生成費用に含めません。検証済みの分割cacheを読み、再利用分を除外します。
+最終統合の入力はまだ未確定なので、統合や保存待ちノートを後で再利用できる場合も統合1回を
+確保します。ファイル作成・認証・通信は行いません。`--full-output`で会話ごとの
+`generationEstimate`も表示し、既定のJSON出力には集計を残します。
+
+全方式で本文文字数、未処理のプロンプト文字数、基本呼び出し数を表示します。
+Codex等のコマンド方式は、内部で追加される文脈・schema・課金情報を把握できないため、token数・
+金額は不明とします。Azureではさらに**全呼び出しの入力合計token見積もり**、推論込みの
+出力token上限、**基本処理の概算費用上限（JPY）**を表示します。1回の入力上限とは別の値です。
+未確定の統合入力には設定上限を、各回答には最大出力を確保します。修正・通信再試行は別枠です。
+予想請求額や全件完了の保証ではありません。コマンド全体の回数・費用上限と、見積もりがその
+上限を超える可能性も別に表示します。
+
+Azureは既存の`o200k_base` tokenizer cacheをSHA-256検証して読み、余裕を加えます。
+利用できない場合は保守的なUTF-8 byte数の上限を使い、`utf8-byte-upper-bound`と記録します。
+見積もりのためにcacheをダウンロード・修復することはありません。上限付きOllamaもbyte数を
+使うため、分割数が多めになる場合があります。
+
+実行中はstderrに、各呼び出しの入力見積もり・確保額、応答の実入力／出力token数・概算JPY費用、
+会話・全体の集計を表示します。未知のusageやローカルの費用を0として表示しません。
+Codexの呼び出しではプロンプト文字数を表示します。通常のrun reportには次を保存します。
+
+- `threads[].generationEstimate`: 生成前の前提・上限付き見積もり。
+- `threads[].generationMetrics.apiRequests[]`: 呼び出し番号、分割／統合／修正の区別、
+  実usage、時間、応答model、確保額・概算費用。失敗した試行も含む。
+- `threads[].generationMetrics.usageTotals`と全体の`usageTotals`: 合計、
+  `knownInputTokens`・`knownEstimatedCostJpy`などの既知分小計、未取得の呼び出し数。
+
+統合の修正時は部分要約の本文・根拠を維持し、重複する出典ID一覧とJSONの装飾用空白を省きます。
+文字列の中の空白や事実は変更しません。
+
+未取得のusageがある合計はnullとし、既知分の小計を別に残します。run reportは取得元ごとの
+`<state_root>/reports/`に固有のrun IDで保存され、`reportPath`／`reportPaths`から確認できます。
+失敗後の再開も含めた分析は、固有run reportを合算してください。`last-run.json`やstdoutの
+複製も合算すると二重計上になります。dry-run自身はレポートを保存しないので、計画を残す場合は
+stdoutをファイルへリダイレクトしてください。
+
+### 最終統合で未確認事項を保持する
+
+生成プロンプト10、日本語3.8、英語1.4では、各分割の未解決・未確認事項をすべて判定対象とし、
+残す項目は元の文面を最終状態に追加します。除外には、同じ履歴の後続イベントと理由が必要です。
+未処理・重複・不正な判定は上限付きの修正対象にします。判定は内部記録の
+`generationMetrics.stateItemReviews`に残し、公開Session Note schema 6は維持します。
+出典が本当に解決を示すかはモデルが判断するため、事実確認が不要になるわけではありません。
+最新の依頼が完了しても、以前の未確認事項を自動的に空にしません。
+統合入力ではタイムラインの冗長な開始／終了IDだけを省き、本文・出典は保持します。
+公開タイムラインは維持し、統合の修正には必要な状態情報を渡します。
+プロンプト更新により全providerの旧生成条件・途中結果は再生成対象になりますが、
+レビュー済み・編集済みノートの保護は維持します。既存Ollama設定も引き続き利用できます。
 
 ## 保存構造と責務の境界
 

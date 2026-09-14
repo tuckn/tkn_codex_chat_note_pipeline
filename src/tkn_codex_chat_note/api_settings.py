@@ -2,28 +2,34 @@
 
 from __future__ import annotations
 
-from typing import Self
+from copy import deepcopy
+from typing import Any, Self
 from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-class AzureSettings(BaseModel):
+class AzurePricing(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    endpoint: str
-    deployment: str = Field(min_length=1)
-    model_version: str = Field(min_length=1)
-    tenant_id: str
-    subscription_id: str
     input_jpy_per_million: float = Field(gt=0, allow_inf_nan=False)
     output_jpy_per_million: float = Field(gt=0, allow_inf_nan=False)
     pricing_date: str = Field(min_length=1)
 
-    @field_validator("tenant_id", "subscription_id")
+    def cost(self, input_tokens: int, output_tokens: int) -> float:
+        return (input_tokens * self.input_jpy_per_million + output_tokens * self.output_jpy_per_million) / 1_000_000
+
+
+class AzureSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    endpoint: str
+    tenant_id: str | None = None
+    pricing: dict[str, AzurePricing] = Field(default_factory=dict)
+
+    @field_validator("tenant_id")
     @classmethod
-    def guid(cls, value: str) -> str:
-        return str(UUID(value))
+    def guid(cls, value: str | None) -> str | None:
+        return str(UUID(value)) if value is not None else None
 
     @field_validator("endpoint")
     @classmethod
@@ -58,3 +64,29 @@ class ApiLimits(BaseModel):
         if self.input_tokens + self.output_tokens > self.context_tokens:
             raise ValueError("input_tokens + output_tokens must fit context_tokens")
         return self
+
+
+def normalize_azure_generation(value: Any) -> Any:
+    """Read legacy schema-7 Azure settings without rewriting the user's file."""
+    if not isinstance(value, dict):
+        return value
+    result = deepcopy(value)
+    providers = result.get("providers")
+    provider = providers.get("azure-openai") if isinstance(providers, dict) else None
+    if not isinstance(provider, dict):
+        return result
+    azure = provider.get("azure")
+    if not isinstance(azure, dict):
+        return result
+    deployment = azure.pop("deployment", None)
+    if deployment is not None:
+        provider["model"] = deployment
+    azure.pop("model_version", None)
+    azure.pop("subscription_id", None)
+    keys = ("input_jpy_per_million", "output_jpy_per_million", "pricing_date")
+    rates = {key: azure.pop(key) for key in keys if key in azure}
+    if rates:
+        if not provider.get("model"):
+            raise ValueError("legacy Azure prices require the deployment/model in the same configuration layer")
+        azure.setdefault("pricing", {}).setdefault(provider["model"], rates)
+    return result

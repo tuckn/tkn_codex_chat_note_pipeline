@@ -41,6 +41,7 @@ from .frontmatter import (
     split_frontmatter_lines,
 )
 from .generation_cache import GenerationCache, content_hash
+from .generation_usage import usage_totals
 from .inference import (
     InferenceExecutionError,
     invoke_structured,
@@ -50,12 +51,14 @@ from .inference import (
 from .inference_inputs import compact_duplicate_outputs
 from .media_inputs import describe_embedded_images
 from .prompting import (
+    compact_merge_partials,
     render_chunk_prompt,
     render_reduction_prompt,
     render_repair_prompt,
 )
 from .raw_capture import RawCaptureError, RawSourceInput, ingest_raw_sources
 from .safety import redact_secret_like_content
+from .state_reconciliation import REVIEW_SCHEMA, collect_state_items, reconcile_state
 from .summary_resources import (
     DEFAULT_SUMMARY_PROFILE,
     SummaryProfile,
@@ -79,7 +82,7 @@ DEFAULT_IDLE_MINUTES = 30
 DEFAULT_RUNTIME_MINUTES = 230
 DEFAULT_MODEL_TIMEOUT_SECONDS = 1800
 DEFAULT_CHUNK_CHARACTERS = 120_000
-GENERATOR_PROMPT_VERSION = 9
+GENERATOR_PROMPT_VERSION = 10
 RENDERER_VERSION = 13
 REBUILD_WORK_SCHEMA_VERSION = 1
 IN_FLIGHT_GRACE_MINUTES = 9
@@ -1051,6 +1054,9 @@ class ProviderSummarizer:
         self.last_metrics: dict[str, Any] = {}
         self.api_client: ApiClient | None = None
         self.api_record_start = 0
+        self.state_items: list[dict[str, Any]] = []
+        self.state_events: Sequence[ChatEvent] = ()
+        self.state_context: dict[str, Any] = {}
         self.cache_root = cache_root
         self.reuse_cache = True
 
@@ -1071,6 +1077,7 @@ class ProviderSummarizer:
         ):
             if self.api_client is None:
                 self.api_client = ApiClient(self.config)
+            self.api_client.observer = self._emit
             return self.api_client
         return None
 
@@ -1097,6 +1104,7 @@ class ProviderSummarizer:
                         "attempt": attempt + 1,
                         "timeoutSeconds": timeout,
                         "provider": provider_name(self.config.provider),
+                        "promptCharacters": len(prompt),
                     }
                 )
                 try:
@@ -1111,6 +1119,7 @@ class ProviderSummarizer:
                             self.last_metrics["submittedPromptCharacters"] = sum(
                                 record["promptCharacters"] for record in api.records[self.api_record_start:])
                             self.last_metrics["commandReservedCostJpy"] = api.reserved_jpy
+                            self.last_metrics["usageTotals"] = usage_totals(api.records[self.api_record_start:])
                     return invoke_structured(
                         self.config,
                         prompt,
@@ -1150,6 +1159,8 @@ class ProviderSummarizer:
             "type": "string", "enum": sorted(allowed_event_ids),
         }
         for semantic_attempt in range(3):
+            if api:
+                api.stage = ("merge" if overview_only else "chunk") + ("-repair" if semantic_attempt else "")
             value = self._invoke(current_prompt, overview_only=overview_only)
             try:
                 # An inference anchor determines both public endpoints. Supporting
@@ -1167,8 +1178,19 @@ class ProviderSummarizer:
                 # Check shape first so independent semantic checks can all run safely.
                 validate_summary_output_schema(value, self.overview_schema if overview_only else self.schema)
                 errors: list[str] = []
+                if api:
+                    wire_aliases = set(api.aliases().values())
+                    original_text = "\n".join(e.text for e in (events or self.state_events))
+                    permitted = set(re.findall(r"\bE\d{5}\b", original_text))
+                    prose = json.dumps(value, ensure_ascii=False)
+                    stray = set(re.findall(r"\bE\d{5}\b", prose)) & wire_aliases - permitted
+                    if stray:
+                        errors.append("Put source aliases only in structured citation fields, not narrative: "
+                                      + ", ".join(sorted(stray)))
                 try:
-                    validate_note_data(value, allowed_event_ids, overview_only=overview_only, profile=self.profile)
+                    validate_note_data(
+                        reconcile_state(value, self.state_items, self.state_events) if overview_only else value,
+                        allowed_event_ids, overview_only=overview_only, profile=self.profile)
                 except PipelineError as error:
                     errors.append(str(error))
                 if events and not overview_only:
@@ -1190,6 +1212,7 @@ class ProviderSummarizer:
                     validation_error=str(exc),
                     draft=value,
                     allowed_event_ids=sorted(allowed_event_ids) if overview_only else None,
+                    state_context=self.state_context if overview_only else None,
                     events=[event.as_dict() for event in input_events] if input_events is not None else
                     ([event.as_dict() for event in prepare_events(events)] if events else None),
                 )
@@ -1200,17 +1223,29 @@ class ProviderSummarizer:
         events: Sequence[ChatEvent] = (), input_events: Sequence[PreparedEvent] | None = None,
         overview_only: bool = False,
     ) -> dict[str, Any]:
+        api = self._api()
         key = content_hash({"prompt": prompt, "allowedIds": sorted(allowed_ids), "overview": overview_only})
         if cache is not None:
             cached = cache.read(key)
             if cached is not None:
                 try:
-                    validate_note_data(cached, allowed_ids, overview_only=overview_only, profile=self.profile)
+                    if api and api.azure and not cache.last_response_model:
+                        raise ValueError("Azure checkpoint lacks response model")
+                    if overview_only:
+                        validate_summary_output_schema(cached, self.overview_schema)
+                    validate_note_data(
+                        reconcile_state(cached, self.state_items, self.state_events) if overview_only else cached,
+                        allowed_ids, overview_only=overview_only, profile=self.profile)
                     if not overview_only:
                         validate_timeline(cached["timeline"], events)
                 except (PipelineError, ValueError):
                     self.last_metrics["rejectedCheckpoints"] += 1
                 else:
+                    if api and api.azure:
+                        try:
+                            api.observe_model(cache.last_response_model)
+                        except ApiError as exc:
+                            raise PipelineError(str(exc)) from exc
                     metric = "reusedReductions" if overview_only else "reusedChunks"
                     self.last_metrics[metric] += 1
                     self._emit({"type": "stage-resumed", "threadId": thread_id, "stage": metric})
@@ -1219,23 +1254,11 @@ class ProviderSummarizer:
             prompt, allowed_ids, thread_id, events=events, input_events=input_events, overview_only=overview_only,
         )
         if cache is not None:
-            cache.write(key, value)
+            cache.write(key, value, response_model=api.response_model if api and api.azure else None)
         return value
 
-    def generate(self, candidate: Candidate) -> dict[str, Any]:
-        api = self._api()
-        self.api_record_start = len(api.records) if api else 0
-        self.last_metrics = {
-            "chunkCount": 0,
-            "modelCalls": 0,
-            "transportRetries": 0,
-            "semanticRetries": 0,
-            "submittedPromptCharacters": 0,
-            "reusedChunks": 0,
-            "reusedReductions": 0,
-            "rejectedCheckpoints": 0,
-        }
-        cache = None if self.cache_root is None else GenerationCache(
+    def _cache(self, candidate: Candidate) -> GenerationCache | None:
+        return None if self.cache_root is None else GenerationCache(
             self.cache_root,
             {
                 "generation": generation_fingerprint(self.config, candidate),
@@ -1246,8 +1269,10 @@ class ProviderSummarizer:
             },
             reuse=self.reuse_cache,
         )
+
+    def _prepared_chunks(self, candidate: Candidate) -> tuple[list[PreparedEvent], list[list[PreparedEvent]], int]:
+        api = self._api()
         prepared = prepare_events(candidate.events)
-        allowed_ids = {event.id for event in prepared}
         target = min(self.chunk_characters, api.limits.chunk_characters) if api else self.chunk_characters
         chunks = chunk_events(prepared, target)
         if api:
@@ -1271,7 +1296,99 @@ class ProviderSummarizer:
                     raise PipelineError("API input limit cannot fit profile/schema and minimum event input")
                 target = max(512, target // 2)
                 chunks = chunk_events(prepared, target)
-            self.last_metrics["effectiveChunkCharacters"] = target
+        return prepared, chunks, target
+
+    def estimate(self, candidate: Candidate) -> dict[str, Any]:
+        """Plan the same partition and valid chunk checkpoints, without invoking inference."""
+        api = self._api()
+        prepared, chunks, target = self._prepared_chunks(candidate)
+        cache = self._cache(candidate)
+        source_by_id = {event.id: event for event in candidate.events}
+        pending_characters = 0
+        pending_tokens = 0
+        reused = 0
+        estimators: set[str] = set()
+        for index, chunk in enumerate(chunks, 1):
+            ids = {event.id for event in chunk}
+            prompt = render_chunk_prompt(self.prompt, thread_id=candidate.thread_id, part=index,
+                                         part_count=len(chunks), events=[event.as_dict() for event in chunk])
+            key = content_hash({"prompt": prompt, "allowedIds": sorted(ids), "overview": False})
+            cached = cache.read(key) if cache else None
+            if cached is not None:
+                try:
+                    if api and api.azure and (not cache or not cache.last_response_model):
+                        raise ValueError("Azure checkpoint lacks response model")
+                    validate_note_data(cached, ids, profile=self.profile)
+                    validate_timeline(
+                        cached["timeline"], tuple(replace(source_by_id[e.id], text=e.text) for e in chunk))
+                except (PipelineError, ValueError):
+                    cached = None
+            if cached is not None:
+                reused += 1
+                continue
+            schema = deepcopy(self.inference_schema)
+            schema["properties"]["timeline"]["items"]["properties"]["eventId"] = {
+                "type": "string", "enum": sorted(ids)}
+            if api:
+                api.allowed_ids = sorted(ids)
+                pending_tokens += api.estimate(prompt, schema)
+                estimators.add(getattr(api, "estimator", "test-estimate"))
+                pending_characters += len(api.body(prompt, schema)["messages"][0]["content"])
+            else:
+                pending_characters += len(prompt)
+        pending = len(chunks) - reused
+        merge = int(len(chunks) > 1)
+        base_calls = pending + merge
+        # Future merge text and generated answers do not exist during a dry-run.
+        # Reserve a full configured merge input and maximum output for every base call.
+        total_tokens = pending_tokens + merge * api.limits.input_tokens if api else None
+        output_ceiling = base_calls * api.limits.output_tokens if api else None
+        cost = None
+        if api and api.pricing and total_tokens is not None and output_ceiling is not None:
+            cost = api.pricing.cost(total_tokens, output_ceiling)
+        return {
+            "status": "estimated", "provider": self.config.provider, "model": self.config.model,
+            **({"requestedDeployment": self.config.model, "costBudgetEnforced": api.pricing is not None}
+               if api and api.azure else {}),
+            "preparedTextCharacters": sum(len(e.text) for e in prepared),
+            "pendingPromptCharacters": pending_characters, "chunkCount": len(chunks),
+            "effectiveChunkCharacters": target, "pendingChunkCount": pending, "cachedChunkCount": reused,
+            "baseCalls": base_calls, "mergeCallsCeiling": merge,
+            "chunkInputTokensEstimate": pending_tokens if api else None,
+            "inputTokensEstimate": total_tokens, "outputTokensCeiling": output_ceiling,
+            "baseCostCeilingJpy": cost, "excludesRetries": True, "mergeUsesInputCeiling": bool(merge and api),
+            "estimators": sorted(estimators),
+            "commandMaxCalls": api.limits.max_calls if api else None,
+            "commandMaxCostJpy": api.limits.max_cost_jpy if api and api.pricing else None,
+            "mayExceedCommandBudget": bool(api and (base_calls > api.limits.max_calls
+                or cost is not None and cost > api.limits.max_cost_jpy)),
+            "assumptions": ["merge may be reused later; reserved here until its exact input is known",
+                            "retry and repair calls are excluded; answers reserve their configured maximum"],
+        }
+
+    def generate(self, candidate: Candidate) -> dict[str, Any]:
+        self.state_items = []
+        self.state_context = {}
+        self.state_events = candidate.events
+        self.overview_schema["properties"].pop("stateItemReviews", None)
+        if "stateItemReviews" in self.overview_schema["required"]:
+            self.overview_schema["required"].remove("stateItemReviews")
+        api = self._api()
+        self.api_record_start = len(api.records) if api else 0
+        self.last_metrics = {
+            "chunkCount": 0,
+            "modelCalls": 0,
+            "transportRetries": 0,
+            "semanticRetries": 0,
+            "submittedPromptCharacters": 0,
+            "reusedChunks": 0,
+            "reusedReductions": 0,
+            "rejectedCheckpoints": 0,
+        }
+        cache = self._cache(candidate)
+        prepared, chunks, target = self._prepared_chunks(candidate)
+        allowed_ids = {event.id for event in prepared}
+        self.last_metrics["effectiveChunkCharacters"] = target
         self.last_metrics["chunkCount"] = len(chunks)
         self.last_metrics["embeddedImageCount"] = sum(e.embedded_image_count for e in prepared)
         self.last_metrics["imageEncodedCharacters"] = sum(e.image_encoded_characters for e in prepared)
@@ -1314,11 +1431,20 @@ class ProviderSummarizer:
         if len(partials) == 1:
             result = partials[0]
         else:
-            reduction_prompt = render_reduction_prompt(self.prompt, thread_id=candidate.thread_id, partials=partials)
+            self.state_items = collect_state_items(partials)
+            if self.state_items:
+                self.overview_schema["properties"]["stateItemReviews"] = deepcopy(REVIEW_SCHEMA)
+                self.overview_schema["required"].append("stateItemReviews")
+                self.state_context = {"stateItems": self.state_items, "partials": compact_merge_partials(partials)}
+            reduction_prompt = render_reduction_prompt(
+                self.prompt, thread_id=candidate.thread_id, partials=partials, state_items=self.state_items)
             result = self._stage_invoke(
                 reduction_prompt, allowed_ids, candidate.thread_id, overview_only=True,
                 cache=cache,
             )
+            self.last_metrics["stateItemReviews"] = deepcopy(result.get("stateItemReviews", []))
+            self.last_metrics["stateItemCount"] = len(self.state_items)
+            result = reconcile_state(result, self.state_items, candidate.events)
             # Timeline entries never pass through lossy model reduction a second time.
             result["timeline"] = [item for partial in partials for item in partial["timeline"]]
         limitations = list(result["sourceLimitations"])
@@ -1341,6 +1467,9 @@ class ProviderSummarizer:
         result["sourceLimitations"] = list(dict.fromkeys(limitations))
         result["timeline"] = ordered_timeline(result["timeline"], candidate.events)
         validate_timeline(result["timeline"], candidate.events)
+        if api and api.azure:
+            self.last_metrics["responseModel"] = api.response_model
+            self.last_metrics["requestedDeployment"] = self.config.model
         return validate_note_data(result, allowed_ids, profile=self.profile)
 
 
@@ -1372,6 +1501,8 @@ def generator_fingerprint(config: PipelineConfig) -> str:
         "templateSha256": profile.template.sha256,
         "rendererVersion": RENDERER_VERSION,
     }
+    if config.provider == "azure-openai":
+        value["azureGenerationContract"] = 2
     if config.inference_options:
         value["inferenceOptions"] = config.inference_options
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -1490,6 +1621,7 @@ def render_note(
         ("generator", data.get("_generator", "Codex")),
         ("generatorProvider", data.get("_generatorProvider", "codex")),
         ("generatorModel", data.get("_generatorModel", DEFAULT_MODEL)),
+        *(([("generatorDeployment", data["_generatorDeployment"])]) if data.get("_generatorDeployment") else []),
         (
             "generatorReasoningEffort",
             data.get("_generatorReasoningEffort", DEFAULT_REASONING_EFFORT),
@@ -1669,7 +1801,9 @@ def write_candidate_note(
         data["fileSlug"] = file_slug_from_note_path(candidate, note_path)
         data["_generator"] = provider_name(config.provider)
         data["_generatorProvider"] = config.provider
-        data["_generatorModel"] = config.model
+        data["_generatorModel"] = (getattr(summarizer, "last_metrics", {}).get("responseModel") or "unknown"
+                                   if config.provider == "azure-openai" else config.model)
+        data["_generatorDeployment"] = config.model if config.provider == "azure-openai" else None
         data["_generatorReasoningEffort"] = config.reasoning_effort
         prompt = profile.prompt
         data["_summaryPromptId"] = prompt.prompt_id
@@ -1926,7 +2060,8 @@ def current_note_matches_generation(
         )
         and metadata.get("generator") == provider_name(config.provider)
         and metadata.get("generatorProvider", "codex") == config.provider
-        and metadata.get("generatorModel") == config.model
+        and (metadata.get("generatorDeployment") == config.model if config.provider == "azure-openai"
+                         else metadata.get("generatorModel") == config.model)
         and metadata.get("generatorReasoningEffort") == config.reasoning_effort
         and metadata.get("promptId") == prompt.prompt_id
         and metadata.get("promptVersion") == prompt.version
@@ -2022,6 +2157,9 @@ def validate_staged_session_notes(
                     "automatedValidation": "passed",
                     "sourceFingerprint": candidate.fingerprint,
                 }
+                if config.provider == "azure-openai":
+                    expected_scalars.pop("generatorModel")
+                    expected_scalars["generatorDeployment"] = config.model
                 if candidate.source_capture_ref:
                     expected_scalars["sourceCaptureRef"] = candidate.source_capture_ref
                 if candidate.source_capture_sha256:
@@ -2417,7 +2555,8 @@ def execute_rebuild(
                     and renderer_version == str(RENDERER_VERSION)
                     and metadata.get("generator") == provider_name(config.provider)
                     and metadata.get("generatorProvider", "codex") == config.provider
-                    and metadata.get("generatorModel") == config.model
+                    and (metadata.get("generatorDeployment") == config.model if config.provider == "azure-openai"
+                         else metadata.get("generatorModel") == config.model)
                     and metadata.get("generatorReasoningEffort") == config.reasoning_effort
                     and metadata.get("type") == "sessionNote"
                     and metadata.get("promptId") == prompt.prompt_id
@@ -2603,7 +2742,9 @@ def execute_rebuild(
             data["fileSlug"] = file_slug_from_note_path(candidate, note_path)
             data["_generator"] = provider_name(config.provider)
             data["_generatorProvider"] = config.provider
-            data["_generatorModel"] = config.model
+            data["_generatorModel"] = (getattr(summarizer, "last_metrics", {}).get("responseModel") or "unknown"
+                                       if config.provider == "azure-openai" else config.model)
+            data["_generatorDeployment"] = config.model if config.provider == "azure-openai" else None
             data["_generatorReasoningEffort"] = config.reasoning_effort
             prompt = profile.prompt
             data["_summaryPromptId"] = prompt.prompt_id

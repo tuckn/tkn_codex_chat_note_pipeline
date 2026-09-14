@@ -1,6 +1,6 @@
 # Data contract: chat evidence and Session Notes
 
-CLI 0.18.0 · config 7.1.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
+CLI 0.20.0 · config 7.2.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
 
 This is the file-based interface specification for tools that consume this CLI's
 output, including context curation and insight. It defines stable identities,
@@ -116,9 +116,9 @@ events in Source Notes; split offsets refer to the prepared text.
 ## Inference preparation and private checkpoints
 
 Session Note schema 6 and Canonical Events retain their existing public contracts.
-Generator prompt version 9 uses single-event inference anchors; the renderer still
+Generator prompt version 10 uses single-event inference anchors; the renderer still
 publishes `startEventId` / `endEventId` and can read older valid ranges. The Japanese
-prompt is 3.7 and English prompt is 1.3. Identical same-invocation command output
+prompt is 3.8 and English prompt is 1.4. Identical same-invocation command output
 may be replaced with `duplicateOfEventId` in inference input only. Completion
 metadata and source event IDs remain; ambiguous identity and different output are
 never compacted. Debug-escaped output must match a whole-string encoding of the
@@ -284,9 +284,10 @@ sources object in its JSON response still describes configuration value provenan
 
 Configuration 7.1.0 adds `azure-openai` and optional `limits`/`model_digest` for Ollama.
 Schema 7.0.x is normalized in memory; it is not persistently migrated. Public Session
-Note schema remains 6, and unconfigured Codex generator fingerprints remain unchanged.
-`inferenceOptions` binds Azure endpoint/deployment/model version/tenant/subscription,
-pricing and API limits or Ollama digest to cache identity and provenance agent records.
+Note schema remains 6. Version 0.18 left unconfigured Codex fingerprints unchanged;
+0.19 updates prompt identities for every provider as described below.
+In 0.18/0.19, `inferenceOptions` bound Azure endpoint/deployment/model version/tenant/subscription,
+pricing and API limits to cache identity. The current contract is described below.
 No bearer token is persisted. Reports add optional `generationMetrics.apiRequests`;
 usage unavailable from a provider or failed attempt stays null. `estimatedCostJpy` uses
 observed tokens at configured normal input/output rates, without cached-input discount.
@@ -306,3 +307,76 @@ per-request alias table and restores them before public validation. Source prose
 not rewritten. All API citation fields reference one shared enum; overview repairs
 receive permitted IDs. Per-command budgets are shared across selected acquisition
 sources; no budget is shared between separate processes.
+
+
+## Generation estimates, usage and state reconciliation (0.19.0)
+
+Per-thread `generationEstimate` and aggregate `generationEstimate` are additive report
+fields in source schema 2 / multi-source schema 3. Estimates include selected generation
+candidates only and report preparedTextCharacters, pendingPromptCharacters, baseCalls,
+inputTokensEstimate, outputTokensCeiling and baseCostCeilingJpy. Token values aggregate
+requests, not a single context. Unavailable provider token/price data is null. Future
+merge inputs reserve the configured full input limit; output ceilings reserve each
+base call's maximum. Repair/retry calls are excluded. Known chunk checkpoints are
+validated and excluded; final merge reuse is not assumed. mayExceedCommandBudget flags
+base work above the shared command limits; it is not a guarantee of completion.
+
+Both preview and runtime token estimates are read-only. A hash-verified local o200k_base
+cache supplies named-tokenizer counts plus margin; no cache download/repair is performed.
+Missing/corrupt cache falls back to utf8-byte-upper-bound. Codex/command providers report
+characters only, as their injected context and billing are not observable. Dry-run makes
+no network request, token acquisition, file/cache/report/lock write or inference call.
+
+apiRequests adds requestSequence, stage and outputTokenLimit. usageTotals is present
+per thread and per source/command. Unknown values yield null complete totals plus known*
+subtotals and *MissingRequests counts. Retries and failed requests remain separate records;
+reservations remain distinct from estimated observed-token cost. Durable analysis should
+sum unique per-source run reports, not copies in last-run.json or compact stdout.
+
+Merge inference privately adds stateItemReviews when partial state items exist. Every
+item requires exactly one retain/resolved disposition. Retain deterministically copies
+the original text/citations into its original state category. Resolved requires a reason
+and later, known event IDs in the same history. Semantic sufficiency remains a model
+judgment. Reviews are kept in generationMetrics and removed before public schema-6
+validation/rendering. Repair receives state context; invalid reviews cannot become
+accepted checkpoints. Narrative source aliases are rejected unless present literally
+in the original source. Only redundant timeline endpoints are removed from merge input;
+final source-linked timeline records are unchanged.
+
+API request records additionally identify `inputJsonFormat` (`default` or `compact`).
+Merge repairs retain partial facts/citations and omit the redundant top-level allowed-ID list.
+Compact repair JSON removes formatting whitespace only. Resolution evidence may include
+earlier context, but must also include at least one event later than the pending state
+within each originating history.
+
+
+## Browser authentication and deployment identity (0.20.0)
+
+Config 7.2.0 supports a minimal Azure provider: model (= deployment), reasoning_effort
+and azure.endpoint. Limits default when omitted; tenant_id and deployment-keyed pricing
+are optional. Legacy Azure fields in schema-7 configs are normalized before layer merging
+and runtime overrides: azure.deployment -> provider.model, flat rates -> azure.pricing
+under that deployment, model_version and subscription_id removed. No config file write.
+Codex/Ollama settings and fingerprints retain their prior meaning.
+
+Azure authentication uses InteractiveBrowserCredential, an endpoint/optional-tenant account
+record below ~/.tkn/codex_chat_note_pipeline/authentication, and a named encrypted SDK token
+cache. It does not launch az or read/copy another application's credentials. Authentication
+is lazy, never happens during dry-run, and opens a browser only when cached authorization
+requires interaction. Failure occurs before the generation HTTP submission.
+
+Azure request model is the configured deployment. apiRequests.model is the unparsed actual
+response identity, never a configured guess; requestedDeployment is recorded separately.
+A nonempty actual model is required. Azure notes add generatorDeployment and use generatorModel
+for the observed identity; provenance agent.model is actual and requestedDeployment is explicit.
+Pricing applies only when the requested deployment has an entry, and the applied rates are
+recorded with each request. No matching price means null cost/reservation and no JPY cap;
+token/call limits still apply. Rates can become stale after server-side deployment changes.
+
+Azure generation identity adds azureGenerationContract=2 to invalidate old checkpoints.
+Checkpoint envelope version 2 hashes both value and responseModel; other providers retain
+version 1. A resumed stage supplies the observed model to the runner, and any later differing
+response/checkpoint causes a reported failure, including that request's actual usage.
+Completed/current or entirely cached work cannot discover a server-side change without a
+request; --force starts new generation without reusing those stages. No automatic Azure
+management API or chargeable probe is added to dry-run or cache reuse.
