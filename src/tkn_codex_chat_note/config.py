@@ -15,7 +15,7 @@ from typing import Annotated, Any, Literal, Self
 import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
-from .api_settings import ApiLimits, AzureSettings, normalize_azure_generation
+from .api_settings import ApiLimits, AzurePricing, AzureSettings, normalize_azure_generation
 from .config_validation import validate_config_layer
 from .inference import InferenceProvider, validate_ollama_base_url
 from .session_notes import (
@@ -29,8 +29,8 @@ from .session_notes import (
     atomic_write_text,
 )
 
-CONFIG_SCHEMA_VERSION: Literal["7.2.0"] = "7.2.0"
-_CONFIG_SCHEMA_VERSION_PARTS = (7, 2, 0)
+CONFIG_SCHEMA_VERSION: Literal["8.0.0"] = "8.0.0"
+_CONFIG_SCHEMA_VERSION_PARTS = (8, 0, 0)
 _CONFIG_SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 APP_DIRECTORY_NAME = "codex_chat_note_pipeline"
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
@@ -50,8 +50,8 @@ PROVIDER_TRANSPORT_DEFAULTS: dict[InferenceProvider, tuple[str, str]] = {
     "codex": ("executable", "codex"),
     "claude-code": ("executable", "claude"),
     "github-copilot": ("executable", "copilot"),
-    "ollama": ("base_url", "http://127.0.0.1:11434"),
-    "azure-openai": ("base_url", ""),
+    "ollama": ("endpoint", "http://127.0.0.1:11434"),
+    "azure-openai": ("endpoint", ""),
 }
 
 
@@ -76,16 +76,69 @@ def default_user_cache_root() -> Path:
     return base / APP_DIRECTORY_NAME
 
 
+class AuthenticationSettings(BaseModel):
+    """Optional browser authentication account selection; never credentials."""
+
+    model_config = ConfigDict(extra="forbid")
+    tenant_id: str | None = None
+
+    @field_validator("tenant_id")
+    @classmethod
+    def tenant_guid(cls, value: str | None) -> str | None:
+        return AzureSettings.guid(value)
+
+
+def normalize_generation(value: Any) -> Any:
+    """Normalize old provider-keyed layers before merging; never rewrite input files."""
+    if not isinstance(value, dict):
+        return value
+    result = normalize_azure_generation(value)
+    if {"active_provider", "providers"}.intersection(result) and {"active_profile", "profiles"}.intersection(result):
+        raise ValueError("generation cannot contain both legacy provider keys and named profile keys")
+    if "active_provider" in result:
+        result["active_profile"] = result.pop("active_provider")
+    if "providers" in result:
+        entries = result.pop("providers")
+        if not isinstance(entries, dict):
+            raise ValueError("generation.providers must be a mapping")
+        for name, settings in entries.items():
+            if name not in PROVIDER_TRANSPORT_DEFAULTS:
+                raise ValueError(f"unsupported legacy inference provider: {name}")
+            if not isinstance(settings, dict):
+                continue
+            if "provider" in settings:
+                raise ValueError("legacy providers entries cannot override their provider identity")
+            settings["provider"] = name
+            if "base_url" in settings:
+                if "endpoint" in settings:
+                    raise ValueError("cannot contain both base_url and endpoint")
+                settings["endpoint"] = settings.pop("base_url")
+            if "azure" in settings:
+                azure = settings.pop("azure")
+                if not isinstance(azure, dict):
+                    raise ValueError("legacy azure must be a mapping")
+                tenant = azure.pop("tenant_id", None)
+                if tenant is not None:
+                    azure["authentication"] = {"tenant_id": tenant}
+                if set(azure).intersection(settings):
+                    raise ValueError("conflicting legacy azure and profile settings")
+                settings.update(azure)
+        result["profiles"] = entries
+    return result
+
+
 class ProviderConfig(BaseModel):
-    """Configuration for one inference provider."""
+    """One named generation profile with an explicit transport provider."""
 
     model_config = ConfigDict(extra="forbid")
 
+    provider: InferenceProvider
     model: str
     reasoning_effort: ReasoningEffort = "high"
     executable: str | None = None
-    base_url: str | None = None
-    azure: AzureSettings | None = None
+    endpoint: str | None = None
+    authentication: AuthenticationSettings | None = None
+    pricing: dict[str, AzurePricing] = Field(default_factory=dict)
     limits: ApiLimits | None = None
     model_digest: str | None = None
 
@@ -105,59 +158,75 @@ class ProviderConfig(BaseModel):
             raise ValueError("provider executable must not be empty")
         return value.strip()
 
+    @model_validator(mode="after")
+    def validate_transport(self) -> Self:
+        if self.provider == "azure-openai":
+            if self.endpoint is None:
+                raise ValueError("azure-openai requires endpoint")
+            if self.executable is not None or self.model_digest is not None:
+                raise ValueError("azure-openai does not support executable/model_digest")
+            self.endpoint = AzureSettings.endpoint_url(self.endpoint)
+            if self.limits is None:
+                self.limits = ApiLimits()
+        else:
+            if self.authentication is not None or self.pricing:
+                raise ValueError("authentication/pricing require azure-openai provider")
+            if self.provider == "ollama":
+                if self.executable is not None:
+                    raise ValueError("ollama does not support executable")
+                self.endpoint = validate_ollama_base_url(
+                    self.endpoint if self.endpoint is not None else "http://127.0.0.1:11434")
+            else:
+                if self.endpoint is not None or self.limits is not None or self.model_digest is not None:
+                    raise ValueError("endpoint/limits/model_digest are only supported for API providers")
+                if self.executable is None:
+                    self.executable = PROVIDER_TRANSPORT_DEFAULTS[self.provider][1]
+        return self
 
-def _default_providers() -> dict[InferenceProvider, ProviderConfig]:
-    return {
-        "codex": ProviderConfig(
-            model=DEFAULT_MODEL,
-            reasoning_effort="high",
-            executable="codex",
-        )
-    }
+    @property
+    def azure(self) -> AzureSettings | None:
+        # Preserve the internal API/cache contract across this configuration-only migration.
+        if self.provider != "azure-openai":
+            return None
+        assert self.endpoint is not None
+        return AzureSettings(endpoint=self.endpoint, pricing=self.pricing,
+                             tenant_id=self.authentication.tenant_id if self.authentication else None)
+
+    def inference_options(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.azure is not None:
+            result["azure"] = self.azure.model_dump(mode="json")
+        if self.limits is not None:
+            result["limits"] = self.limits.model_dump(mode="json")
+        if self.model_digest is not None:
+            result["model_digest"] = self.model_digest
+        return result
+
+
+def _default_profiles() -> dict[str, ProviderConfig]:
+    return {"codex": ProviderConfig(provider="codex", model=DEFAULT_MODEL)}
 
 
 class GenerationConfig(BaseModel):
-    """Active inference provider and provider-specific generation settings."""
+    """Named execution profiles, independent of the Session Note language profile."""
 
     model_config = ConfigDict(extra="forbid")
 
     session_note_profile: Literal["default-jp", "default-en"] = "default-jp"
-    active_provider: InferenceProvider = "codex"
-    providers: dict[InferenceProvider, ProviderConfig] = Field(default_factory=_default_providers)
+    active_profile: str = "codex"
+    profiles: dict[str, ProviderConfig] = Field(default_factory=_default_profiles)
 
     @model_validator(mode="before")
     @classmethod
-    def normalize_legacy_azure(cls, value: Any) -> Any:
-        return normalize_azure_generation(value)
+    def normalize_legacy(cls, value: Any) -> Any:
+        return normalize_generation(value)
 
     @model_validator(mode="after")
-    def validate_provider_settings(self) -> Self:
-        if self.active_provider not in self.providers:
-            raise ValueError(f"active_provider {self.active_provider!r} must have a matching entry under providers")
-        for provider, settings in self.providers.items():
-            if provider == "azure-openai":
-                if settings.azure is None:
-                    raise ValueError("azure-openai requires azure.endpoint")
-                if settings.limits is None:
-                    settings.limits = ApiLimits()
-                if settings.executable is not None or settings.base_url is not None:
-                    raise ValueError("azure-openai uses azure.endpoint, not executable/base_url")
-                continue
-            if settings.azure is not None:
-                raise ValueError("azure settings require azure-openai provider")
-            if provider != "ollama" and (settings.limits is not None or settings.model_digest is not None):
-                raise ValueError("API limits/model_digest are only supported for API providers")
-            if provider == "ollama":
-                if settings.executable is not None:
-                    raise ValueError("generation.providers.ollama does not support executable")
-                if settings.base_url is None:
-                    raise ValueError("generation.providers.ollama.base_url is required")
-                settings.base_url = validate_ollama_base_url(settings.base_url)
-                continue
-            if settings.base_url is not None:
-                raise ValueError(f"generation.providers.{provider}.base_url is not supported")
-            if settings.executable is None:
-                raise ValueError(f"generation.providers.{provider}.executable is required")
+    def validate_profiles(self) -> Self:
+        if any(not name.strip() or name != name.strip() for name in self.profiles):
+            raise ValueError("profile names must be nonempty with no surrounding whitespace")
+        if self.active_profile not in self.profiles:
+            raise ValueError(f"active_profile {self.active_profile!r} must have a matching entry under profiles")
         return self
 
 
@@ -201,7 +270,7 @@ class AppConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["7.2.0"] = CONFIG_SCHEMA_VERSION
+    schema_version: Literal["8.0.0"] = CONFIG_SCHEMA_VERSION
     installed_at: datetime | None = None
     sources: dict[SourceId, CodexSourceConfig] = Field(default_factory=lambda: {DEFAULT_SOURCE_ID: CodexSourceConfig()})
     cache_root: Path = Field(default_factory=default_user_cache_root)
@@ -345,11 +414,11 @@ class AppConfig(BaseModel):
 
     @property
     def provider(self) -> InferenceProvider:
-        return self.generation.active_provider
+        return self.active_provider_config.provider
 
     @property
     def active_provider_config(self) -> ProviderConfig:
-        return self.generation.providers[self.provider]
+        return self.generation.profiles[self.generation.active_profile]
 
     @property
     def model(self) -> str:
@@ -360,7 +429,7 @@ class AppConfig(BaseModel):
         return self.active_provider_config.reasoning_effort
 
     def _provider_executable(self, provider: InferenceProvider, default: str) -> str:
-        settings = self.generation.providers.get(provider)
+        settings = self.active_provider_config if self.provider == provider else None
         return settings.executable if settings is not None and settings.executable is not None else default
 
     @property
@@ -377,9 +446,9 @@ class AppConfig(BaseModel):
 
     @property
     def ollama_base_url(self) -> str:
-        settings = self.generation.providers.get("ollama")
-        if settings is not None and settings.base_url is not None:
-            return settings.base_url
+        settings = self.active_provider_config if self.provider == "ollama" else None
+        if settings is not None and settings.endpoint is not None:
+            return settings.endpoint
         return "http://127.0.0.1:11434"
 
     def session_note_pipeline_config(self, *, allow_missing_watermark: bool = False) -> PipelineConfig:
@@ -395,12 +464,12 @@ class AppConfig(BaseModel):
             source_id=self.source_id,
             session_note_profile=self.generation.session_note_profile,
             provider=self.provider,
+            generation_profile=self.generation.active_profile,
             codex_bin=self.codex_executable,
             claude_bin=self.claude_executable,
             copilot_bin=self.copilot_executable,
             ollama_base_url=self.ollama_base_url,
-            inference_options={key: value for key, value in self.active_provider_config.model_dump(mode="json").items()
-                               if key in {"azure", "limits", "model_digest"} and value is not None},
+            inference_options=self.active_provider_config.inference_options(),
             model=self.model,
             reasoning_effort=self.reasoning_effort,
             idle_minutes=self.idle_minutes,
@@ -466,7 +535,17 @@ def _mark_sources(sources: dict[str, str], value: dict[str, Any], label: str) ->
 def _deep_merge(target: dict[str, Any], update: dict[str, Any]) -> None:
     for key, value in update.items():
         current = target.get(key)
-        if key == "sources" and value == {}:
+        if (key == "profiles" and isinstance(value, dict) and isinstance(current, dict)):
+            for name, settings in value.items():
+                previous = current.get(name)
+                if (isinstance(settings, dict) and isinstance(previous, dict)
+                        and "provider" in settings and settings["provider"] != previous.get("provider")):
+                    current[name] = deepcopy(settings)
+                elif isinstance(settings, dict) and isinstance(previous, dict):
+                    _deep_merge(previous, settings)
+                else:
+                    current[name] = deepcopy(settings)
+        elif key == "sources" and value == {}:
             target[key] = {}
         elif isinstance(current, dict) and isinstance(value, dict):
             _deep_merge(current, value)
@@ -476,7 +555,7 @@ def _deep_merge(target: dict[str, Any], update: dict[str, Any]) -> None:
 
 def _without_null_provider_settings(value: dict[str, Any]) -> dict[str, Any]:
     generation = value.get("generation")
-    providers = generation.get("providers") if isinstance(generation, dict) else None
+    providers = generation.get("profiles") if isinstance(generation, dict) else None
     if isinstance(providers, dict):
         for settings in providers.values():
             if isinstance(settings, dict):
@@ -503,7 +582,7 @@ def _reject_legacy_generation_config(value: dict[str, Any], path: Path) -> None:
         raise PipelineError(
             f"configuration schema v1 is no longer supported: {path}{detail}; "
             f'set schema_version: "{CONFIG_SCHEMA_VERSION}" and move generation settings under '
-            "generation.active_provider and generation.providers"
+            "generation.active_profile and generation.profiles"
         )
 
 
@@ -537,6 +616,16 @@ def _inspect_config_schema(value: dict[str, Any], path: Path) -> dict[str, Any]:
     parts = tuple(int(part) for part in raw_version.split("."))
     current_major, current_minor, _current_patch = _CONFIG_SCHEMA_VERSION_PARTS
     major, minor, _patch = parts
+    if major == 7 and minor > 2:
+        raise PipelineError(f"unsupported newer configuration schema_version {raw_version!r}; "
+                            "only schema 7.0-7.2 can migrate to schema 8")
+    if major == 7 and minor <= 2:
+        return {
+            "schemaVersion": raw_version,
+            "effectiveSchemaVersion": CONFIG_SCHEMA_VERSION,
+            "migration": {"kind": "named-generation-profiles", "fromVersion": raw_version,
+                          "toVersion": CONFIG_SCHEMA_VERSION, "persistentConfigUpdated": False},
+        }
     if major != current_major:
         direction = "newer" if major > current_major else "older"
         action = (
@@ -644,9 +733,10 @@ def _without_retired_user_prompt(
 
 def _new_provider_override(provider: InferenceProvider, model: str, effort: str | None) -> dict[str, Any]:
     if provider == "azure-openai":
-        raise PipelineError("configure azure-openai model (deployment) and azure.endpoint in a config file first")
+        raise PipelineError("configure azure-openai model (deployment) and endpoint in a config file first")
     transport_key, transport_value = PROVIDER_TRANSPORT_DEFAULTS[provider]
     return {
+        "provider": provider,
         "model": model,
         "reasoning_effort": effort or "high",
         transport_key: transport_value,
@@ -663,74 +753,67 @@ def _apply_runtime_overrides(
     if "schema_version" in overrides:
         raise PipelineError("schema_version is configuration-source metadata and cannot be a CLI override")
     resolved = _resolve_paths(overrides, working)
-    generation_options = {key: resolved.pop(key) for key in tuple(resolved) if key in LEGACY_GENERATION_KEYS}
+    generation_options = {key: resolved.pop(key) for key in tuple(resolved)
+                          if key in LEGACY_GENERATION_KEYS or key == "profile"}
+    if "generation" in resolved:
+        resolved["generation"] = normalize_generation(resolved["generation"])
     _deep_merge(merged, resolved)
     _mark_sources(sources, resolved, "CLI option")
     if not generation_options:
         return
-
     generation = merged.get("generation")
-    if not isinstance(generation, dict):
-        raise PipelineError("generation must be a YAML mapping")
-    providers = generation.get("providers")
-    if not isinstance(providers, dict):
-        raise PipelineError("generation.providers must be a YAML mapping")
-
-    requested_provider = generation_options.get("provider")
-    active_provider = str(requested_provider or generation.get("active_provider", "codex"))
-    if active_provider not in PROVIDER_TRANSPORT_DEFAULTS:
-        raise PipelineError(f"unsupported inference provider: {active_provider}")
-    if requested_provider is not None:
-        generation["active_provider"] = active_provider
-        sources["generation.active_provider"] = "CLI option"
-
-    provider_settings = providers.get(active_provider)
-    model_override = generation_options.get("model")
-    effort_override = generation_options.get("reasoning_effort")
-    if provider_settings is None:
-        if model_override is None:
-            raise PipelineError(
-                f"provider {active_provider!r} is not configured under generation.providers; "
-                "add its settings or pass --model"
-            )
-        provider_settings = _new_provider_override(
-            active_provider,
-            str(model_override),
-            str(effort_override) if effort_override is not None else None,
-        )
-        providers[active_provider] = provider_settings
-        _mark_sources(
-            sources,
-            {"generation": {"providers": {active_provider: provider_settings}}},
-            "CLI option",
-        )
-    elif not isinstance(provider_settings, dict):
-        raise PipelineError(f"generation.providers.{active_provider} must be a YAML mapping")
-
-    if model_override is not None:
-        provider_settings["model"] = model_override
-        sources[f"generation.providers.{active_provider}.model"] = "CLI option"
-    if effort_override is not None:
-        provider_settings["reasoning_effort"] = effort_override
-        sources[f"generation.providers.{active_provider}.reasoning_effort"] = "CLI option"
-
+    if not isinstance(generation, dict) or not isinstance(generation.get("profiles"), dict):
+        raise PipelineError("generation.profiles must be a YAML mapping")
+    profiles = generation["profiles"]
+    requested = generation_options.get("profile")
+    provider = generation_options.get("provider")
+    if requested is not None and provider is not None:
+        raise PipelineError("use either --profile or --provider, not both")
+    name = str(requested or generation.get("active_profile", "codex"))
+    model = generation_options.get("model")
+    effort = generation_options.get("reasoning_effort")
+    if provider is not None:
+        if provider not in PROVIDER_TRANSPORT_DEFAULTS:
+            raise PipelineError(f"unsupported inference provider: {provider}")
+        matches = [key for key, item in profiles.items()
+                   if isinstance(item, dict) and item.get("provider") == provider]
+        if len(matches) > 1:
+            raise PipelineError(f"multiple profiles use {provider!r}: {', '.join(matches)}; select --profile")
+        if matches:
+            name = matches[0]
+        else:
+            if model is None:
+                raise PipelineError(f"provider {provider!r} is not configured; add a profile or pass --model")
+            name = str(provider)
+            if name in profiles:
+                raise PipelineError(f"profile name {name!r} already belongs to another provider; configure --profile")
+            profiles[name] = _new_provider_override(provider, str(model), str(effort) if effort else None)
+            _mark_sources(sources, {"generation": {"profiles": {name: profiles[name]}}}, "CLI option")
+    if name not in profiles:
+        raise PipelineError(f"unknown generation profile: {name}; configure generation.profiles.{name}")
+    settings = profiles[name]
+    if not isinstance(settings, dict):
+        raise PipelineError(f"generation.profiles.{name} must be a YAML mapping")
+    if requested is not None or provider is not None:
+        generation["active_profile"] = name
+        sources["generation.active_profile"] = "CLI option"
+    for field, value in (("model", model), ("reasoning_effort", effort)):
+        if value is not None:
+            settings[field] = value
+            sources[f"generation.profiles.{name}.{field}"] = "CLI option"
     transport_options = {
         "codex_executable": ("codex", "executable"),
         "claude_executable": ("claude-code", "executable"),
         "copilot_executable": ("github-copilot", "executable"),
-        "ollama_base_url": ("ollama", "base_url"),
+        "ollama_base_url": ("ollama", "endpoint"),
     }
-    for option, (provider, setting) in transport_options.items():
+    for option, (kind, field) in transport_options.items():
         if option not in generation_options:
             continue
-        target = providers.get(provider)
-        if not isinstance(target, dict):
-            raise PipelineError(
-                f"provider {provider!r} is not configured under generation.providers; "
-                f"select it with --provider and supply --model before using --{option.replace('_', '-')}"
-            )
-        target[setting] = generation_options[option]
-        sources[f"generation.providers.{provider}.{setting}"] = "CLI option"
+        if settings.get("provider") != kind:
+            raise PipelineError(f"--{option.replace('_', '-')} requires an active {kind} profile")
+        settings[field] = generation_options[option]
+        sources[f"generation.profiles.{name}.{field}"] = "CLI option"
 
 
 def resolve_app_config(
@@ -775,6 +858,7 @@ def resolve_app_config(
             "migration": None,
         }
     ]
+    declared_profiles = False
     for kind, path in layer_specs:
         if path is None:
             continue
@@ -798,12 +882,17 @@ def resolve_app_config(
                 _config_properties(raw_layer),
                 remove_configured=False,
             )
-            if "generation" in layer:
-                layer["generation"] = normalize_azure_generation(layer["generation"])
             try:
+                if "generation" in layer:
+                    layer["generation"] = normalize_generation(layer["generation"])
                 validate_config_layer(AppConfig, layer)
             except ValueError as exc:
                 raise PipelineError(f"invalid configuration layer {path}: {exc}") from exc
+            raw_generation = raw_layer.get("generation")
+            if isinstance(raw_generation, dict) and ("profiles" in raw_generation or "providers" in raw_generation):
+                if not declared_profiles and "profiles" in raw_generation:
+                    merged["generation"]["profiles"] = {}
+                declared_profiles = True
             resolved_layer = _resolve_paths(layer, path.parent)
             _deep_merge(merged, resolved_layer)
             _mark_sources(sources, resolved_layer, f"{kind}: {path}")
@@ -949,8 +1038,13 @@ def initialization_config(
             if key in raw:
                 raw.pop(key)
                 removed.append(key)
+        if "generation" in raw:
+            raw["generation"] = normalize_generation(raw["generation"])
         raw = _resolve_paths(raw, target.parent)
     merged = _default_config_document()
+    original_generation = _read_layer(target).get("generation")
+    if isinstance(original_generation, dict) and "profiles" in original_generation:
+        merged["generation"]["profiles"] = {}
     _deep_merge(merged, raw)
     _apply_runtime_overrides(
         merged,

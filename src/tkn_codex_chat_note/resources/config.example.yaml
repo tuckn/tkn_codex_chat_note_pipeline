@@ -1,4 +1,4 @@
-schema_version: "7.2.0"
+schema_version: "8.0.0"
 # One shared cache base; codex/source_id partitions are automatic.
 cache_root: ~/.cache/codex_chat_note_pipeline
 
@@ -26,28 +26,33 @@ generation:
   # Inference is independent of the Codex acquisition sources.
   # Built-in profiles only: default-jp (Japanese) or default-en (English).
   session_note_profile: default-jp
-  active_provider: codex
-  providers:
+  # Profile names are arbitrary; provider explicitly selects the implementation.
+  # Select with active_profile or --profile <name> (before the command).
+  active_profile: codex
+  profiles:
     codex:
+      provider: codex
       model: gpt-5.6-sol
       reasoning_effort: high
-      executable: codex
-    # To use Azure, uncomment and set active_provider: azure-openai.
-    # model is the Azure deployment name; the response supplies the actual model identity.
+      executable: codex  # Optional executable name/path; defaults to codex.
+    # To use Azure, uncomment and set active_profile: azure-high.
+    # model is the deployment name; actual model identity comes from the response.
     # Azure CLI is not required. Browser sign-in occurs only when needed.
-    # azure-openai:
+    # azure-high:
+    #   provider: azure-openai
+    #   endpoint: https://<resource>.openai.azure.com/openai/v1/
     #   model: <deployment-name>
     #   reasoning_effort: high
-    #   azure:
-    #     endpoint: https://<resource>.openai.azure.com/openai/v1/
-    #     # Optional: tenant_id: <tenant-guid>
-    #     # Optional, deployment-specific rates. Omit for token-only estimates.
-    #     pricing:
-    #       <deployment-name>:
-    #         input_jpy_per_million: 100.0  # Placeholder; use your confirmed rate.
-    #         output_jpy_per_million: 500.0
-    #         pricing_date: "YYYY-MM-DD"
-    #   # Optional; defaults are shown. Cost limit requires configured pricing.
+    #   # Optional account selection:
+    #   # authentication:
+    #   #   tenant_id: <tenant-guid>
+    #   # Optional deployment-specific rates; omit for token-only estimates.
+    #   pricing:
+    #     <deployment-name>:
+    #       input_jpy_per_million: 100.0  # Placeholder; use your confirmed rate.
+    #       output_jpy_per_million: 500.0
+    #       pricing_date: "YYYY-MM-DD"
+    #   # Optional; defaults shown. Cost limit requires matching pricing.
     #   limits:
     #     input_tokens: 60000
     #     output_tokens: 16000
@@ -55,11 +60,12 @@ generation:
     #     chunk_characters: 120000
     #     max_calls: 30
     #     max_cost_jpy: 100
-    # Ollama remains available without Azure credentials or pricing.
-    # ollama:
-    #   model: <local-model-tag>
+    # The same provider can have multiple profiles, e.g. azure-low.
+    # local-gemma:
+    #   provider: ollama
+    #   model: <installed-local-model>
     #   reasoning_effort: high
-    #   base_url: http://127.0.0.1:11434
+    #   endpoint: http://127.0.0.1:11434
 idle_minutes: 30
 runtime_minutes: 230
 model_timeout_seconds: 1800

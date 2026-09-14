@@ -162,7 +162,7 @@ To change the storage directories, set `raw_root`, `data_root`, and `state_root`
 `cache_root` is shared and cannot be configured separately for each `sources.<source_id>` entry.
 
 ```yaml
-schema_version: "7.2.0"
+schema_version: "8.0.0"
 cache_root: ~/.cache/codex_chat_note_pipeline
 sources:
   my-windows-pc:
@@ -207,9 +207,9 @@ Changing language makes an existing note eligible for regeneration on the next b
 
 ### Chat sources and generation AI
 
-`sources` configures local Codex conversation directories; `generation.providers`
-configures the AI used to generate notes. `--provider` changes only
-`generation.active_provider`, independently of acquisition. Claude Code, Copilot
+`sources` configures local Codex conversation directories; `generation.profiles`
+configures the AI used to generate notes. `--profile` changes only
+`generation.active_profile`, independently of acquisition. Claude Code, Copilot
 and Ollama remain inference options; their chat acquisition is outside this CLI.
 
 Each top-level `sources` key is a stable `source_id`. Do not repeat `source_id`
@@ -277,9 +277,37 @@ WSL integration testing. Account-based filtering is not implemented.
 
 ### Inference providers
 
+`generation.profiles` keys are arbitrary configuration names. Each entry explicitly
+sets `provider`: `codex`, `claude-code`, `github-copilot`, `ollama`, or `azure-openai`.
+The name, executable and URL never determine the provider. `executable` is an optional
+CLI program/path; `endpoint` is an HTTP address. Azure `authentication`, `pricing` and
+`limits` are siblings of `model`, with no `azure` wrapper. CLI executable defaults are
+codex/claude/copilot; Ollama defaults to http://127.0.0.1:11434.
+
+Multiple profiles may share a provider (for example `azure-high` and `azure-low`).
+Select one with `tkn-codex-chat-note --profile azure-high pull --dry-run`.
+`--model` and `--reasoning-effort` override only that selected profile for the run.
+`--provider` is a compatibility selector: multiple matching profiles require an explicit
+`--profile`; with no match, `--model` can create a temporary CLI/Ollama profile.
+A profile name alone never creates or selects a different provider.
+`--profile` is independent of `--session-note-profile` (the note's language).
+
+Schema 7.0–7.2 is converted in memory before merging configuration layers:
+`active_provider` → `active_profile`, `providers` → `profiles`, map key → `provider`,
+`base_url` → `endpoint`, and the former `azure` fields move beside `model`.
+An optional Azure tenant moves to `authentication.tenant_id`. Files remain unchanged
+on read; `config show` displays the normalized values, sources and migration status.
+The first new-style profile map replaces built-in profile names; subsequent layers
+merge by profile name. Switching a profile's provider requires its new model/settings
+instead of inheriting the previous provider's connection. Mixed old/new keys in one
+layer are rejected. Storage paths, account caches and note IDs are unaffected.
+Renaming a profile alone does not invalidate generation checkpoints. Reports and
+provenance record `generationProfile` separately from the provider and model.
+
+
 This CLI acquires locally stored Codex conversation logs.
 You can change the generative AI model used for inference through
-`generation.active_provider` and the selected provider's `model` setting.
+`generation.active_profile` and the selected provider's `model` setting.
 Set the selected provider's model and transport; model
 availability and authentication belong to the chosen service.
 
@@ -288,25 +316,26 @@ availability and authentication belong to the chosen service.
 | `codex` | `executable: codex` | Standalone `codex exec` |
 | `claude-code` | `executable: claude` | Non-interactive Claude Code |
 | `github-copilot` | `executable: copilot` | Non-interactive Copilot CLI |
-| `ollama` | `base_url: http://127.0.0.1:11434` | Local chat endpoint, loopback addresses only |
+| `ollama` | `endpoint: http://127.0.0.1:11434` | Local chat endpoint, loopback addresses only |
 
 For example, replace the generation block to use an already available local model:
 
 ```yaml
 generation:
-  active_provider: ollama
-  providers:
-    ollama:
+  active_profile: local-gemma
+  profiles:
+    local-gemma:
+      provider: ollama
       model: <installed-local-model>
       reasoning_effort: high
-      base_url: http://127.0.0.1:11434
+      endpoint: http://127.0.0.1:11434
 ```
 
 CLI providers send the selected generation input through their configured
 service. Raw captures and provenance snapshots retain source content locally;
 choose storage appropriate for private conversation data. Generation profiles,
 output validation, and retry limits are application-owned. Changing a model,
-provider, reasoning setting, or generation profile invalidates affected stages.
+provider, reasoning setting, or Session Note language profile invalidates affected stages.
 
 ### Rebuilding without retaining an existing store
 
@@ -323,11 +352,11 @@ Edit the generated configuration and pass the same `--config` to subsequent
 `config show` and `clone` commands. An explicit new configuration path also works
 when default `config init` stops after detecting an old user configuration.
 Any current user configuration or `.tkn/config.yaml` loaded by the CLI must
-still use schema 7; `--config` does not bypass validation of lower layers.
+use schema 8 or supported schema 7.0–7.2; `--config` does not bypass validation of lower layers.
 
 ## Azure API and bounded Ollama generation
 
-Version 0.20.0 uses configuration schema 7.2.0. Azure CLI is not required.
+Version 0.21.0 uses configuration schema 8.0.0. Azure CLI is not required.
 Azure authentication follows the same SDK browser/persistent-cache approach as the
 local audio transcriber: try cached credentials, open a browser only when interaction
 is required, then retain the account record and encrypted token cache for later runs.
@@ -343,20 +372,20 @@ applications' caches and Azure CLI accounts are not copied or modified. To selec
 another account, remove only this application's matching account record while no run
 is active; the next generation requests browser account selection.
 
-Minimal Azure configuration under `generation.providers` (select
-`generation.active_provider: azure-openai`):
+Minimal Azure configuration under `generation.profiles` (select
+`generation.active_profile: azure-high`):
 
 ```yaml
-azure-openai:
+azure-high:
+  provider: azure-openai
   model: <deployment-name>
   reasoning_effort: high
-  azure:
-    endpoint: https://<resource>.openai.azure.com/openai/v1/
+  endpoint: https://<resource>.openai.azure.com/openai/v1/
 ```
 
 `model` is the requested Azure deployment, not a separately maintained underlying
 model name. Do not add `deployment`, `model_version`, or `subscription_id`.
-`azure.tenant_id` is optional for environments requiring explicit tenant selection.
+`authentication.tenant_id` is optional for environments requiring explicit tenant selection.
 The API response supplies the actual model identity, including its revision when
 returned; the CLI does not guess a revision. Notes use `generatorModel` for that
 identity and `generatorDeployment` for the requested deployment. Provenance records
@@ -365,7 +394,7 @@ likewise separate `model` from `requestedDeployment`.
 Prices are optional and keyed by deployment, so a `--model` override cannot silently
 reuse another deployment's rates. Without matching rates, token estimates and usage
 remain available, cost stays unknown, and the JPY cap is **not enforced**. Input/output
-and call limits still apply. Add verified rates under `azure` when a cost cap is needed:
+and call limits still apply. Add verified rates beside `model` and `endpoint` when a cost cap is needed:
 
 ```yaml
 pricing:
@@ -531,7 +560,7 @@ flowchart LR
 
 Default storage is ordered by role, the fixed acquisition application (`codex`), source environment,
 then kind of data. Explicit roots start directly with the kind of data. `P` below is the fixed acquisition provider (`codex`), `I` the source_id, `T` the
-threadKey, and `H` a content hash. Changing `generation.active_provider` does
+threadKey, and `H` a content hash. Changing `generation.active_profile` does
 not change these paths.
 
 | Storage path | Contents |

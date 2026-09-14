@@ -155,12 +155,12 @@ def _read_source_store(path: Path, selected_id: str | None = None) -> SourceStor
             raise ValueError(f"{field} must be a non-empty path string")
     if "source_id" in document and not isinstance(document["source_id"], str):
         raise ValueError("source_id must be a string")
-    if not re.fullmatch(r"(?:2|[2-7]\.[0-9]+\.[0-9]+)", version):
-        raise PipelineError("migration source requires a standalone schema-2/3/4/5/6/7 configuration")
+    if not re.fullmatch(r"(?:2|[2-8]\.[0-9]+\.[0-9]+)", version):
+        raise PipelineError("migration source requires a standalone schema-2/3/4/5/6/7/8 configuration")
     major, minor = (2, 0) if version == "2" else tuple(int(part) for part in version.split(".")[:2])
-    if minor > {2: 2, 3: 0, 4: 1, 5: 0, 6: 0, 7: 2}[major]:
+    if minor > {2: 2, 3: 0, 4: 1, 5: 0, 6: 0, 7: 2, 8: 0}[major]:
         raise PipelineError("unsupported migration source config version")
-    if major in {5, 6, 7}:
+    if major in {5, 6, 7, 8}:
         if major in {5, 6}:
             document = _legacy_sources(document, major)
         config = AppConfig.model_validate(_resolve_paths(document, path.parent))
@@ -168,7 +168,7 @@ def _read_source_store(path: Path, selected_id: str | None = None) -> SourceStor
             config = config.for_source(selected_id)
         metadata = read_json(config.state_root / "pipeline.json")
         if metadata.get("storageVersion") != STORAGE_VERSION:
-            raise PipelineError("source config 5/6/7 requires a completed storage-5 store")
+            raise PipelineError("source config 5/6/7/8 requires a completed storage-5 store")
         receipt = read_json(config.state_root / "migration.json")
         if receipt and receipt.get("status") != "complete":
             raise PipelineError("source store migration is incomplete")

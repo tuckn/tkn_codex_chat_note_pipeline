@@ -165,7 +165,7 @@ def test_limits_and_provider_config_validate_offline():
         active_provider="azure-openai",
         providers={"azure-openai": {"model": "example-model", "azure": AZURE, "limits": {}}},
     )
-    assert cfg.providers["azure-openai"].model == "example-model"
+    assert cfg.profiles["azure-openai"].model == "example-model"
     with pytest.raises(ValidationError):
         GenerationConfig(
             active_provider="azure-openai", providers={"azure-openai": {"model": "example"}}

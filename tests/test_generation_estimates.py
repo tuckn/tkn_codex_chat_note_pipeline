@@ -204,12 +204,14 @@ def test_runtime_progress_and_saved_report_have_usage(tmp_path, monkeypatch, cap
     cfg = config_for(tmp_path)
     write_chat(cfg.sessions_root / "one.jsonl", thread_id="one", cwd=tmp_path)
     cfg.generation = GenerationConfig(
-        active_provider="azure-openai",
-        providers={"azure-openai": {"model": "example-model", "azure": AZURE, "limits": {}}},
+        active_profile="azure-high",
+        profiles={"azure-high": {"provider": "azure-openai", "model": "example-model", **AZURE, "limits": {}}},
     )
     actual_client = httpx.Client
 
     def handle(request):
+        assert str(request.url) == AZURE["endpoint"] + "chat/completions"
+        assert json.loads(request.content)["model"] == "example-model"
         prompt = json.loads(request.content)["messages"][0]["content"]
         payload = json.loads(prompt.split("BEGIN_INPUT_JSON\n")[1].split("\nEND_INPUT_JSON")[0])
         events = tuple(event(e["id"], actor=e["actor"]) for e in payload["events"])
@@ -233,6 +235,9 @@ def test_runtime_progress_and_saved_report_have_usage(tmp_path, monkeypatch, cap
     assert report["ok"], report
     assert "input 1,000 tokens" in caplog.text and "base cost ceiling JPY" in caplog.text
     saved = json.loads(__import__("pathlib").Path(report["reportPath"]).read_text(encoding="utf-8"))
+    assert saved["generationProfile"] == "azure-high"
+    assert saved["generationProvider"] == "azure-openai"
+    assert saved["threads"][0]["generationEstimate"]["generationProfile"] == "azure-high"
     assert saved["usageTotals"]["inputTokens"] == 1000
     assert saved["usageTotals"]["estimatedCostJpy"] == pytest.approx(0.0701008)
     assert saved["threads"][0]["generationMetrics"]["apiRequests"][0]["stage"] == "chunk"
@@ -248,6 +253,7 @@ def test_runtime_progress_and_saved_report_have_usage(tmp_path, monkeypatch, cap
     summary = next(a for a in activities if a["agent"].get("requestedDeployment"))
     assert summary["agent"]["model"] == "example-model-2026-07-09"
     assert summary["agent"]["requestedDeployment"] == "example-model"
+    assert summary["agent"]["generationProfile"] == "azure-high"
 
 
 def test_unavailable_estimate_marks_command_totals_incomplete():

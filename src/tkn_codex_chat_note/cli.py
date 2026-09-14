@@ -38,10 +38,12 @@ def _utf8_console() -> None:
 
 def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", type=Path, help="Explicit YAML config path")
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--profile", help="Named generation profile (generation.active_profile)")
+    selection.add_argument(
         "--provider",
         choices=("codex", "claude-code", "github-copilot", "ollama", "azure-openai"),
-        help="Generation provider (generation.active_provider); Codex inputs use sources",
+        help="Compatibility selector: requires a unique profile for this provider; prefer --profile",
     )
     parser.add_argument("--source", help="Select one enabled source_id from sources")
     parser.add_argument("--model")
@@ -106,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--from-config",
         type=Path,
         required=True,
-        help="Standalone source config (schema 2-6); --config selects the fresh destination",
+        help="Standalone source config (schema 2-8); --config selects the fresh destination",
     )
     migrate.add_argument("--dry-run", action="store_true", help="Show exact migration files without writing")
     commands.add_parser("status", help="Show last-run coverage and pending work without a live source scan")
@@ -146,6 +148,7 @@ def _add_build_options(parser: argparse.ArgumentParser) -> None:
 
 def _overrides(args: argparse.Namespace) -> dict[str, Any]:
     names = (
+        "profile",
         "provider",
         "model",
         "reasoning_effort",
@@ -477,6 +480,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             log_success(LOGGER, "Validation succeeded: %s", args.artifact)
             return 0
         LOGGER.info("%s %s", "Planning" if args.dry_run else "Starting", args.command)
+        LOGGER.info("Generation profile: %s (provider=%s, model=%s, reasoning=%s)",
+                    config.generation.active_profile, config.provider, config.model, config.reasoning_effort)
         report = run_pipeline(
             config,
             mode=args.command,

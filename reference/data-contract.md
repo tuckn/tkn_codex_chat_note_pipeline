@@ -1,6 +1,6 @@
 # Data contract: chat evidence and Session Notes
 
-CLI 0.20.0 · config 7.2.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
+CLI 0.21.0 · config 8.0.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
 
 This is the file-based interface specification for tools that consume this CLI's
 output, including context curation and insight. It defines stable identities,
@@ -380,3 +380,20 @@ response/checkpoint causes a reported failure, including that request's actual u
 Completed/current or entirely cached work cannot discover a server-side change without a
 request; --force starts new generation without reusing those stages. No automatic Azure
 management API or chargeable probe is added to dry-run or cache reuse.
+
+
+## Named generation profiles (0.21.0)
+
+Config schema 8 replaces generation.active_provider/providers with
+active_profile/profiles. Profile keys are arbitrary names; each entry explicitly
+selects provider. HTTP endpoint, model, reasoning_effort, pricing, limits and optional
+authentication share a level; executable names only a CLI binary. Azure model remains
+the requested deployment. Schema 7.0–7.2 converts in memory before layering, preserving
+storage roots, authentication cache identity and the internal inference/cache contract.
+A label-only profile rename does not change the generation fingerprint.
+
+Source-local and multi-source reports add generationProfile and generationProvider.
+Thread estimates and provenance agent records add generationProfile; the existing
+agent.profile still means the application-owned Session Note language/template profile.
+These fields are additive. Source, artifact and note identities remain unchanged.
+CLI --profile selects a name; compatibility --provider rejects ambiguous matches.

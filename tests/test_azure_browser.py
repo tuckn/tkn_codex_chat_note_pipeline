@@ -93,7 +93,7 @@ def test_minimal_configuration_and_price_lookup_follow_deployment(fake_http):
             }
         },
     )
-    assert cfg.providers["azure-openai"].limits is not None
+    assert cfg.profiles["azure-openai"].limits is not None
     calls, replies = fake_http
     replies.append(response(model="actual-model-2026-08-01"))
     client = ApiClient(SimpleNamespace(**{**vars(settings()), "model": "new-deployment"}))
@@ -143,12 +143,12 @@ def test_legacy_config_migrates_in_memory_before_runtime_model_override(tmp_path
     path.write_text(yaml.safe_dump(legacy))
     before = path.read_bytes()
     cfg = resolve_app_config(explicit_path=path, cwd=tmp_path).config
-    azure = cfg.generation.providers["azure-openai"]
+    azure = cfg.generation.profiles["azure-openai"]
     assert azure.model == "notes" and "notes" in azure.azure.pricing
     assert "subscription_id" not in azure.azure.model_dump()
     cfg = resolve_app_config(explicit_path=path, cwd=tmp_path, overrides={"model": "other"}).config
-    assert cfg.generation.providers["azure-openai"].model == "other"
-    assert "other" not in cfg.generation.providers["azure-openai"].azure.pricing
+    assert cfg.generation.profiles["azure-openai"].model == "other"
+    assert "other" not in cfg.generation.profiles["azure-openai"].azure.pricing
     assert path.read_bytes() == before
 
 
