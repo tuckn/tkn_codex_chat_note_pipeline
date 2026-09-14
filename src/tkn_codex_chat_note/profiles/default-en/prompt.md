@@ -1,7 +1,7 @@
 ---
 type: prompt
 id: 3824e517-c328-4d44-950c-ca5ab7f697c6
-version: "1.4"
+version: "1.5"
 ---
 
 # English Session Note instructions
@@ -19,9 +19,12 @@ The application supplies a `MODE`; apply only its matching procedure below.
 - Put event IDs only in structured citation fields, never in narrative prose.
   Do not copy source aliases into unresolved or unverified text.
 
-- An `aggregated_output` object with `duplicateOfEventId` replaces only an identical
-  command output from the same invocation. Its full text remains at that source event.
-  Keep the completion metadata; do not count the duplicate logging as another execution.
+- `duplicateOfEventId` references matching evidence from the same logged act: an identical
+  body or an explicitly truncated head/tail excerpt covered by the referenced output.
+  It can also replace repeated message text or matching file-addition content.
+  Tool evidence may be structurally excerpted with explicit source-line gaps; its full
+  original remains in Raw. Do not invent omitted details or treat an excerpt as a complete
+  description of an artifact. Keep the completion metadata; do not count the duplicate logging as another execution.
   If the referenced event is in another input part, do not invent its text or claim
   missing source data. The complete record retains every original event ID.
 

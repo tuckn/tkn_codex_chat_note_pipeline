@@ -1203,7 +1203,7 @@ class SessionNotePipelineTests(unittest.TestCase):
         self.assertIn('generatorReasoningEffort: "high"', note)
         self.assertIn('type: "sessionNote"', note)
         self.assertIn('promptId: "f5dfc679-13d3-4fcc-9736-b7d4e6bb5c11"', note)
-        self.assertIn('promptVersion: "3.8"', note)
+        self.assertIn('promptVersion: "3.9"', note)
         from tkn_codex_chat_note.summary_resources import load_summary_schema
         self.assertIn(f'outputSchemaSha256: "{load_summary_schema().sha256}"', note)
         self.assertIn('templateId: "4d19c51c-0d02-43a5-b6ad-6d67f9739b75"', note)

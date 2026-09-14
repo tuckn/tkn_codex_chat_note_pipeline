@@ -48,7 +48,7 @@ from .inference import (
     provider_name,
     resolve_provider_executable,
 )
-from .inference_inputs import compact_duplicate_outputs
+from .inference_inputs import INPUT_PREPARATION_VERSION, compact_duplicate_outputs, compact_event_text
 from .media_inputs import describe_embedded_images
 from .prompting import (
     compact_merge_partials,
@@ -204,6 +204,8 @@ class PreparedEvent:
     text_end: int = 0
     full_text_characters: int = 0
     duplicate_characters_removed: int = 0
+    compacted_characters_removed: int = 0
+    input_preparation: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -215,6 +217,8 @@ class PreparedEvent:
             "timestamp": self.timestamp,
             "turnId": self.turn_id,
         }
+        if self.input_preparation:
+            value["inputPreparation"] = self.input_preparation
         if self.branch_id:
             value.update(branchId=self.branch_id, rawRef=self.raw_ref)
         if self.embedded_image_count:
@@ -511,6 +515,7 @@ def update_refresh_state(
         "generatorReasoningEffort": config.reasoning_effort,
         **({"generatorOptions": config.inference_options} if config.inference_options else {}),
         "generatorPromptVersion": GENERATOR_PROMPT_VERSION,
+        "inputPreparationVersion": INPUT_PREPARATION_VERSION,
         "summaryPromptId": prompt.prompt_id,
         "summaryPromptVersion": prompt.version,
         "summaryPromptSha256": prompt.sha256,
@@ -886,27 +891,29 @@ def scan_candidates(
 
 def prepare_events(events: Sequence[ChatEvent], *, deduplicate: bool = True) -> list[PreparedEvent]:
     replacements = compact_duplicate_outputs(events) if deduplicate else {}
-    return [
-        PreparedEvent(
-            id=event.id,
-            kind=event.kind,
-            actor=event.actor,
-            name=event.name,
-            text=redact_secret_like_content(compacted.text),
-            timestamp=event.timestamp,
-            turn_id=event.turn_id,
-            branch_id=event.branch_id,
-            raw_ref=event.raw_ref,
-            embedded_image_count=prepared.image_count,
-            image_encoded_characters=prepared.encoded_characters,
-            duplicate_characters_removed=max(
-                0, len(redact_secret_like_content(prepared.text)) - len(redact_secret_like_content(compacted.text)),
-            ),
-        )
-        for event in events
-        for prepared in [describe_embedded_images(event.text)]
-        for compacted in [describe_embedded_images(replacements[event.id]) if event.id in replacements else prepared]
-    ]
+    result: list[PreparedEvent] = []
+    for event in events:
+        original = describe_embedded_images(event.text)
+        deduped = describe_embedded_images(replacements.get(event.id, event.text))
+        source_text = redact_secret_like_content(deduped.text)
+        text = redact_secret_like_content(compact_event_text(event, source_text))
+        preparation = None
+        if text != source_text:
+            preparation = {
+                "version": INPUT_PREPARATION_VERSION,
+                "sourceCharacters": len(source_text),
+                "sourceSha256": sha256(source_text.encode("utf-8")).hexdigest(),
+                "excerpted": "[excerpt:" in text,
+                "fullSource": "Raw event with the same source ID",
+            }
+        result.append(PreparedEvent(
+            id=event.id, kind=event.kind, actor=event.actor, name=event.name, text=text,
+            timestamp=event.timestamp, turn_id=event.turn_id, branch_id=event.branch_id, raw_ref=event.raw_ref,
+            embedded_image_count=original.image_count, image_encoded_characters=original.encoded_characters,
+            duplicate_characters_removed=max(0, len(redact_secret_like_content(original.text)) - len(source_text)),
+            compacted_characters_removed=max(0, len(source_text) - len(text)), input_preparation=preparation,
+        ))
+    return result
 
 
 def _event_input_size(event: PreparedEvent) -> int:
@@ -941,7 +948,8 @@ def _split_event(event: PreparedEvent, target_characters: int) -> list[PreparedE
             if boundaries:
                 end = start + low // 2 + boundaries[-1].end()
         parts.append(replace(event, text=event.text[start:end], text_part=len(parts) + 1,
-                             text_start=start, text_end=end, full_text_characters=length))
+                             text_start=event.text_start + start, text_end=event.text_start + end,
+                             full_text_characters=event.full_text_characters or length))
         start = end
     return [replace(part, text_part_count=len(parts)) for part in parts]
 
@@ -1279,8 +1287,17 @@ class ProviderSummarizer:
         target = min(self.chunk_characters, api.limits.chunk_characters) if api else self.chunk_characters
         chunks = chunk_events(prepared, target)
         if api:
-            # Fit the complete request, including prompt/schema and output reservation.
+            # Split only an oversized chunk. Recheck final numbering/schema overhead.
             while True:
+                parts: dict[str, list[tuple[int, int]]] = {}
+                for ci, chunk in enumerate(chunks):
+                    for ei, event in enumerate(chunk):
+                        if event.text_part_count > 1:
+                            parts.setdefault(event.id, []).append((ci, ei))
+                for positions in parts.values():
+                    for number, (ci, ei) in enumerate(positions, 1):
+                        chunks[ci][ei] = replace(chunks[ci][ei], text_part=number, text_part_count=len(positions))
+                revised: list[list[PreparedEvent]] = []
                 oversized = False
                 for index, chunk in enumerate(chunks):
                     check_schema = deepcopy(self.inference_schema)
@@ -1290,15 +1307,31 @@ class ProviderSummarizer:
                         self.prompt, thread_id=candidate.thread_id, part=index + 1,
                         part_count=len(chunks), events=[event.as_dict() for event in chunk])
                     api.allowed_ids = sorted({event.id for event in chunk})
-                    if api.estimate(check_prompt, check_schema) > api.limits.input_tokens:
-                        oversized = True
-                        break
+                    if api.estimate(check_prompt, check_schema) <= api.limits.input_tokens:
+                        revised.append(chunk)
+                        continue
+                    oversized = True
+                    if len(chunk) > 1:
+                        middle = len(chunk) // 2
+                        revised.extend((chunk[:middle], chunk[middle:]))
+                    else:
+                        event = chunk[0]
+                        if len(event.text) < 2:
+                            raise PipelineError("API input limit cannot fit profile/schema and minimum event input")
+                        envelope = _event_input_size(replace(event, text=""))
+                        budget = envelope + max(1, (_event_input_size(event) - envelope) // 2)
+                        try:
+                            split = _split_event(event, budget)
+                        except PipelineError as exc:
+                            raise PipelineError(
+                                "API input limit cannot fit profile/schema and minimum event input"
+                            ) from exc
+                        if len(split) < 2:
+                            raise PipelineError("API input limit cannot fit profile/schema and minimum event input")
+                        revised.extend([part] for part in split)
+                chunks = revised
                 if not oversized:
                     break
-                if target <= 512:
-                    raise PipelineError("API input limit cannot fit profile/schema and minimum event input")
-                target = max(512, target // 2)
-                chunks = chunk_events(prepared, target)
         return prepared, chunks, target
 
     def estimate(self, candidate: Candidate) -> dict[str, Any]:
@@ -1355,6 +1388,9 @@ class ProviderSummarizer:
             **({"requestedDeployment": self.config.model, "costBudgetEnforced": api.pricing is not None}
                if api and api.azure else {}),
             "preparedTextCharacters": sum(len(e.text) for e in prepared),
+            "compactedCharacters": sum(e.compacted_characters_removed for e in prepared),
+            "deduplicatedCharacters": sum(e.duplicate_characters_removed for e in prepared),
+            "inputPreparationVersion": INPUT_PREPARATION_VERSION,
             "pendingPromptCharacters": pending_characters, "chunkCount": len(chunks),
             "effectiveChunkCharacters": target, "pendingChunkCount": pending, "cachedChunkCount": reused,
             "baseCalls": base_calls, "mergeCallsCeiling": merge,
@@ -1399,10 +1435,14 @@ class ProviderSummarizer:
         self.last_metrics["splitEventCount"] = len({e.id for c in chunks for e in c if e.text_part_count > 1})
         self.last_metrics["inputPartCount"] = sum(len(chunk) for chunk in chunks)
         self.last_metrics["preparedTextCharacters"] = sum(len(e.text) for e in prepared)
+        self.last_metrics["compactedCharacters"] = sum(e.compacted_characters_removed for e in prepared)
+        self.last_metrics["compactedEventCount"] = sum(e.compacted_characters_removed > 0 for e in prepared)
+        self.last_metrics["inputPreparationVersion"] = INPUT_PREPARATION_VERSION
         self.last_metrics["deduplicatedCharacters"] = sum(e.duplicate_characters_removed for e in prepared)
         self.last_metrics["deduplicatedEventCount"] = sum(e.duplicate_characters_removed > 0 for e in prepared)
         self.last_metrics["inputCharactersBeforeDeduplication"] = (
             self.last_metrics["preparedTextCharacters"] + self.last_metrics["deduplicatedCharacters"]
+            + self.last_metrics["compactedCharacters"]
         )
         self.last_metrics["submittedTextCharacters"] = sum(len(e.text) for c in chunks for e in c)
         source_by_id = {event.id: event for event in candidate.events}
@@ -1496,6 +1536,7 @@ def generator_fingerprint(config: PipelineConfig) -> str:
         "model": config.model,
         "reasoningEffort": config.reasoning_effort,
         "generatorPromptVersion": GENERATOR_PROMPT_VERSION,
+        "inputPreparationVersion": INPUT_PREPARATION_VERSION,
         "summaryPromptId": prompt.prompt_id,
         "summaryPromptVersion": prompt.version,
         "summaryPromptSha256": prompt.sha256,

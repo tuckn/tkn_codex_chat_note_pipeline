@@ -824,3 +824,23 @@ Other Python versions and non-Windows execution, including WSL, remain unverifie
 | --- | --- |
 | [Output data and CLI integration contract](reference/data-contract.md) | Implement a consumer: IDs, schemas, hashes, provenance, and consistency checks |
 | [Session Note format](docs/session-note-format.md) | Understand generated note structure and field meanings |
+
+
+### Smaller inference inputs (0.22.0)
+
+Raw and canonical events remain unchanged. Inference preparation removes terminal color
+codes, extracts visible article text from complete HTML, and references proven duplicates
+from the same call/turn/branch. Large patches and recognized bulk listings/search outputs
+use marked source-line excerpts. Boundary excerpts and every diagnostic line with nearby
+context remain; ordinary conversation and unrecognized prose are not shortened. Truncated
+HTML falls back to retaining the text. Excerpts are not a complete account of file contents.
+
+Only chunks exceeding the full API input-token limit are subdivided. Other chunks remain
+intact; source IDs, ordering and text offsets survive repeated subdivision. Saved generation
+metrics include `inputPreparationVersion`, `compactedCharacters`, `compactedEventCount`,
+and the existing deduplication counts. Dry-run estimates also include removed character counts.
+
+The input preparation and prompt versions participate in generation/cache identity. Previous
+checkpoints are retained but incompatible ones are not reused; the next ordinary `pull` may
+regenerate stale notes. Edited/reviewed-note protections still apply. No automatic historical
+regeneration is performed during installation.

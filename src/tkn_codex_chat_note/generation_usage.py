@@ -21,6 +21,8 @@ def estimate_totals(estimates: list[dict[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {"threadCount": len(estimates)}
     for key in (
         "preparedTextCharacters",
+        "compactedCharacters",
+        "deduplicatedCharacters",
         "pendingPromptCharacters",
         "pendingChunkCount",
         "cachedChunkCount",
