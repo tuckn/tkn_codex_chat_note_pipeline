@@ -1,6 +1,6 @@
 # Data contract: chat evidence and Session Notes
 
-CLI 0.17.0 · config 7.0.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
+CLI 0.18.0 · config 7.1.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
 
 This is the file-based interface specification for tools that consume this CLI's
 output, including context curation and insight. It defines stable identities,
@@ -278,3 +278,31 @@ rename. Existing immutable provenance and profile hashes remain intact. Newly
 published software metadata uses tkn-codex-chat-note-pipeline and the current version.
 Config show uses config.sources and storage.sourceRoots.<source_id>; the top-level
 sources object in its JSON response still describes configuration value provenance.
+
+
+## API generation (0.18.0)
+
+Configuration 7.1.0 adds `azure-openai` and optional `limits`/`model_digest` for Ollama.
+Schema 7.0.x is normalized in memory; it is not persistently migrated. Public Session
+Note schema remains 6, and unconfigured Codex generator fingerprints remain unchanged.
+`inferenceOptions` binds Azure endpoint/deployment/model version/tenant/subscription,
+pricing and API limits or Ollama digest to cache identity and provenance agent records.
+No bearer token is persisted. Reports add optional `generationMetrics.apiRequests`;
+usage unavailable from a provider or failed attempt stays null. `estimatedCostJpy` uses
+observed tokens at configured normal input/output rates, without cached-input discount.
+`reservedCostJpy` is a pre-request conservative reservation, not billed cost.
+
+Partial prompts fit the configured input limit through smaller event chunks. Full
+merge and semantic-repair prompts are checked by the same limit; over-limit requests
+are never submitted. Azure uses named-tokenizer estimates with margin; Ollama uses
+UTF-8 bytes plus template allowance. Output caps include reasoning. Successful
+transport is separate from schema, citation, timeline coverage, and factual quality.
+Per-command budgets count retries and unknown-charge attempts. They are not a durable
+cross-process cap; restarting a command grants a new budget, while validated generation
+checkpoints remain reusable. `--dry-run` performs no token acquisition or API request.
+
+API-only wire encoding `event-id-aliases-v1` maps structured source-ID fields to a
+per-request alias table and restores them before public validation. Source prose is
+not rewritten. All API citation fields reference one shared enum; overview repairs
+receive permitted IDs. Per-command budgets are shared across selected acquisition
+sources; no budget is shared between separate processes.

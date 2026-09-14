@@ -162,7 +162,7 @@ To change the storage directories, set `raw_root`, `data_root`, and `state_root`
 `cache_root` is shared and cannot be configured separately for each `sources.<source_id>` entry.
 
 ```yaml
-schema_version: "7.0.0"
+schema_version: "7.1.0"
 cache_root: ~/.cache/codex_chat_note_pipeline
 sources:
   my-windows-pc:
@@ -324,6 +324,103 @@ Edit the generated configuration and pass the same `--config` to subsequent
 when default `config init` stops after detecting an old user configuration.
 Any current user configuration or `.tkn/config.yaml` loaded by the CLI must
 still use schema 7; `--config` does not bypass validation of lower layers.
+
+## Azure API and bounded Ollama generation
+
+Version 0.18.0 adds `azure-openai` and optional API limits to configuration schema
+7.1.0. Existing 7.0.x files are read compatibly without rewriting them. Codex inputs
+and ordinary Codex generation settings remain the same. Update an installed copy
+with `uv tool install . --reinstall` after preserving any evaluation baselines.
+
+Azure uses the existing Azure CLI sign-in. Run `az login` once if needed; token
+refresh reuses that account and does not open a browser for every note or chunk.
+The configured tenant and enabled subscription are checked before obtaining a
+bearer token. An expired/revoked sign-in requires a new login. No API key fallback
+or separate credential file is used. Other applications can keep their existing
+credential caches; this CLI does not copy or change them.
+
+Use a separate `--config` file for comparisons. Add the following under
+`generation.providers` and set `generation.active_provider: azure-openai`:
+
+```yaml
+azure-openai:
+  model: <underlying-model-name>
+  reasoning_effort: high
+  azure:
+    endpoint: https://<resource>.openai.azure.com/openai/v1/
+    deployment: <deployment-name>
+    model_version: <model-version>
+    tenant_id: <tenant-guid>
+    subscription_id: <subscription-guid>
+    input_jpy_per_million: 100.0   # Replace with verified applicable prices.
+    output_jpy_per_million: 500.0
+    pricing_date: YYYY-MM-DD
+  limits:
+    input_tokens: 60000
+    output_tokens: 16000
+    context_tokens: 100000
+    chunk_characters: 120000
+    max_calls: 20
+    max_cost_jpy: 100
+```
+
+The v1 Chat Completions request uses strict JSON, `store=false`, an explicit
+completion limit (including reasoning), and the deployment name. The configured
+underlying model/version must match the response. Schema constraints unsupported
+by the API are omitted only from the transport schema and still checked locally.
+Refusals, incomplete output, 401/403, and invalid identities fail without blind
+transport retries. 429 and transient server/network failures allow at most three
+attempts; Retry-After seconds/date and millisecond headers are honored. Delays over
+60 seconds stop for a later resume. Semantic repairs count toward budgets.
+
+For Ollama, configure `limits` and a pinned `model_digest` under its provider entry.
+`context_tokens` and `output_tokens` set `num_ctx` and `num_predict`. For example,
+start an explicit experiment with input 48000, output 8192, context 65536; these are
+experiment limits, not a hardware recommendation. The tokenizer-independent UTF-8
+byte bound is deliberately conservative and can result in many small chunks.
+Without `limits`, the older Ollama behavior is preserved.
+
+Complete prompts and schemas are checked before sending chunks, merges, and
+repairs. Azure estimates use `o200k_base` plus a margin (the first real API run may
+fetch its public tokenizer data); estimates are not billed tokens. Chunk size is
+reduced automatically to fit. An oversized merge/repair stops with saved chunks
+rather than silently dropping input; raise suitable limits or revise the reduction
+strategy before resuming. Dry-run does not load tokens, authenticate, or call AI.
+
+Budgets apply to one sequential provider runner/command, shared across selected sources. Each submitted attempt
+reserves its estimated input plus maximum output cost; failed attempts with unknown
+billing keep their reservation. Reservations are not refunds or invoice values.
+A new command/process gets a new budget; concurrent processes do not share a global
+cap. Azure budget alerts also do not stop spending. Use current applicable prices,
+run one process, and account for earlier attempts when restarting an evaluation.
+
+Run reports include `generationMetrics.apiRequests`: actual input/output/reasoning/
+cached input tokens when returned, response model, elapsed time, and an estimated
+JPY cost. Missing usage stays null. The estimate charges cached input at the normal
+input rate (conservative); cache-write tokens are unknown unless reported. Connection,
+model/version, limits, and digest enter generation fingerprints and provenance.
+
+To evaluate pinned Canonical Events without touching the live store, use
+`scripts/evaluate_session_notes.py --manifest <private-baseline-manifest.json>
+--config <generation-config.yaml> --output <fresh-evaluation-directory>
+--thread <thread-id>`. `--dry-run` only validates the plan. The script verifies
+snapshot hashes, saves validated Markdown/structured JSON and per-attempt metrics in
+`run-history` (including earlier attempts after a resume),
+and reuses completed outputs/checkpoints when the same conditions are repeated.
+The output directory must be dedicated to that evaluation. A manifest row contains
+`metadata`, the original provenance `activity`, and `files` mapping `sessionNote`,
+`raw`, and `canonicalEvents` to copied SHA-256-named snapshot files.
+
+Implementation references: [Azure structured outputs](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs),
+[Azure CLI credential](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.azureclicredential),
+[Ollama chat API](https://docs.ollama.com/api/chat).
+
+API requests use short, reversible source-ID aliases in structured input and a shared
+JSON Schema enum for all citations. Responses are mapped back to the original IDs
+before validation; source prose, Raw and Canonical Events are unchanged. This reduces
+repeated identifier tokens and prevents abbreviated/invented citation IDs. Merge
+repairs also receive the allowed IDs without resending raw events. `apiRequests`
+records the wire encoding as `event-id-aliases-v1`.
 
 ## Data and responsibility boundaries
 

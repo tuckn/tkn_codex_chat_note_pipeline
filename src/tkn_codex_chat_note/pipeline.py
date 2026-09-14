@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from . import __version__
+from .api_inference import ApiClient
 from .catalog import CATALOG_SCHEMA_VERSION, Discovery, capture_sources, discover
 from .config import AppConfig
 from .frontmatter import parse_simple_frontmatter
@@ -73,6 +74,7 @@ def _agent(config: PipelineConfig, stage: str) -> dict[str, Any]:
         "software": "tkn-codex-chat-note-pipeline",
         "version": __version__,
         "provider": config.provider,
+        **({"inferenceOptions": config.inference_options} if config.inference_options else {}),
         "model": config.model,
         "reasoningEffort": config.reasoning_effort,
         "profile": profile.name,
@@ -456,6 +458,7 @@ def run_pipeline(
     deadline = started + timedelta(minutes=config.runtime_minutes)
     remaining = limit
     reports: list[dict[str, Any]] = []
+    shared_api: ApiClient | None = None
     for source in sources:
         identity = {"sourceProvider": source.source_provider, "sourceId": source.source_id}
         started_attempts = 0
@@ -468,6 +471,15 @@ def run_pipeline(
                 progress({**event, **identity})
 
         source_progress({"type": "source-start"})
+        source_summarizer = summarizer
+        if (summarizer is None and not dry_run and mode != "raw"
+            and (source.provider == "azure-openai" or (
+                source.provider == "ollama" and source.active_provider_config.limits is not None))):
+            source_config = source.session_note_pipeline_config(allow_missing_watermark=True)
+            source_summarizer = ProviderSummarizer(source_config, observer=source_progress)
+            if shared_api is None:
+                shared_api = ApiClient(source_config)
+            source_summarizer.api_client = shared_api
         try:
             report = _run_source_pipeline(
                 source,
@@ -478,7 +490,7 @@ def run_pipeline(
                 thread_id=thread_id,
                 limit=remaining,
                 config_path=config_path,
-                summarizer=summarizer,
+                summarizer=source_summarizer,
                 progress=source_progress,
                 deadline=deadline,
             )

@@ -15,6 +15,7 @@ from typing import Annotated, Any, Literal, Self
 import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
+from .api_settings import ApiLimits, AzureSettings
 from .config_validation import validate_config_layer
 from .inference import InferenceProvider, validate_ollama_base_url
 from .session_notes import (
@@ -28,8 +29,8 @@ from .session_notes import (
     atomic_write_text,
 )
 
-CONFIG_SCHEMA_VERSION: Literal["7.0.0"] = "7.0.0"
-_CONFIG_SCHEMA_VERSION_PARTS = (7, 0, 0)
+CONFIG_SCHEMA_VERSION: Literal["7.1.0"] = "7.1.0"
+_CONFIG_SCHEMA_VERSION_PARTS = (7, 1, 0)
 _CONFIG_SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 APP_DIRECTORY_NAME = "codex_chat_note_pipeline"
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
@@ -50,6 +51,7 @@ PROVIDER_TRANSPORT_DEFAULTS: dict[InferenceProvider, tuple[str, str]] = {
     "claude-code": ("executable", "claude"),
     "github-copilot": ("executable", "copilot"),
     "ollama": ("base_url", "http://127.0.0.1:11434"),
+    "azure-openai": ("base_url", ""),
 }
 
 
@@ -83,6 +85,9 @@ class ProviderConfig(BaseModel):
     reasoning_effort: ReasoningEffort = "high"
     executable: str | None = None
     base_url: str | None = None
+    azure: AzureSettings | None = None
+    limits: ApiLimits | None = None
+    model_digest: str | None = None
 
     @field_validator("model")
     @classmethod
@@ -125,6 +130,16 @@ class GenerationConfig(BaseModel):
         if self.active_provider not in self.providers:
             raise ValueError(f"active_provider {self.active_provider!r} must have a matching entry under providers")
         for provider, settings in self.providers.items():
+            if provider == "azure-openai":
+                if settings.azure is None or settings.limits is None:
+                    raise ValueError("azure-openai requires azure and limits settings")
+                if settings.executable is not None or settings.base_url is not None:
+                    raise ValueError("azure-openai uses azure.endpoint, not executable/base_url")
+                continue
+            if settings.azure is not None:
+                raise ValueError("azure settings require azure-openai provider")
+            if provider != "ollama" and (settings.limits is not None or settings.model_digest is not None):
+                raise ValueError("API limits/model_digest are only supported for API providers")
             if provider == "ollama":
                 if settings.executable is not None:
                     raise ValueError("generation.providers.ollama does not support executable")
@@ -179,7 +194,7 @@ class AppConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["7.0.0"] = CONFIG_SCHEMA_VERSION
+    schema_version: Literal["7.1.0"] = CONFIG_SCHEMA_VERSION
     installed_at: datetime | None = None
     sources: dict[SourceId, CodexSourceConfig] = Field(default_factory=lambda: {DEFAULT_SOURCE_ID: CodexSourceConfig()})
     cache_root: Path = Field(default_factory=default_user_cache_root)
@@ -377,6 +392,8 @@ class AppConfig(BaseModel):
             claude_bin=self.claude_executable,
             copilot_bin=self.copilot_executable,
             ollama_base_url=self.ollama_base_url,
+            inference_options={key: value for key, value in self.active_provider_config.model_dump(mode="json").items()
+                               if key in {"azure", "limits", "model_digest"} and value is not None},
             model=self.model,
             reasoning_effort=self.reasoning_effort,
             idle_minutes=self.idle_minutes,
@@ -619,6 +636,8 @@ def _without_retired_user_prompt(
 
 
 def _new_provider_override(provider: InferenceProvider, model: str, effort: str | None) -> dict[str, Any]:
+    if provider == "azure-openai":
+        raise PipelineError("configure azure-openai connection and limits in a config file first")
     transport_key, transport_value = PROVIDER_TRANSPORT_DEFAULTS[provider]
     return {
         "model": model,
