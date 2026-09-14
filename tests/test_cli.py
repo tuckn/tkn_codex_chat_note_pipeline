@@ -216,7 +216,7 @@ def test_config_show_reports_application_owned_summary_profile(
         "effectiveVersion": CONFIG_SCHEMA_VERSION,
         "hasInMemoryMigrations": False,
     }
-    assert output["sources"]["generation.providers.codex.model"] == "built-in defaults"
+    assert output["sources"]["generation.profiles.codex.model"] == "built-in defaults"
     assert [layer["kind"] for layer in output["layers"]] == ["built-in", "global", "project"]
     assert output["layers"][0]["schemaVersion"] == CONFIG_SCHEMA_VERSION
 
@@ -370,4 +370,4 @@ def test_cli_name_and_version_match_package(capsys: CaptureFixture[str]) -> None
     assert capsys.readouterr().out.strip() == f"tkn-codex-chat-note {__version__}"
     help_text = build_parser().format_help()
     assert "chat.providers" not in help_text
-    assert "Codex inputs use sources" in help_text
+    assert "--profile" in help_text

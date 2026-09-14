@@ -48,9 +48,10 @@ def test_packaged_example_config_uses_portable_home_paths() -> None:
     assert config_example_text().splitlines()[0] == f'schema_version: "{CONFIG_SCHEMA_VERSION}"'
     assert value["generation"] == {
         "session_note_profile": "default-jp",
-        "active_provider": "codex",
-        "providers": {
+        "active_profile": "codex",
+        "profiles": {
             "codex": {
+                "provider": "codex",
                 "model": "gpt-5.6-sol",
                 "reasoning_effort": "high",
                 "executable": "codex",
@@ -148,7 +149,7 @@ def test_config_resolution_reports_the_winning_source(
     assert resolution.config.model == "project"
     assert resolution.config.idle_minutes == 30
     assert "schema_version" not in resolution.sources
-    assert resolution.sources["generation.providers.codex.model"].startswith("project:")
+    assert resolution.sources["generation.profiles.codex.model"].startswith("project:")
     assert resolution.sources["idle_minutes"] == "CLI option"
     assert [layer["kind"] for layer in resolution.layers] == [
         "built-in",
@@ -202,7 +203,7 @@ def test_config_file_requires_schema_version(tmp_path: Path) -> None:
         ('"2.0.0-rc1"', "expected a quoted MAJOR.MINOR.PATCH"),
         ('"1.9.0"', "schema v1 is no longer supported"),
         ('"7.3.0"', "unsupported newer configuration schema_version"),
-        ('"8.0.0"', "unsupported newer configuration schema_version"),
+        ('"8.1.0"', "unsupported newer configuration schema_version"),
     ],
 )
 def test_unsupported_schema_versions_are_rejected(
@@ -219,13 +220,13 @@ def test_unsupported_schema_versions_are_rejected(
 
 def test_same_major_minor_newer_patch_is_accepted(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
-    write_yaml(path, {"schema_version": "7.2.7", "idle_minutes": 10})
+    write_yaml(path, {"schema_version": "8.0.7", "idle_minutes": 10})
 
     resolution = resolve_app_config(explicit_path=path, cwd=tmp_path)
 
     assert resolution.config.schema_version == CONFIG_SCHEMA_VERSION
     explicit = resolution.layers[-1]
-    assert explicit["schemaVersion"] == "7.2.7"
+    assert explicit["schemaVersion"] == "8.0.7"
     assert explicit["effectiveSchemaVersion"] == CONFIG_SCHEMA_VERSION
     assert explicit["migration"] is None
 
@@ -277,7 +278,7 @@ def test_active_provider_requires_matching_provider_settings(
     path = tmp_path / "config.yaml"
     write_yaml(path, {"generation": {"active_provider": "ollama"}})
 
-    with pytest.raises(PipelineError, match="matching entry under providers"):
+    with pytest.raises(PipelineError, match="matching entry under profiles"):
         load_app_config(explicit_path=path, cwd=tmp_path)
 
 
@@ -310,8 +311,8 @@ def test_cli_can_select_an_already_configured_provider_without_repeating_its_mod
     assert resolution.config.provider == "claude-code"
     assert resolution.config.model == "claude-sonnet-4-6"
     assert resolution.config.reasoning_effort == "medium"
-    assert resolution.sources["generation.active_provider"] == "CLI option"
-    assert resolution.sources["generation.providers.claude-code.model"].startswith("explicit:")
+    assert resolution.sources["generation.active_profile"] == "CLI option"
+    assert resolution.sources["generation.profiles.claude-code.model"].startswith("explicit:")
 
 
 @pytest.mark.parametrize(
@@ -387,7 +388,7 @@ def test_source_layers_resolve_paths_and_preserve_generation(tmp_path: Path, mon
     assert config.source_root == tmp_path / "work/cli-codex"
     assert config.source_id == "pc" and not config.include_archived
     assert config.data_root == explicit.parent / "data"
-    assert config.generation.providers["claude-code"].model == "example"
+    assert config.generation.profiles["claude-code"].model == "example"
     assert resolution.sources["sources.pc.source_root"] == "CLI option"
     assert resolution.sources["sources.pc.raw_root"] == "built-in defaults"
     assert resolution.sources["sources.pc.data_root"].startswith("explicit:")

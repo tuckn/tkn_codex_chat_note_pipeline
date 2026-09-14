@@ -109,6 +109,7 @@ class PipelineConfig:
     source_id: str
     codex_bin: str
     provider: str = "codex"
+    generation_profile: str | None = None
     claude_bin: str = "claude"
     copilot_bin: str = "copilot"
     ollama_base_url: str = "http://127.0.0.1:11434"
@@ -1347,7 +1348,8 @@ class ProviderSummarizer:
         if api and api.pricing and total_tokens is not None and output_ceiling is not None:
             cost = api.pricing.cost(total_tokens, output_ceiling)
         return {
-            "status": "estimated", "provider": self.config.provider, "model": self.config.model,
+            "status": "estimated", "generationProfile": self.config.generation_profile,
+            "provider": self.config.provider, "model": self.config.model,
             **({"requestedDeployment": self.config.model, "costBudgetEnforced": api.pricing is not None}
                if api and api.azure else {}),
             "preparedTextCharacters": sum(len(e.text) for e in prepared),

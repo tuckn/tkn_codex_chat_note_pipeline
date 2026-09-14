@@ -151,7 +151,7 @@ tkn-codex-chat-note --idle-minutes 0 --runtime-minutes 60 pull --limit 20
 なお、`cache_root`は共通で使用され、取得元ごとには設定できません。
 
 ```yaml
-schema_version: "7.2.0"
+schema_version: "8.0.0"
 cache_root: ~/.cache/codex_chat_note_pipeline
 sources:
   my-windows-pc:
@@ -195,8 +195,8 @@ generation:
 
 ### Chat取得元と生成AI
 
-`sources`はローカルCodexの取得元、`generation.providers`はノート生成に使うAIの設定です。
-`--provider`は`generation.active_provider`だけを切り替え、取得元を変更しません。
+`sources`はローカルCodexの取得元、`generation.profiles`はノート生成に使うAIの設定です。
+`--profile`は`generation.active_profile`だけを切り替え、取得元を変更しません。
 Claude Code・Copilot・Ollamaは推論の選択肢として維持し、それらのチャット取得は対象外です。
 
 トップレベルの`sources`マップのキーが`source_id`です。値の中に`source_id`は重複して書きません。
@@ -257,8 +257,35 @@ WSLの例は設定方法を示したもので、WSLとの実動作確認は未�
 
 ### 推論プロバイダー
 
+`generation.profiles`のキーは任意の設定名です。各設定の`provider`に
+`codex`・`claude-code`・`github-copilot`・`ollama`・`azure-openai`を明示します。
+名前・実行ファイル・URLから実行方式を推測しません。`executable`はCLIの実行ファイル名・パス、
+`endpoint`はHTTPの接続先です。Azureの`authentication`・`pricing`・`limits`も`model`と同じ階層に置き、
+`azure`の入れ子は使いません。実行ファイルの既定値はcodex/claude/copilot、Ollamaの接続先は
+http://127.0.0.1:11434です。
+
+同じproviderで`azure-high`・`azure-low`など複数の設定を持てます。
+`tkn-codex-chat-note --profile azure-high pull --dry-run`で選択します。
+`--model`・`--reasoning-effort`は、選択中のプロファイルだけをその実行中に上書きします。
+旧`--provider`は候補が一意の場合に選択でき、複数なら`--profile`の指定が必要です。
+候補がないCLI/Ollamaは従来どおり`--model`と併用して一時設定を作れます。
+プロファイル名がprovider名と一致していても、名前から実行方式は判断しません。
+`--profile`と本文言語の`--session-note-profile`は別の設定です。
+
+旧schema 7.0–7.2は各設定層を統合する前にメモリ内で変換します。
+`active_provider`を`active_profile`へ、`providers`を`profiles`へ移し、旧キーを`provider`に設定します。
+`base_url`は`endpoint`へ、旧`azure`内の項目は`model`と同じ階層へ移します。
+任意のtenantは`authentication.tenant_id`へ移します。読み込みではファイルを変更せず、
+`config show`で変換後の値・由来・移行状態を確認できます。
+最初の新形式のprofilesマップは組み込みのプロファイル名を置き換え、以後の設定層は名前で統合します。
+同じ名前でproviderを変更するときは新しいモデル・接続設定が必要で、以前の接続情報は引き継ぎません。
+同じ設定層で新旧キーを混在させるとエラーになります。保存先・認証cache・ノートIDは変わりません。
+プロファイル名だけの変更では途中結果を無効化しません。実行レポートと来歴には、
+provider・modelとは別に`generationProfile`を記録します。
+
+
 取得対象は、ローカルに保存されたCodexの会話ログです。
-推論に使用する生成AIモデルは、`generation.active_provider` と各プロバイダーの `model` で変更できます。
+推論に使用する生成AIモデルは、`generation.active_profile` と各プロバイダーの `model` で変更できます。
 選択するプロバイダーのモデルと接続先を指定してください。モデルの利用可否と認証は各サービス側で管理します。
 
 | プロバイダーID | 接続設定 | 実行方法 |
@@ -266,24 +293,25 @@ WSLの例は設定方法を示したもので、WSLとの実動作確認は未�
 | `codex` | `executable: codex` | 独立した `codex exec` |
 | `claude-code` | `executable: claude` | 非対話のClaude Code |
 | `github-copilot` | `executable: copilot` | 非対話のCopilot CLI |
-| `ollama` | `base_url: http://127.0.0.1:11434` | ローカルのchatエンドポイント。ループバックのみ |
+| `ollama` | `endpoint: http://127.0.0.1:11434` | ローカルのchatエンドポイント。ループバックのみ |
 
 利用可能なローカルモデルを使う場合は、例えばgenerationブロックを次のように置き換えます。
 
 ```yaml
 generation:
-  active_provider: ollama
-  providers:
-    ollama:
+  active_profile: local-gemma
+  profiles:
+    local-gemma:
+      provider: ollama
       model: <installed-local-model>
       reasoning_effort: high
-      base_url: http://127.0.0.1:11434
+      endpoint: http://127.0.0.1:11434
 ```
 
 CLI型のプロバイダーでは、選択した生成入力をそのCLIの設定先サービスへ送信します。
 Rawと来歴のスナップショットには元の内容がローカルに残るため、会話データに適した保存先を選びます。
 生成プロファイル、出力検証、再試行上限はアプリケーションが管理します。
-モデル、プロバイダー、推論設定、生成プロファイルを変更すると、関連する段階が再生成対象になります。
+モデル、プロバイダー、推論設定、ノートの言語プロファイルを変更すると、関連する段階が再生成対象になります。
 
 ### 既存データを引き継がず再構築する場合
 
@@ -298,11 +326,11 @@ tkn-codex-chat-note --config "C:\path\to\rebuild.yaml" config init
 作成した設定を編集し、その後の`config show`・`clone`にも同じ`--config`を指定します。
 旧ユーザー設定の検出で既定の`config init`が停止する場合も、上記のように新規設定の
 保存先を明示できます。ただし、読み込まれる現行のユーザー設定や`.tkn/config.yaml`も
-設定schema 7である必要があります。`--config`は下位の設定の検証を省略しません。
+設定schema 8または変換対応済みの7.0–7.2である必要があります。`--config`は下位の設定の検証を省略しません。
 
 ## Azure APIとOllamaの入力・費用制御
 
-0.20.0ではconfig schema 7.2.0を使い、Azure CLIへの依存をなくしました。
+0.21.0ではconfig schema 8.0.0を使います。Azure CLIは不要です。
 音声文字起こしCLIと同じSDKのブラウザ認証・永続cache方式です。まず保存済みの認証でtokenを取得し、
 対話が必要な場合だけブラウザを開きます。認証後はアカウント情報と暗号化cacheを次回にも使います。
 認証の取消・組織の方針変更などでは再認証が必要です。対話認証にはブラウザとローカルの接続先が必要です。
@@ -314,24 +342,24 @@ SDKの暗号化cacheに保存し、平文保存には切り替えません。cac
 他アプリやAzure CLIの認証をコピー・変更しません。アカウントを選び直す場合は実行を終了し、
 本アプリの該当アカウント記録だけを削除すると、次回生成時にブラウザで選択できます。
 
-最小のAzure設定は次の通りです。`generation.providers`配下へ置き、
-`generation.active_provider: azure-openai`を指定します。
+最小のAzure設定は次の通りです。`generation.profiles`配下へ置き、
+`generation.active_profile: azure-high`を指定します。
 
 ```yaml
-azure-openai:
+azure-high:
+  provider: azure-openai
   model: <deployment-name>
   reasoning_effort: high
-  azure:
-    endpoint: https://<resource>.openai.azure.com/openai/v1/
+  endpoint: https://<resource>.openai.azure.com/openai/v1/
 ```
 
 Azureの`model`は呼び出すdeployment名です。実モデル名を別途設定する必要はありません。
 `deployment`・`model_version`・`subscription_id`は指定しません。tenantを明示する必要がある環境では
-`azure.tenant_id`を任意で指定できます。実モデル名と版を含む識別子はAPI応答から記録し、版を推測しません。
+`authentication.tenant_id`を任意で指定できます。実モデル名と版を含む識別子はAPI応答から記録し、版を推測しません。
 ノートの`generatorModel`は実応答モデル、`generatorDeployment`は要求deploymentです。
 provenanceも`model`と`requestedDeployment`を分けて記録します。
 
-金額表示が必要な場合だけ、`azure`配下にdeployment別の単価を追加します。
+金額表示が必要な場合だけ、`model`・`endpoint`と同じ階層にdeployment別の`pricing`を追加します。
 `--model`等でdeploymentを変えても、別deploymentの単価は流用しません。
 一致する単価がなければtokenの見積もり・実績を表示し、料金は不明、**JPY上限は適用しない**と表示します。
 入力・出力・呼び出し回数の上限は引き続き適用します。
@@ -481,7 +509,7 @@ flowchart LR
 省略時の保存先は「領域の役割 → 取得元アプリ → 取得環境 → データの種類」の順です。
 明示したrootでは、その直下からデータの種類を配置します。
 以下の`P`は取得provider（`codex`固定）、`I`はsource_id、`T`はthreadKey、`H`は内容hashです。
-`generation.active_provider`を変更しても保存先は変わりません。
+`generation.active_profile`を変更しても保存先は変わりません。
 
 | 保存パス | 内容 |
 | --- | --- |

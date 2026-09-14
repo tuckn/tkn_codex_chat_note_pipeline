@@ -141,7 +141,7 @@ def test_force_dry_run_and_apply_preserve_settings_and_remove_old_storage(tmp_pa
     saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert config_path.read_text(encoding="utf-8").splitlines()[0] == (f'schema_version: "{CONFIG_SCHEMA_VERSION}"')
     assert saved["schema_version"] == CONFIG_SCHEMA_VERSION
-    assert saved["generation"]["providers"]["codex"]["model"] == "custom-model"
+    assert saved["generation"]["profiles"]["codex"]["model"] == "custom-model"
     assert saved["installed_at"] != "2026-01-01T00:00:00+00:00"
     assert "context_store_root" not in saved
     assert "summary_prompt" not in saved

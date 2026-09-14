@@ -42,23 +42,22 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     generation = GenerationConfig.model_validate(yaml.safe_load(args.config.read_text(encoding="utf-8"))["generation"])
-    settings = generation.providers[generation.active_provider]
-    options = {
-        k: v
-        for k, v in settings.model_dump(mode="json").items()
-        if k in {"azure", "limits", "model_digest"} and v is not None
-    }
+    settings = generation.profiles[generation.active_profile]
+    options = settings.inference_options()
     cfg = PipelineConfig(
         installed_at="2026-01-01T00:00:00+00:00",
         sessions_root=args.output,
         raw_root=args.output,
         source_id="evaluation",
         codex_bin=settings.executable or "codex",
-        provider=generation.active_provider,
+        provider=settings.provider,
+        generation_profile=generation.active_profile,
+        claude_bin=settings.executable or "claude",
+        copilot_bin=settings.executable or "copilot",
         model=settings.model,
         reasoning_effort=settings.reasoning_effort,
         inference_options=options,
-        ollama_base_url=settings.base_url or "http://127.0.0.1:11434",
+        ollama_base_url=settings.endpoint or "http://127.0.0.1:11434",
         model_timeout_seconds=300,
         session_note_profile=generation.session_note_profile,
     )
