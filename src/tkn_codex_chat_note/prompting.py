@@ -129,6 +129,7 @@ def render_repair_prompt(
     validation_error: str,
     draft: dict[str, Any],
     events: list[dict[str, Any]] | None = None,
+    allowed_event_ids: list[str] | None = None,
 ) -> str:
     return _managed_input(
         prompt,
@@ -137,6 +138,7 @@ def render_repair_prompt(
         payload={
             "validationError": validation_error,
             "draft": draft,
+            **({"allowedEventIds": allowed_event_ids} if allowed_event_ids is not None else {}),
             **({"events": events} if events is not None else {}),
         },
     )

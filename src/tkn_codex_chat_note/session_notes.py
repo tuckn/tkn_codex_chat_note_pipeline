@@ -12,13 +12,14 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from functools import cached_property, lru_cache
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol
 
+from .api_inference import ApiClient, ApiError
 from .chat_logs import (
     ChatEvent,
     default_sessions_root,
@@ -114,6 +115,7 @@ class PipelineConfig:
     runtime_minutes: int = DEFAULT_RUNTIME_MINUTES
     model_timeout_seconds: int = DEFAULT_MODEL_TIMEOUT_SECONDS
     session_note_profile: str = DEFAULT_SUMMARY_PROFILE
+    inference_options: dict[str, Any] = field(default_factory=dict)
 
     @cached_property
     def summary_profile(self) -> SummaryProfile:
@@ -313,6 +315,7 @@ def make_config(
         claude_bin=existing.claude_bin if existing else "claude",
         copilot_bin=existing.copilot_bin if existing else "copilot",
         ollama_base_url=existing.ollama_base_url if existing else "http://127.0.0.1:11434",
+        inference_options=existing.inference_options if existing else {},
         model=DEFAULT_MODEL,
         reasoning_effort=DEFAULT_REASONING_EFFORT,
         idle_minutes=existing.idle_minutes if existing else DEFAULT_IDLE_MINUTES,
@@ -334,6 +337,7 @@ def config_json(config: PipelineConfig) -> dict[str, Any]:
         "claudeBin": config.claude_bin,
         "copilotBin": config.copilot_bin,
         "ollamaBaseUrl": config.ollama_base_url,
+        **({"inferenceOptions": config.inference_options} if config.inference_options else {}),
         "model": config.model,
         "reasoningEffort": config.reasoning_effort,
         "idleMinutes": config.idle_minutes,
@@ -367,6 +371,7 @@ def load_config(path: Path | None = None) -> PipelineConfig:
         claude_bin=str(value.get("claudeBin") or "claude"),
         copilot_bin=str(value.get("copilotBin") or "copilot"),
         ollama_base_url=str(value.get("ollamaBaseUrl") or "http://127.0.0.1:11434"),
+        inference_options=dict(value.get("inferenceOptions") or {}),
         model=str(value["model"]),
         reasoning_effort=str(value["reasoningEffort"]),
         idle_minutes=int(value.get("idleMinutes", DEFAULT_IDLE_MINUTES)),
@@ -500,6 +505,7 @@ def update_refresh_state(
         "generatorProvider": config.provider,
         "generatorModel": config.model,
         "generatorReasoningEffort": config.reasoning_effort,
+        **({"generatorOptions": config.inference_options} if config.inference_options else {}),
         "generatorPromptVersion": GENERATOR_PROMPT_VERSION,
         "summaryPromptId": prompt.prompt_id,
         "summaryPromptVersion": prompt.version,
@@ -1042,7 +1048,9 @@ class ProviderSummarizer:
         self.overview_schema["properties"].pop("timeline")
         self.overview_schema["required"].remove("timeline")
         self.deadline: datetime | None = None
-        self.last_metrics: dict[str, int] = {}
+        self.last_metrics: dict[str, Any] = {}
+        self.api_client: ApiClient | None = None
+        self.api_record_start = 0
         self.cache_root = cache_root
         self.reuse_cache = True
 
@@ -1056,6 +1064,15 @@ class ProviderSummarizer:
     def _emit(self, event: dict[str, Any]) -> None:
         if self.observer:
             self.observer(event)
+
+    def _api(self) -> ApiClient | None:
+        if self.config.provider == "azure-openai" or (
+            self.config.provider == "ollama" and self.config.inference_options.get("limits")
+        ):
+            if self.api_client is None:
+                self.api_client = ApiClient(self.config)
+            return self.api_client
+        return None
 
     def _invoke(self, prompt: str, *, overview_only: bool = False) -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="tkn-session-note-") as directory:
@@ -1083,6 +1100,17 @@ class ProviderSummarizer:
                     }
                 )
                 try:
+                    api = self._api()
+                    if api is not None:
+                        try:
+                            return api.invoke(prompt, self.overview_schema if overview_only else self.inference_schema,
+                                              timeout=timeout)
+                        finally:
+                            self.last_metrics["apiRequests"] = deepcopy(api.records[self.api_record_start:])
+                            self.last_metrics["modelCalls"] = len(api.records) - self.api_record_start
+                            self.last_metrics["submittedPromptCharacters"] = sum(
+                                record["promptCharacters"] for record in api.records[self.api_record_start:])
+                            self.last_metrics["commandReservedCostJpy"] = api.reserved_jpy
                     return invoke_structured(
                         self.config,
                         prompt,
@@ -1092,8 +1120,16 @@ class ProviderSummarizer:
                     )
                 except InferenceExecutionError as exc:
                     last_error = str(exc)
-                if attempt < 2:
-                    self.sleeper(2**attempt)
+                    if isinstance(exc, ApiError) and not exc.retryable:
+                        raise PipelineError(last_error) from exc
+                    delay = max(2**attempt, exc.retry_after if isinstance(exc, ApiError) else 0)
+                    if attempt < 2:
+                        if delay > 60:
+                            raise PartialPipelineError(
+                                f"API requested a {delay:.0f}-second retry delay; resume after that interval") from exc
+                        if self.deadline and (now_local() + timedelta(seconds=delay)) >= self.deadline:
+                            raise PartialPipelineError("deadline reached before API retry") from exc
+                        self.sleeper(delay)
             raise PipelineError(last_error or "inference generation failed")
 
     def _validated_invoke(
@@ -1107,6 +1143,9 @@ class ProviderSummarizer:
         input_events: Sequence[PreparedEvent] | None = None,
     ) -> dict[str, Any]:
         current_prompt = prompt
+        api = self._api()
+        if api:
+            api.allowed_ids = sorted(allowed_event_ids)
         self.inference_schema["properties"]["timeline"]["items"]["properties"]["eventId"] = {
             "type": "string", "enum": sorted(allowed_event_ids),
         }
@@ -1150,6 +1189,7 @@ class ProviderSummarizer:
                     thread_id=thread_id,
                     validation_error=str(exc),
                     draft=value,
+                    allowed_event_ids=sorted(allowed_event_ids) if overview_only else None,
                     events=[event.as_dict() for event in input_events] if input_events is not None else
                     ([event.as_dict() for event in prepare_events(events)] if events else None),
                 )
@@ -1183,6 +1223,8 @@ class ProviderSummarizer:
         return value
 
     def generate(self, candidate: Candidate) -> dict[str, Any]:
+        api = self._api()
+        self.api_record_start = len(api.records) if api else 0
         self.last_metrics = {
             "chunkCount": 0,
             "modelCalls": 0,
@@ -1206,7 +1248,30 @@ class ProviderSummarizer:
         )
         prepared = prepare_events(candidate.events)
         allowed_ids = {event.id for event in prepared}
-        chunks = chunk_events(prepared, self.chunk_characters)
+        target = min(self.chunk_characters, api.limits.chunk_characters) if api else self.chunk_characters
+        chunks = chunk_events(prepared, target)
+        if api:
+            # Fit the complete request, including prompt/schema and output reservation.
+            while True:
+                oversized = False
+                for index, chunk in enumerate(chunks):
+                    check_schema = deepcopy(self.inference_schema)
+                    check_schema["properties"]["timeline"]["items"]["properties"]["eventId"] = {
+                        "type": "string", "enum": sorted({event.id for event in chunk})}
+                    check_prompt = render_chunk_prompt(
+                        self.prompt, thread_id=candidate.thread_id, part=index + 1,
+                        part_count=len(chunks), events=[event.as_dict() for event in chunk])
+                    api.allowed_ids = sorted({event.id for event in chunk})
+                    if api.estimate(check_prompt, check_schema) > api.limits.input_tokens:
+                        oversized = True
+                        break
+                if not oversized:
+                    break
+                if target <= 512:
+                    raise PipelineError("API input limit cannot fit profile/schema and minimum event input")
+                target = max(512, target // 2)
+                chunks = chunk_events(prepared, target)
+            self.last_metrics["effectiveChunkCharacters"] = target
         self.last_metrics["chunkCount"] = len(chunks)
         self.last_metrics["embeddedImageCount"] = sum(e.embedded_image_count for e in prepared)
         self.last_metrics["imageEncodedCharacters"] = sum(e.image_encoded_characters for e in prepared)
@@ -1307,6 +1372,8 @@ def generator_fingerprint(config: PipelineConfig) -> str:
         "templateSha256": profile.template.sha256,
         "rendererVersion": RENDERER_VERSION,
     }
+    if config.inference_options:
+        value["inferenceOptions"] = config.inference_options
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -2091,6 +2158,7 @@ def rebuild_state(
             "generatorProvider": config.provider,
             "generatorModel": config.model,
             "generatorReasoningEffort": config.reasoning_effort,
+            **({"generatorOptions": config.inference_options} if config.inference_options else {}),
             "generatorPromptVersion": GENERATOR_PROMPT_VERSION,
             "summaryPromptId": prompt.prompt_id,
             "summaryPromptVersion": prompt.version,

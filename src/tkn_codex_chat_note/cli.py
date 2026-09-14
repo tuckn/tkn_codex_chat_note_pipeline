@@ -40,7 +40,7 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", type=Path, help="Explicit YAML config path")
     parser.add_argument(
         "--provider",
-        choices=("codex", "claude-code", "github-copilot", "ollama"),
+        choices=("codex", "claude-code", "github-copilot", "ollama", "azure-openai"),
         help="Generation provider (generation.active_provider); Codex inputs use sources",
     )
     parser.add_argument("--source", help="Select one enabled source_id from sources")

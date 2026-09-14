@@ -12,13 +12,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-InferenceProvider = Literal["codex", "claude-code", "github-copilot", "ollama"]
+InferenceProvider = Literal["codex", "claude-code", "github-copilot", "ollama", "azure-openai"]
 
 PROVIDER_NAMES: dict[str, str] = {
     "codex": "Codex",
     "claude-code": "Claude Code",
     "github-copilot": "GitHub Copilot",
     "ollama": "Ollama",
+    "azure-openai": "Azure OpenAI",
 }
 
 
@@ -337,6 +338,9 @@ def invoke_structured(
 ) -> dict[str, Any]:
     """Run one provider call and return a JSON object matching the requested schema."""
 
+    if config.provider == "azure-openai":
+        from .api_inference import ApiClient
+        return ApiClient(config).invoke(prompt, schema, timeout=timeout)
     if config.provider == "codex":
         return _invoke_codex(config, prompt, schema, cwd=cwd, timeout=timeout)
     if config.provider == "claude-code":

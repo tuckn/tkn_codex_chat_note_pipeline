@@ -158,7 +158,7 @@ def _read_source_store(path: Path, selected_id: str | None = None) -> SourceStor
     if not re.fullmatch(r"(?:2|[2-7]\.[0-9]+\.[0-9]+)", version):
         raise PipelineError("migration source requires a standalone schema-2/3/4/5/6/7 configuration")
     major, minor = (2, 0) if version == "2" else tuple(int(part) for part in version.split(".")[:2])
-    if minor > {2: 2, 3: 0, 4: 1, 5: 0, 6: 0, 7: 0}[major]:
+    if minor > {2: 2, 3: 0, 4: 1, 5: 0, 6: 0, 7: 1}[major]:
         raise PipelineError("unsupported migration source config version")
     if major in {5, 6, 7}:
         if major in {5, 6}:

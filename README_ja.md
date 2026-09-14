@@ -151,7 +151,7 @@ tkn-codex-chat-note --idle-minutes 0 --runtime-minutes 60 pull --limit 20
 なお、`cache_root`は共通で使用され、取得元ごとには設定できません。
 
 ```yaml
-schema_version: "7.0.0"
+schema_version: "7.1.0"
 cache_root: ~/.cache/codex_chat_note_pipeline
 sources:
   my-windows-pc:
@@ -299,6 +299,89 @@ tkn-codex-chat-note --config "C:\path\to\rebuild.yaml" config init
 旧ユーザー設定の検出で既定の`config init`が停止する場合も、上記のように新規設定の
 保存先を明示できます。ただし、読み込まれる現行のユーザー設定や`.tkn/config.yaml`も
 設定schema 7である必要があります。`--config`は下位の設定の検証を省略しません。
+
+## Azure APIとOllamaの入力・費用制御
+
+0.18.0では `azure-openai` とAPI用の上限設定を追加し、config schemaを7.1.0にしました。
+7.0.xはファイルを書き換えずに読み込めます。Codexの取得元と通常のCodex生成設定は維持します。
+比較用の基準を保存した後、インストール済みCLIは `uv tool install . --reinstall` で更新できます。
+
+AzureはAzure CLIの保存済みサインインを使います。必要なときに一度 `az login` を実行すれば、
+各ノート・各分割でブラウザーを開かず、同じアカウントでtokenを更新します。
+設定したtenantと有効なsubscriptionを照合してから取得します。サインインの失効・取消時には
+再ログインが必要です。APIキーへの切替や別の資格情報ファイルは使いません。
+他アプリは自身の認証cacheを継続利用できます。このCLIはAzure CLIの認証を使い、他アプリのcacheをコピー・変更しません。
+
+比較には別の `--config` ファイルを使います。次を `generation.providers` 配下に設定し、
+`generation.active_provider: azure-openai` を指定します。
+
+```yaml
+azure-openai:
+  model: <underlying-model-name>
+  reasoning_effort: high
+  azure:
+    endpoint: https://<resource>.openai.azure.com/openai/v1/
+    deployment: <deployment-name>
+    model_version: <model-version>
+    tenant_id: <tenant-guid>
+    subscription_id: <subscription-guid>
+    input_jpy_per_million: 100.0   # 適用される確認済み単価に置き換える。
+    output_jpy_per_million: 500.0
+    pricing_date: YYYY-MM-DD
+  limits:
+    input_tokens: 60000
+    output_tokens: 16000
+    context_tokens: 100000
+    chunk_characters: 120000
+    max_calls: 20
+    max_cost_jpy: 100
+```
+
+v1 Chat Completionsへ厳密なJSON形式、`store=false`、推論分を含む回答上限とdeployment名を渡します。
+応答の実model/versionは設定値と照合します。API非対応のschema制約は送信形式からのみ除き、
+ローカルでは引き続き検証します。拒否・回答打ち切り・401/403・モデル不一致は通信再試行せず失敗にします。
+429と一時的なサーバー／通信エラーは最大3試行とし、Retry-Afterの秒数・日時・ミリ秒指定を尊重します。
+待機指定が60秒を超える場合は、指定時間後の再開を案内して停止します。
+生成内容の修正呼び出しも予算に含めます。
+
+Ollamaはprovider内に `limits` と固定した `model_digest` を設定できます。
+`context_tokens` と `output_tokens` を `num_ctx` と `num_predict` へ渡します。
+例えば入力48000・出力8192・context65536で実験を始められますが、これは試行条件であり、
+PC性能に対する推奨値ではありません。tokenizerに依存しないUTF-8 byte数の上限を使うため、
+多くの小さな分割になる場合があります。`limits` を省略した場合は従来のOllama動作を維持します。
+
+分割・統合・修正のすべてで、指示文とschema込みの入力を送信前に確認します。
+Azureの見積もりは `o200k_base` と余裕分を用います。初回の実API実行時には公開tokenizerデータを
+取得する場合があります。見積もりは請求token数ではありません。分割は枠に収まるまで自動調整します。
+統合・修正が枠を超える場合は、保存済み分割を残して停止します。適切な上限への調整、または
+統合方式の変更後に再開してください。dry-runではtoken取得・認証・AI呼び出しを行いません。
+
+予算は1つの生成runner／コマンドに適用し、選択した取得元間でも共有して、順番に呼び出します。送信するたびに推定入力と
+最大出力の費用を確保し、課金結果が不明な失敗時も確保分を残します。確保額は請求額や返金額ではありません。
+別コマンド・別プロセスでは予算が新しくなるため、複数実行を合算した上限ではありません。
+Azureの費用通知も課金を停止しません。適用される最新の単価を設定し、1プロセスで実行して、
+評価を再開するときは過去の試行分も含めて残り予算を管理してください。
+
+run reportの `generationMetrics.apiRequests` に、取得できた実入力・出力・推論・cached input token数、
+応答model、時間、推定JPY費用を保存します。未知のusageはnullです。cached inputは通常入力単価で
+保守的に計算し、cache writeは報告されない限り不明とします。接続先・model/version・上限・digestは
+生成条件のfingerprintとprovenanceへ反映します。
+
+実データ保存領域と分けた比較には `scripts/evaluate_session_notes.py --manifest <private-baseline-manifest.json>
+--config <generation-config.yaml> --output <fresh-evaluation-directory> --thread <thread-id>` を使えます。
+`--dry-run` は計画の検証だけを行います。snapshotのhashを検証し、検証済みMarkdown・構造化JSON・
+各試行の使用量を `run-history` に保存し、再開前の費用記録も残します。同一条件の再実行では完了済み出力と途中結果を再利用します。
+出力先には評価専用のディレクトリを指定してください。manifestの各行には `metadata`、元のprovenanceの
+`activity` と、SHA-256をファイル名にした複製を指す `files.sessionNote` / `raw` / `canonicalEvents` を持たせます。
+
+実装上の参照: [Azure構造化出力](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs)、
+[Azure CLIの資格情報](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.azureclicredential)、
+[Ollama chat API](https://docs.ollama.com/api/chat)。
+
+API送信時は構造化された出典IDだけを短い可逆な別名へ変換し、全出典を共通のJSON Schema enumから
+選ばせます。返答を元のIDへ戻してから検証し、原文の本文・Raw・Canonical Eventsは変更しません。
+長いIDの反復入力を減らし、IDの省略・捏造を防ぎます。統合の修正には、Rawを再送せず許可されたIDを
+添えます。送信形式は `apiRequests` の `event-id-aliases-v1` で識別できます。
 
 ## 保存構造と責務の境界
 
