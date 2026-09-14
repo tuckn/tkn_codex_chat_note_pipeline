@@ -71,6 +71,14 @@ def supports_color(stream: TextIO) -> bool:
     return _enable_windows_virtual_terminal(stream)
 
 
+class ConsoleFilter(logging.Filter):
+    """Keep SDK transport diagnostics out of the user-facing console."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        transport = record.name.split(".", 1)[0] in {"azure", "msal", "httpx", "httpcore"}
+        return not transport or record.levelno >= logging.WARNING
+
+
 class ColorFormatter(logging.Formatter):
     """Add conventional colors without changing captured or redirected logs."""
 

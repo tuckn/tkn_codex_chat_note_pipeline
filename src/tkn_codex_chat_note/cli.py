@@ -17,7 +17,7 @@ from .config import (
     load_app_config,
     resolve_app_config,
 )
-from .console_logging import ColorFormatter, log_success, supports_color
+from .console_logging import ColorFormatter, ConsoleFilter, log_success, supports_color
 from .raw_capture import RawCaptureError
 from .session_notes import (
     PipelineError,
@@ -169,6 +169,8 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
 def _configure_logging(args: argparse.Namespace) -> None:
     level = logging.DEBUG if args.verbose else logging.ERROR if args.quiet else logging.INFO
     handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(level)
+    handler.addFilter(ConsoleFilter())
     handler.setFormatter(
         ColorFormatter(
             "[%(levelname)s] %(message)s",

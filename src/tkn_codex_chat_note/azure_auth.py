@@ -65,11 +65,14 @@ def token_provider(endpoint: str, tenant: str | None = None) -> Any:
 
     def get_token() -> str:
         try:
-            return str(credential.get_token(SCOPE).token)
+            token = str(credential.get_token(SCOPE).token)
         except AuthenticationRequiredError:
             LOGGER.info("Opening your browser: Azure sign-in or account selection is required (timeout: 300 seconds)")
             record = credential.authenticate(scopes=[SCOPE])
             save_record(path, record)
-            return str(credential.get_token(SCOPE).token)
+            token = str(credential.get_token(SCOPE).token)
+
+        LOGGER.info("Azure authentication succeeded: access token acquired")
+        return token
 
     return get_token

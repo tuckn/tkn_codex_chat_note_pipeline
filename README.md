@@ -1,5 +1,7 @@
 # Tkn Codex Chat Note Pipeline
 
+Console logs summarize actions and results. Azure authentication is reported on one line; SDK HTTP headers and transport details are suppressed even with `--verbose`. Warnings and errors remain visible (`--quiet` shows errors only).
+
 Japanese: [README_ja.md](README_ja.md)
 
 Preserve local Codex conversations as source evidence and turn each conversation into

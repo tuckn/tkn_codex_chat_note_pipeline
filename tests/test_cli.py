@@ -97,6 +97,27 @@ def test_logging_uses_readable_stderr_prefixes(
     assert logging.getLogger().level == logging.INFO
 
 
+@pytest.mark.parametrize("flags", [[], ["--verbose"], ["--quiet"]])
+def test_console_suppresses_sdk_details_but_preserves_errors(
+    flags: list[str], capsys: CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_logging(build_parser().parse_args([*flags, "config", "show"]))
+    for name in ("azure.core.pipeline.policies.http_logging_policy", "azure.identity", "msal", "httpx", "httpcore"):
+        logger = logging.getLogger(name)
+        monkeypatch.setattr(logger, "level", logging.DEBUG)
+        logger.debug("Request headers: debug details")
+        logger.info("Response headers: info details")
+        logger.warning("Transport warning")
+        logger.error("Transport failed")
+    LOGGER.info("Azure authentication succeeded: access token acquired")
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "headers" not in captured.err
+    assert captured.err.count("[ERROR] Transport failed\n") == 5
+    assert captured.err.count("[WARNING] Transport warning\n") == (0 if "--quiet" in flags else 5)
+    assert ("Azure authentication succeeded" in captured.err) == ("--quiet" not in flags)
+
+
 def test_quiet_and_verbose_logging_levels() -> None:
     quiet = build_parser().parse_args(["-q", "config", "show"])
     _configure_logging(quiet)

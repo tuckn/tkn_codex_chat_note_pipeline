@@ -1,5 +1,7 @@
 # Tkn Codex Chat Note Pipeline
 
+コンソールログは処理内容と結果を簡潔に表示します。Azure 認証結果は1行で表示し、SDK の HTTP ヘッダーや通信詳細は `--verbose` でも表示しません。警告・エラーは引き続き表示します（`--quiet` はエラーのみ）。
+
 English: [README.md](README.md)
 
 Codexとの会話を源泉データとして保存し、会話ごとに再利用可能なSession Noteを生成する
