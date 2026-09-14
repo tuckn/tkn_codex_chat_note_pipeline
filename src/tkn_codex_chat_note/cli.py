@@ -203,6 +203,42 @@ def _emit_project_table(projects: list[dict[str, Any]]) -> None:
         print(f"{status:<{widths[0]}}  {name:<{widths[1]}}  {project_id:<{widths[2]}}  {current_root}")
 
 
+def _usage_summary(value: dict[str, Any]) -> str:
+    parts = []
+    for key, label in (("inputTokens", "input"), ("outputTokens", "output")):
+        number = value.get(key)
+        parts.append(f"{label} {number:,} tokens" if isinstance(number, int) else f"{label} tokens unknown")
+    cost = value.get("estimatedCostJpy")
+    if isinstance(cost, int | float):
+        parts.append(f"estimated JPY {cost:.2f}")
+    elif value.get("requestCount", 1):
+        parts.append("cost unknown")
+    return ", ".join(parts)
+
+
+def _estimate_summary(value: dict[str, Any]) -> str:
+    if value.get("status") == "unavailable":
+        return "estimate unavailable: " + str(value.get("reason", "unknown"))
+    text = (f"{value.get('preparedTextCharacters', 0):,} input characters; "
+            f"{value.get('baseCalls', 0)} base calls; {value.get('cachedChunkCount', 0)} cached chunks")
+    tokens = value.get("inputTokensEstimate")
+    if isinstance(tokens, int):
+        text += f"; total input estimate {tokens:,} tokens"
+        text += f"; output ceiling {value.get('outputTokensCeiling', 0):,} tokens"
+    cost = value.get("baseCostCeilingJpy")
+    if isinstance(cost, int | float):
+        text += f"; base cost ceiling JPY {cost:.2f} (repairs/retries extra)"
+    if value.get("mergeUsesInputCeiling"):
+        text += "; merge input reserves its limit"
+    if value.get("commandMaxCostJpy") is not None:
+        text += f"; command limit JPY {value['commandMaxCostJpy']:.2f} / {value['commandMaxCalls']} calls"
+    if value.get("unavailableCount"):
+        text += f"; {value['unavailableCount']} thread estimates unavailable (totals incomplete)"
+    if value.get("mayExceedCommandBudget"):
+        text += "; completion may require more than this command budget"
+    return text
+
+
 def _metric_summary(value: dict[str, Any]) -> str:
     metrics: list[str] = []
     duration = value.get("durationSeconds")
@@ -223,6 +259,8 @@ def _metric_summary(value: dict[str, Any]) -> str:
     for name, label in (("reusedChunks", "cached chunks"), ("reusedReductions", "cached merges")):
         if value.get(name):
             metrics.append(f"{value[name]} {label}")
+    if value.get("usageTotals", {}).get("requestCount"):
+        metrics.append(_usage_summary(value["usageTotals"]))
     return f" ({', '.join(metrics)})" if metrics else ""
 
 
@@ -261,12 +299,25 @@ def _progress(value: dict[str, Any]) -> None:
             value.get("chunkCount", "?"),
             value.get("threadId", "unknown"),
         )
+    elif event_type == "generation-estimate":
+        LOGGER.info("Estimate for %s: %s", value.get("threadId", "all"), _estimate_summary(value))
+        if value.get("provider") == "azure-openai" and value.get("costBudgetEnforced") is False:
+            LOGGER.info("No price configured for this deployment: cost unknown; only token/call limits apply")
+    elif event_type == "api-request-start":
+        if value.get("reservedCostJpy") is not None:
+            LOGGER.info("API input estimate %s tokens; call reserve JPY %.2f; command reserve JPY %.2f",
+                        value["inputTokenEstimate"], value["reservedCostJpy"], value["commandReservedCostJpy"])
+        else:
+            LOGGER.info("API input estimate %s tokens", value["inputTokenEstimate"])
+    elif event_type == "api-request-complete":
+        LOGGER.info("API %s: %s", value.get("status"), _usage_summary(value))
     elif event_type == "model-attempt":
         LOGGER.info(
-            "Calling %s (attempt %s, timeout %ss)",
+            "Calling %s (attempt %s, timeout %ss, %s prompt characters)",
             value.get("provider", "Codex"),
             value.get("attempt", "?"),
             value.get("timeoutSeconds", "?"),
+            value.get("promptCharacters", "?"),
         )
     elif event_type == "stage-resumed":
         LOGGER.info("Reusing validated %s for thread %s",
@@ -449,6 +500,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if failed:
             LOGGER.error("Pipeline has failures; inspect the report and retry after resolving them")
             return 1
+        if report.get("generationEstimate"):
+            LOGGER.info("Run estimate: %s", _estimate_summary(report["generationEstimate"]))
+        if report.get("usageTotals", {}).get("requestCount"):
+            LOGGER.info("Run API usage: %s", _usage_summary(report["usageTotals"]))
         if not report["ok"] or (not args.dry_run and args.command in {"clone", "pull"} and not report["complete"]):
             LOGGER.warning("Pipeline is incomplete; the next pull resumes pending work")
             return 2

@@ -18,13 +18,11 @@ from tkn_codex_chat_note.session_notes import ProviderSummarizer, generator_fing
 
 AZURE = {
     "endpoint": "https://example.openai.azure.com/openai/v1/",
-    "deployment": "deployment",
-    "model_version": "2026-07-09",
-    "tenant_id": "11111111-1111-4111-8111-111111111111",
-    "subscription_id": "22222222-2222-4222-8222-222222222222",
-    "input_jpy_per_million": 31.864,
-    "output_jpy_per_million": 191.184,
-    "pricing_date": "2026-09-14",
+    "pricing": {"example-model": {
+        "input_jpy_per_million": 31.864,
+        "output_jpy_per_million": 191.184,
+        "pricing_date": "2026-09-14",
+    }},
 }
 SCHEMA = {
     "type": "object",
@@ -78,7 +76,7 @@ def test_azure_payload_and_unknown_usage_preserved(fake_http):
     assert client.invoke("hello", SCHEMA, timeout=30) == {"ok": "yes"}
     body = json.loads(calls[0].content)
     assert str(calls[0].url) == AZURE["endpoint"] + "chat/completions"
-    assert body["model"] == "deployment" and body["store"] is False
+    assert body["model"] == "example-model" and body["store"] is False
     assert body["response_format"]["json_schema"]["strict"] is True
     assert "minLength" not in body["response_format"]["json_schema"]["schema"]["properties"]["ok"]
     assert SCHEMA["properties"]["ok"]["minLength"] == 1
@@ -101,7 +99,7 @@ def test_http_failures_are_bounded_and_usage_unknown(fake_http, status, retry):
     assert client.reserved_jpy > 0
 
 
-@pytest.mark.parametrize("kind", ["length", "refusal", "model", "json", "missing"])
+@pytest.mark.parametrize("kind", ["length", "refusal", "model-missing", "json", "missing"])
 def test_incomplete_or_wrong_identity_never_returns_note(fake_http, kind):
     calls, replies = fake_http
     value = response()
@@ -109,8 +107,8 @@ def test_incomplete_or_wrong_identity_never_returns_note(fake_http, kind):
         value["choices"][0]["finish_reason"] = "length"
     if kind == "refusal":
         value["choices"][0]["message"]["refusal"] = "refused"
-    if kind == "model":
-        value["model"] = "another-version"
+    if kind == "model-missing":
+        value.pop("model")
     if kind == "json":
         value["choices"][0]["message"]["content"] = "not json"
     if kind == "missing":
@@ -167,17 +165,17 @@ def test_limits_and_provider_config_validate_offline():
         active_provider="azure-openai",
         providers={"azure-openai": {"model": "example-model", "azure": AZURE, "limits": {}}},
     )
-    assert cfg.providers["azure-openai"].azure.deployment == "deployment"
+    assert cfg.providers["azure-openai"].model == "example-model"
     with pytest.raises(ValidationError):
         GenerationConfig(
-            active_provider="azure-openai", providers={"azure-openai": {"model": "example", "azure": AZURE}}
+            active_provider="azure-openai", providers={"azure-openai": {"model": "example"}}
         )
 
 
-def test_generation_identity_includes_endpoint_model_version_and_limits(tmp_path):
+def test_generation_identity_includes_endpoint_deployment_and_limits(tmp_path):
     cfg = replace(config(tmp_path), provider="azure-openai", inference_options=settings().inference_options)
     one = generator_fingerprint(cfg)
-    changed = replace(cfg, inference_options={"azure": {**AZURE, "model_version": "new"}, "limits": {}})
+    changed = replace(cfg, model="new-deployment")
     assert generator_fingerprint(changed) != one
     assert (
         generator_fingerprint(
@@ -388,8 +386,11 @@ def test_azure_dry_run_never_authenticates_or_writes(tmp_path, monkeypatch):
         providers={"azure-openai": {"model": "example-model", "azure": AZURE, "limits": {}}},
     )
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    with patch.object(ApiClient, "__init__", side_effect=AssertionError("API initialization")):
-        run_pipeline(cfg, mode="clone", dry_run=True)
+    with (patch.object(ApiClient, "invoke", side_effect=AssertionError("API invocation")),
+          patch.object(api_inference, "token_provider", side_effect=AssertionError("authentication"))):
+        report = run_pipeline(cfg, mode="clone", dry_run=True)
+    assert report["ok"] and report["threadCounts"] == {"planned": 2}
+    assert report["generationEstimate"]["baseCostCeilingJpy"] > 0
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 
 
@@ -404,7 +405,8 @@ def test_azure_note_can_pass_strict_staged_validation(tmp_path):
     data.update(
         _generator="Azure OpenAI",
         _generatorProvider=cfg.provider,
-        _generatorModel=cfg.model,
+        _generatorModel="response-model-2026-07-09",
+        _generatorDeployment=cfg.model,
         _generatorReasoningEffort=cfg.reasoning_effort,
     )
     rendered = render_note(case, data, {}, profile=cfg.summary_profile)

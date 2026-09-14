@@ -108,17 +108,25 @@ def render_chunk_prompt(
     )
 
 
+def compact_merge_partials(partials: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Timeline text and citations stay intact; the public endpoint pair is redundant here.
+    return [{**part, **({"timeline": [
+        {key: value for key, value in item.items() if key not in {"startEventId", "endEventId"}}
+        for item in part["timeline"]]} if "timeline" in part else {})} for part in partials]
+
+
 def render_reduction_prompt(
     prompt: SummaryPrompt,
     *,
     thread_id: str,
     partials: list[dict[str, Any]],
+    state_items: list[dict[str, Any]] | None = None,
 ) -> str:
     return _managed_input(
         prompt,
         mode="merge-partial-summaries",
         thread_id=thread_id,
-        payload={"partials": partials},
+        payload={"partials": compact_merge_partials(partials), **({"stateItems": state_items} if state_items else {})},
     )
 
 
@@ -130,6 +138,7 @@ def render_repair_prompt(
     draft: dict[str, Any],
     events: list[dict[str, Any]] | None = None,
     allowed_event_ids: list[str] | None = None,
+    state_context: dict[str, Any] | None = None,
 ) -> str:
     return _managed_input(
         prompt,
@@ -138,7 +147,9 @@ def render_repair_prompt(
         payload={
             "validationError": validation_error,
             "draft": draft,
-            **({"allowedEventIds": allowed_event_ids} if allowed_event_ids is not None else {}),
+            **(state_context or {}),
+            **({"allowedEventIds": allowed_event_ids}
+               if allowed_event_ids is not None and not (state_context or {}).get("partials") else {}),
             **({"events": events} if events is not None else {}),
         },
     )

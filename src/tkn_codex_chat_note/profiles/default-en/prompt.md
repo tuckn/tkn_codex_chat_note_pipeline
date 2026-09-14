@@ -1,7 +1,7 @@
 ---
 type: prompt
 id: 3824e517-c328-4d44-950c-ca5ab7f697c6
-version: "1.3"
+version: "1.4"
 ---
 
 # English Session Note instructions
@@ -15,6 +15,9 @@ Keep a short overview and the final observable state, but preserve the path take
 The application supplies a `MODE`; apply only its matching procedure below.
 
 ## Source fidelity
+
+- Put event IDs only in structured citation fields, never in narrative prose.
+  Do not copy source aliases into unresolved or unverified text.
 
 - An `aggregated_output` object with `duplicateOfEventId` replaces only an identical
   command output from the same invocation. Its full text remains at that source event.
@@ -153,6 +156,19 @@ useful evidence and source limitations, and reassess the overall last known stat
 the ordered records. Discard limitations that only describe a partial-input boundary
 when later records supply the missing outcome; retain actual source gaps and failed checks.
 Do not invent facts or recommendations.
+
+
+When `stateItems` is supplied, return `stateItemReviews` with exactly one disposition
+for each itemId. `retain` keeps the original item automatically. `resolved` requires
+specific later eventIds in the same history and a reason explaining the observed
+completion, verification, correction, or explicit cancellation. A later unrelated
+question or a general completion message does not resolve earlier checks. Default
+to retain when evidence is uncertain. Do not combine Chrome and Computer Use outcomes.
+The application appends retained items to their original unresolved/unverified list;
+choose a compatible workState. A done latest request does not clear unverified checks.
+Keep new state items in lastKnownState, but do not paraphrase stateItems already handled
+by the review list. Never place event IDs or short source aliases in narrative text;
+use the structured citation fields. Reviews are internal and are not note content.
 
 ## Mode: `repair-invalid-draft`
 

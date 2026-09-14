@@ -162,7 +162,7 @@ To change the storage directories, set `raw_root`, `data_root`, and `state_root`
 `cache_root` is shared and cannot be configured separately for each `sources.<source_id>` entry.
 
 ```yaml
-schema_version: "7.1.0"
+schema_version: "7.2.0"
 cache_root: ~/.cache/codex_chat_note_pipeline
 sources:
   my-windows-pc:
@@ -327,51 +327,78 @@ still use schema 7; `--config` does not bypass validation of lower layers.
 
 ## Azure API and bounded Ollama generation
 
-Version 0.18.0 adds `azure-openai` and optional API limits to configuration schema
-7.1.0. Existing 7.0.x files are read compatibly without rewriting them. Codex inputs
-and ordinary Codex generation settings remain the same. Update an installed copy
-with `uv tool install . --reinstall` after preserving any evaluation baselines.
+Version 0.20.0 uses configuration schema 7.2.0. Azure CLI is not required.
+Azure authentication follows the same SDK browser/persistent-cache approach as the
+local audio transcriber: try cached credentials, open a browser only when interaction
+is required, then retain the account record and encrypted token cache for later runs.
+Sign-in can be required again after revocation or an organization policy change.
+Browser access and a local callback connection are required for interactive sign-in.
+Cancelling or timing out stops inference before submission; `pull` may already have
+captured source history. Dry-run never authenticates or opens a browser.
 
-Azure uses the existing Azure CLI sign-in. Run `az login` once if needed; token
-refresh reuses that account and does not open a browser for every note or chunk.
-The configured tenant and enabled subscription are checked before obtaining a
-bearer token. An expired/revoked sign-in requires a new login. No API key fallback
-or separate credential file is used. Other applications can keep their existing
-credential caches; this CLI does not copy or change them.
+The account record is stored below `~/.tkn/codex_chat_note_pipeline/authentication/`.
+Access/refresh tokens remain in the SDK's encrypted cache, with no plaintext fallback.
+Cache names are isolated by this application, endpoint and optional tenant. Other
+applications' caches and Azure CLI accounts are not copied or modified. To select
+another account, remove only this application's matching account record while no run
+is active; the next generation requests browser account selection.
 
-Use a separate `--config` file for comparisons. Add the following under
-`generation.providers` and set `generation.active_provider: azure-openai`:
+Minimal Azure configuration under `generation.providers` (select
+`generation.active_provider: azure-openai`):
 
 ```yaml
 azure-openai:
-  model: <underlying-model-name>
+  model: <deployment-name>
   reasoning_effort: high
   azure:
     endpoint: https://<resource>.openai.azure.com/openai/v1/
-    deployment: <deployment-name>
-    model_version: <model-version>
-    tenant_id: <tenant-guid>
-    subscription_id: <subscription-guid>
-    input_jpy_per_million: 100.0   # Replace with verified applicable prices.
-    output_jpy_per_million: 500.0
-    pricing_date: YYYY-MM-DD
-  limits:
-    input_tokens: 60000
-    output_tokens: 16000
-    context_tokens: 100000
-    chunk_characters: 120000
-    max_calls: 20
-    max_cost_jpy: 100
 ```
 
-The v1 Chat Completions request uses strict JSON, `store=false`, an explicit
-completion limit (including reasoning), and the deployment name. The configured
-underlying model/version must match the response. Schema constraints unsupported
-by the API are omitted only from the transport schema and still checked locally.
-Refusals, incomplete output, 401/403, and invalid identities fail without blind
-transport retries. 429 and transient server/network failures allow at most three
-attempts; Retry-After seconds/date and millisecond headers are honored. Delays over
-60 seconds stop for a later resume. Semantic repairs count toward budgets.
+`model` is the requested Azure deployment, not a separately maintained underlying
+model name. Do not add `deployment`, `model_version`, or `subscription_id`.
+`azure.tenant_id` is optional for environments requiring explicit tenant selection.
+The API response supplies the actual model identity, including its revision when
+returned; the CLI does not guess a revision. Notes use `generatorModel` for that
+identity and `generatorDeployment` for the requested deployment. Provenance records
+likewise separate `model` from `requestedDeployment`.
+
+Prices are optional and keyed by deployment, so a `--model` override cannot silently
+reuse another deployment's rates. Without matching rates, token estimates and usage
+remain available, cost stays unknown, and the JPY cap is **not enforced**. Input/output
+and call limits still apply. Add verified rates under `azure` when a cost cap is needed:
+
+```yaml
+pricing:
+  <deployment-name>:
+    input_jpy_per_million: 100.0  # Placeholder; replace with the applicable rate.
+    output_jpy_per_million: 500.0
+    pricing_date: YYYY-MM-DD
+```
+
+`limits` is optional. Defaults: input 60,000, output 16,000, context 100,000 tokens,
+chunk size 120,000 characters, 30 calls and a JPY 100 reservation cap when priced.
+These limits do not claim to describe every deployment's model capabilities. Rates
+are user-maintained estimates, not Azure billing discovery; refresh them when the
+model behind an unchanged deployment changes.
+
+Legacy schema-7.0/7.1 Azure config is normalized in memory: `azure.deployment` becomes
+`model`, the old model/version and subscription requirement are removed, and flat
+prices move under that deployment. Files are not rewritten automatically. Explicitly
+update the user config and use `config show` to inspect effective values.
+
+The v1 Chat Completions request uses strict JSON, `store=false`, an explicit completion
+limit including reasoning, and the deployment name. Each response must identify its
+actual model. Cached stages retain that identity; if a later response or cached stage
+has another identity, generation stops without combining models. Run `--force` to
+regenerate after changing the model behind the same deployment. Fully cached/current
+notes do not contact Azure, so they cannot detect server-side deployment updates.
+Endpoint/deployment/config changes naturally select another generation identity.
+
+Schema constraints unsupported by the API are omitted only from transport and still
+checked locally. Refusals, incomplete output and 401/403 fail without blind retries.
+429 and transient server/network failures allow at most three attempts; Retry-After
+seconds/date and millisecond headers are honored. Delays over 60 seconds stop for a
+later resume. Semantic repairs count toward budgets.
 
 For Ollama, configure `limits` and a pinned `model_digest` under its provider entry.
 `context_tokens` and `output_tokens` set `num_ctx` and `num_predict`. For example,
@@ -381,11 +408,11 @@ byte bound is deliberately conservative and can result in many small chunks.
 Without `limits`, the older Ollama behavior is preserved.
 
 Complete prompts and schemas are checked before sending chunks, merges, and
-repairs. Azure estimates use `o200k_base` plus a margin (the first real API run may
-fetch its public tokenizer data); estimates are not billed tokens. Chunk size is
+repairs. Azure estimates use a verified local `o200k_base` cache plus a margin, or
+a conservative byte bound when unavailable; estimates are not billed tokens. Chunk size is
 reduced automatically to fit. An oversized merge/repair stops with saved chunks
 rather than silently dropping input; raise suitable limits or revise the reduction
-strategy before resuming. Dry-run does not load tokens, authenticate, or call AI.
+strategy before resuming. Dry-run does not acquire credentials, authenticate, or call AI.
 
 Budgets apply to one sequential provider runner/command, shared across selected sources. Each submitted attempt
 reserves its estimated input plus maximum output cost; failed attempts with unknown
@@ -398,7 +425,8 @@ Run reports include `generationMetrics.apiRequests`: actual input/output/reasoni
 cached input tokens when returned, response model, elapsed time, and an estimated
 JPY cost. Missing usage stays null. The estimate charges cached input at the normal
 input rate (conservative); cache-write tokens are unknown unless reported. Connection,
-model/version, limits, and digest enter generation fingerprints and provenance.
+deployment/settings, limits, and digest enter generation fingerprints and provenance.
+Actual response models are tracked separately in requests and validated checkpoints.
 
 To evaluate pinned Canonical Events without touching the live store, use
 `scripts/evaluate_session_notes.py --manifest <private-baseline-manifest.json>
@@ -412,7 +440,7 @@ The output directory must be dedicated to that evaluation. A manifest row contai
 `raw`, and `canonicalEvents` to copied SHA-256-named snapshot files.
 
 Implementation references: [Azure structured outputs](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs),
-[Azure CLI credential](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.azureclicredential),
+[Browser credential](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.interactivebrowsercredential),
 [Ollama chat API](https://docs.ollama.com/api/chat).
 
 API requests use short, reversible source-ID aliases in structured input and a shared
@@ -421,6 +449,69 @@ before validation; source prose, Raw and Canonical Events are unchanged. This re
 repeated identifier tokens and prevents abbreviated/invented citation IDs. Merge
 repairs also receive the allowed IDs without resending raw events. `apiRequests`
 records the wire encoding as `event-id-aliases-v1`.
+
+### Preview size/cost and observe actual usage (0.19.0)
+
+```console
+tkn-codex-chat-note clone --dry-run
+tkn-codex-chat-note pull --dry-run --limit 1
+tkn-codex-chat-note pull --limit 1
+```
+
+Dry-run reports estimates for selected notes that need generation; current, reviewed,
+edited/protected and deferred notes do not add inference cost. It reads validated chunk
+checkpoints and excludes reusable chunks. A final merge reserves one call until its exact
+input is known, even if a merge or staged note might later be reusable. Nothing is written,
+no login occurs, and no network request is made. `--full-output` includes each thread's
+`generationEstimate`; the compact JSON retains the aggregate estimate.
+
+All providers show prepared input characters, pending prompt characters and base calls.
+Codex/other command providers have unknown token counts/prices because their own context,
+schemas and billing are not observable. Azure also shows estimated **total input tokens
+across calls**, maximum output tokens (including reasoning), and a **base cost ceiling in
+JPY**. These are different units from the per-request input limit. Future merge input
+reserves its full configured input limit; every generated answer reserves the configured
+output maximum. Repairs/retries are additional. This is a conservative estimate, not an
+expected bill or a guarantee that the whole plan fits the command budget. The command's
+call/cost limits and an over-budget indication are shown separately.
+
+Azure token counting reads an existing SHA-256-verified `o200k_base` tokenizer cache and
+adds a margin. Without that cache it uses a more conservative UTF-8-byte bound and reports
+`utf8-byte-upper-bound`; it never downloads or repairs a cache while estimating. Ollama
+with explicit limits uses the same byte bound. This can increase the estimated chunk count.
+
+During a run, stderr shows each request's input estimate/reservation and returned input,
+output tokens and estimated JPY cost, plus thread/run totals. Unknown usage or local costs
+are shown as unknown. Codex calls show prompt characters. Normal run reports persist:
+
+- `threads[].generationEstimate`: pre-generation assumptions and limits.
+- `threads[].generationMetrics.apiRequests[]`: sequence, chunk/merge/repair stage, actual
+  usage, elapsed time, response model, reservation and estimated cost, including failed attempts.
+- `threads[].generationMetrics.usageTotals` and top-level `usageTotals`: complete totals,
+  `knownInputTokens` / `knownEstimatedCostJpy` subtotals, and missing-request counts.
+
+Merge repairs reuse the full partial records, omit a redundant citation-ID list, and
+compact JSON whitespace without changing source strings or facts.
+
+Any missing usage makes its complete total null; known subtotals remain available.
+Source reports have unique run IDs under `<state_root>/reports/`; use `reportPath` or
+`reportPaths` to find them. Aggregate unique run reports to include earlier failed runs
+and resumed work; do not also count `last-run.json` or duplicate compact stdout copies.
+Dry-run prints JSON but creates no report file; redirect stdout yourself to retain a plan.
+
+### Preserve pending state across merges
+
+Generator prompt 10, Japanese profile 3.8 and English profile 1.4 require a disposition
+for every partial unresolved/unverified item. Retained text is copied into the final state;
+removal requires a reason and later cited evidence within the same history. Missing,
+duplicate or invalid dispositions trigger bounded repair. Reviews are saved as internal
+`generationMetrics.stateItemReviews`; public Session Note schema stays 6. The model still
+judges whether the cited evidence actually resolves an item, so factual review remains useful.
+A completed latest request does not automatically clear earlier unverified checks.
+Merge inputs omit redundant timeline endpoints while retaining all text/citations; final
+timelines remain unchanged. Repairs carry the required state context. These prompt changes
+invalidate older generation/checkpoint identities for all providers; reviewed/edited notes
+remain protected. Existing Ollama configuration remains supported.
 
 ## Data and responsibility boundaries
 

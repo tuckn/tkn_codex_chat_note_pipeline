@@ -19,28 +19,34 @@ class GenerationCache:
     def __init__(self, root: Path, identity: dict[str, Any], *, reuse: bool = True) -> None:
         self.directory = root / "generation" / content_hash(identity)
         self.reuse = reuse
+        self.last_response_model: str | None = None
 
     def read(self, key: str) -> dict[str, Any] | None:
+        self.last_response_model = None
         if not self.reuse:
             return None
         path = self.directory / f"{key}.json"
         try:
             envelope = json.loads(path.read_text(encoding="utf-8"))
             value = envelope["value"]
-            if (
-                envelope["version"] == 1 and envelope["key"] == key
-                and isinstance(value, dict) and envelope["sha256"] == content_hash(value)
-            ):
+            model = envelope.get("responseModel")
+            hashed = {"value": value, "responseModel": model} if envelope["version"] == 2 else value
+            if (envelope["version"] in (1, 2) and envelope["key"] == key
+                and isinstance(value, dict) and envelope["sha256"] == content_hash(hashed)):
+                self.last_response_model = model
                 return value
         except (OSError, ValueError, KeyError, TypeError):
             pass
         return None
 
-    def write(self, key: str, value: dict[str, Any]) -> None:
+    def write(self, key: str, value: dict[str, Any], *, response_model: str | None = None) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
         target = self.directory / f"{key}.json"
         temporary = self.directory / f".tmp-{uuid4().hex}"
         envelope = {"version": 1, "key": key, "sha256": content_hash(value), "value": value}
+        if response_model is not None:
+            envelope.update(version=2, responseModel=response_model,
+                            sha256=content_hash({"value": value, "responseModel": response_model}))
         try:
             temporary.write_text(json.dumps(envelope, ensure_ascii=False), encoding="utf-8")
             replace_file(temporary, target)

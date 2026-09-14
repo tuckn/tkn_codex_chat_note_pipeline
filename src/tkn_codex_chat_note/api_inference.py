@@ -4,21 +4,18 @@ from __future__ import annotations
 
 import json
 import math
-import shutil
-import subprocess
 import time
 from copy import deepcopy
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from functools import lru_cache
 from typing import Any
 
 import httpx
-import tiktoken
-from azure.identity import AzureCliCredential, get_bearer_token_provider
 
 from .api_settings import ApiLimits, AzureSettings
+from .azure_auth import token_provider
 from .inference import InferenceConfig, InferenceExecutionError, schema_grounded_prompt, validate_ollama_base_url
+from .offline_tokens import token_estimate
 
 
 class ApiError(InferenceExecutionError):
@@ -91,29 +88,10 @@ def alias_prompt(prompt: str, mapping: dict[str, str]) -> str:
     before, rest = prompt.split("BEGIN_INPUT_JSON\n", 1)
     payload, after = rest.split("\nEND_INPUT_JSON", 1)
     value = remap_event_ids(json.loads(payload), mapping)
-    return before + "BEGIN_INPUT_JSON\n" + json.dumps(value, ensure_ascii=False) + "\nEND_INPUT_JSON" + after
-
-
-@lru_cache(maxsize=8)
-def token_provider(subscription: str, tenant: str) -> Any:
-    command = shutil.which("az")
-    if not command:
-        raise ApiError("Azure CLI is required; install it and run az login once")
-    try:
-        result = subprocess.run(
-            [command, "account", "show", "--subscription", subscription, "-o", "json"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=30,
-            check=False,
-        )
-        account = json.loads(result.stdout) if result.returncode == 0 else {}
-    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        raise ApiError("Cannot verify Azure account; run az login and retry") from exc
-    if account.get("tenantId", "").lower() != tenant.lower() or account.get("state") != "Enabled":
-        raise ApiError("Azure account/tenant mismatch or login unavailable; check az login and subscription")
-    return get_bearer_token_provider(AzureCliCredential(subscription=subscription), "https://ai.azure.com/.default")
+    # Repair carries the draft and source context; remove JSON whitespace only.
+    compact = "MODE: repair-invalid-draft\n" in before
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":") if compact else None)
+    return before + "BEGIN_INPUT_JSON\n" + encoded + "\nEND_INPUT_JSON" + after
 
 
 def retry_delay(headers: httpx.Headers) -> float:
@@ -148,8 +126,19 @@ class ApiClient:
         self.limits = ApiLimits.model_validate(self.options.get("limits", {}))
         self.azure = AzureSettings.model_validate(self.options["azure"]) if config.provider == "azure-openai" else None
         self.allowed_ids: list[str] = []
+        self.stage = "unknown"
         self.records: list[dict[str, Any]] = []
         self.reserved_jpy = 0.0
+        self.observer: Any = None
+        self.response_model: str | None = None
+        self.pricing = self.azure.pricing.get(config.model) if self.azure else None
+
+    def observe_model(self, model: Any) -> None:
+        if not isinstance(model, str) or not model.strip():
+            raise ApiError("Azure response/checkpoint has no model identity; no note accepted")
+        if self.response_model is not None and self.response_model != model:
+            raise ApiError("Azure deployment returned a different model from earlier stages; rerun with --force")
+        self.response_model = model
 
     def aliases(self) -> dict[str, str]:
         return {identifier: f"E{index:05d}" for index, identifier in enumerate(self.allowed_ids, 1)}
@@ -160,7 +149,7 @@ class ApiClient:
         schema = strict_schema(schema, list(mapping.values()))
         if self.azure:
             return {
-                "model": self.azure.deployment,
+                "model": self.config.model,
                 "messages": [{"role": "user", "content": prompt}],
                 "response_format": {
                     "type": "json_schema",
@@ -186,11 +175,8 @@ class ApiClient:
 
     def estimate(self, prompt: str, schema: dict[str, Any]) -> int:
         body = json.dumps(self.body(prompt, schema), ensure_ascii=False)
-        if self.azure:
-            # Named encoding + margin is an estimate, never reported as billed usage.
-            return math.ceil(len(tiktoken.get_encoding("o200k_base").encode(body, disallowed_special=())) * 1.1) + 512
-        # Tokenizer-independent conservative bound, including format and chat template allowance.
-        return len(body.encode("utf-8")) + 512
+        count, self.estimator = token_estimate(body, azure=self.azure is not None)
+        return count
 
     def invoke(self, prompt: str, schema: dict[str, Any], *, timeout: int) -> dict[str, Any]:
         estimated = self.estimate(prompt, schema)
@@ -201,27 +187,21 @@ class ApiClient:
             )
         if len(self.records) >= self.limits.max_calls:
             raise ApiError("API command max_calls budget reached; checkpointed work can be resumed")
-        reserve = (
-            0.0
-            if self.azure is None
-            else (
-                estimated * self.azure.input_jpy_per_million
-                + self.limits.output_tokens * self.azure.output_jpy_per_million
-            )
-            / 1_000_000
-        )
-        if self.reserved_jpy + reserve > self.limits.max_cost_jpy:
+        reserve = self.pricing.cost(estimated, self.limits.output_tokens) if self.pricing else 0.0
+        if self.pricing and self.reserved_jpy + reserve > self.limits.max_cost_jpy:
             raise ApiError("API command estimated cost budget reached; no request submitted")
         headers = {"Content-Type": "application/json"}
         if self.azure:
             try:
                 headers["Authorization"] = (
-                    "Bearer " + token_provider(self.azure.subscription_id, self.azure.tenant_id)()
+                    "Bearer " + token_provider(self.azure.endpoint, self.azure.tenant_id)()
                 )
             except ApiError:
                 raise
             except Exception as exc:
-                raise ApiError("Azure sign-in is unavailable or expired; run az login and retry") from exc
+                raise ApiError(
+                    "Azure browser authentication failed or timed out before submission; complete sign-in and retry"
+                ) from exc
             endpoint = self.azure.endpoint + "chat/completions"
         else:
             endpoint = validate_ollama_base_url(self.config.ollama_base_url) + "/api/chat"
@@ -236,10 +216,17 @@ class ApiClient:
             record: dict[str, Any] = {
                 "provider": self.config.provider,
                 "requestEncoding": "event-id-aliases-v1",
+                "inputJsonFormat": "compact" if "MODE: repair-invalid-draft\n" in prompt else "default",
+                "requestSequence": len(self.records) + 1,
+                "stage": getattr(self, "stage", "unknown"),
+                "outputTokenLimit": self.limits.output_tokens,
+                **({"requestedDeployment": self.config.model,
+                    "pricing": self.pricing.model_dump() if self.pricing else None,
+                    "costBudgetEnforced": self.pricing is not None} if self.azure else {}),
                 "promptCharacters": len(self.body(prompt, schema)["messages"][0]["content"]),
                 "inputTokenEstimate": estimated,
-                "estimator": "o200k_base-plus-margin" if self.azure else "utf8-byte-upper-bound",
-                "reservedCostJpy": reserve,
+                "estimator": getattr(self, "estimator", "test-estimate"),
+                "reservedCostJpy": reserve if self.pricing else None,
                 "inputTokens": None,
                 "outputTokens": None,
                 "reasoningTokens": None,
@@ -253,6 +240,8 @@ class ApiClient:
             self.records.append(record)
             self.reserved_jpy += reserve
             started = time.monotonic()
+            if self.observer:
+                self.observer({"type": "api-request-start", **record, "commandReservedCostJpy": self.reserved_jpy})
             try:
                 response = client.post(endpoint, json=self.body(prompt, schema), headers=headers)
                 record["httpStatus"] = response.status_code
@@ -273,13 +262,9 @@ class ApiClient:
                         reasoningTokens=_number((usage.get("completion_tokens_details") or {}).get("reasoning_tokens")),
                         cachedInputTokens=_number((usage.get("prompt_tokens_details") or {}).get("cached_tokens")),
                     )
-                    if record["inputTokens"] is not None and record["outputTokens"] is not None:
-                        record["estimatedCostJpy"] = (
-                            record["inputTokens"] * self.azure.input_jpy_per_million
-                            + record["outputTokens"] * self.azure.output_jpy_per_million
-                        ) / 1_000_000
-                    if payload.get("model") != f"{self.config.model}-{self.azure.model_version}":
-                        raise ApiError("Azure returned a different model/version from the configured identity")
+                    if self.pricing and record["inputTokens"] is not None and record["outputTokens"] is not None:
+                        record["estimatedCostJpy"] = self.pricing.cost(record["inputTokens"], record["outputTokens"])
+                    self.observe_model(payload.get("model"))
                     choice = payload["choices"][0]
                     if choice.get("finish_reason") != "stop" or choice["message"].get("refusal"):
                         raise ApiError("Azure returned a refusal or incomplete response; no note accepted")
@@ -312,3 +297,5 @@ class ApiClient:
                 raise
             finally:
                 record["durationSeconds"] = round(time.monotonic() - started, 3)
+                if self.observer:
+                    self.observer({"type": "api-request-complete", **record})

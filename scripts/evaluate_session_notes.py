@@ -125,7 +125,8 @@ def main() -> int:
                 print(json.dumps({"thread": thread, "status": "unchanged"}), flush=True)
                 continue
         if args.dry_run:
-            print(json.dumps({"thread": thread, "status": "would-generate", "events": len(events)}), flush=True)
+            print(json.dumps({"thread": thread, "status": "would-generate", "events": len(events),
+                              "generationEstimate": runner.estimate(candidate)}), flush=True)
             continue
         report = {
             "schemaVersion": 1,
@@ -148,7 +149,8 @@ def main() -> int:
             value.update(
                 _generator=provider_name(cfg.provider),
                 _generatorProvider=cfg.provider,
-                _generatorModel=cfg.model,
+                _generatorModel=runner.last_metrics.get("responseModel", cfg.model),
+                _generatorDeployment=cfg.model if cfg.provider == "azure-openai" else None,
                 _generatorReasoningEffort=cfg.reasoning_effort,
             )
             note = args.output / (thread + ".md")
