@@ -599,3 +599,28 @@ def test_ledger_is_written_only_when_a_thread_state_changes(tmp_path: Path, monk
     unchanged = execute(config, "pull")
     assert unchanged["complete"]
     assert not ledger_writes
+
+
+@pytest.mark.parametrize("trigger_turn", [True, False])
+def test_agent_communication_metadata_is_control_data_retained_in_raw(tmp_path: Path, trigger_turn: bool) -> None:
+    from tkn_codex_chat_note.chat_logs import read_thread_source
+
+    config = config_for(tmp_path)
+    original = config.sessions_root / "one.jsonl"
+    write_chat(original, thread_id="one", cwd=tmp_path)
+    events = read_thread_source(original).events
+    metadata = {
+        "timestamp": "2025-01-01T00:00:00Z",
+        "type": "inter_agent_communication_metadata",
+        "payload": {"trigger_turn": trigger_turn},
+    }
+    with original.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(metadata) + "\n")
+    before = original.read_bytes()
+    assert read_thread_source(original).events == events
+    report = execute(config)
+    assert report["complete"], report
+    assert not report["threads"][0]["diagnostics"]["unknownRecordTypes"]
+    assert (config.raw_root / "sessions/one.jsonl").read_bytes() == before
+    saved = json.loads(Path(report["reportPath"]).read_text(encoding="utf-8"))
+    assert saved["threads"] == report["threads"]

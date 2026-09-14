@@ -122,7 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
         "ingest", help="Write source copies and manifests (writes by default)"
     )
     ingest.add_argument("--dry-run", action="store_true", help="Inspect without writing")
-    ingest.add_argument("--full-output", action="store_true")
+    ingest.add_argument("--full-output", action="store_true", help="Explicitly print the full JSON report to stdout")
     for name, dest, label in (("session-notes", "notes_command", "Session Notes"),):
         group = commands.add_parser(name, help="Build or validate " + label)
         sub = group.add_subparsers(dest=dest, required=True)
@@ -142,7 +142,8 @@ def _add_build_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--allow-edited", action="store_true", help="Explicitly replace edited, unreviewed outputs")
     parser.add_argument(
-        "--full-output", action="store_true", help="Include per-thread and per-stage details in JSON output"
+        "--full-output", action="store_true",
+        help="Explicitly print the full JSON report to stdout (default: summary and saved report paths)"
     )
 
 
@@ -355,14 +356,6 @@ def _progress(value: dict[str, Any]) -> None:
         )
 
 
-def _compact_report(report: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: [_compact_report(item) for item in value] if key == "sourceResults" else value
-        for key, value in report.items()
-        if key not in {"threads", "rawIngest"}
-    }
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     _utf8_console()
     args = build_parser().parse_args(argv)
@@ -505,23 +498,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             LOGGER.info("Run report: %s", report_path)
         if report.get("reportPath"):
             LOGGER.info("Run report: %s", report["reportPath"])
-        LOGGER.info("Thread states: %s", report["threadCounts"])
         for warning in report.get("warnings", []):
             LOGGER.warning("%s", warning)
-        _emit(report if args.full_output else _compact_report(report))
+        if args.full_output:
+            _emit(report)
+        counts = report["threadCounts"]
+        summary = (
+            f"{args.command}: generated {report.get('generatedSessionNoteCount', 0)} notes; "
+            f"current {counts.get('current', 0)}, deferred {counts.get('deferred', 0)}, "
+            f"excluded {counts.get('excluded', 0)}, failed {len(report['failed']) or counts.get('failed', 0)}"
+        )
+        if report.get("usageTotals", {}).get("requestCount"):
+            summary += "; " + _usage_summary(report["usageTotals"])
         failed = bool(report["failed"] or report["threadCounts"].get("failed"))
         if failed:
-            LOGGER.error("Pipeline has failures; inspect the report and retry after resolving them")
+            LOGGER.error("%s; inspect the saved report for failures", summary)
             return 1
-        if report.get("generationEstimate"):
-            LOGGER.info("Run estimate: %s", _estimate_summary(report["generationEstimate"]))
-        if report.get("usageTotals", {}).get("requestCount"):
-            LOGGER.info("Run API usage: %s", _usage_summary(report["usageTotals"]))
         if (report.get("generationStop") or not report["ok"]
             or (not args.dry_run and args.command in {"clone", "pull"} and not report["complete"])):
-            LOGGER.warning("Pipeline is incomplete; the next pull resumes pending work")
+            LOGGER.warning("%s; incomplete, next pull resumes pending work", summary)
             return 2
-        log_success(LOGGER, "Plan validated" if args.dry_run else "Run completed")
+        log_success(LOGGER, "%s; %s", summary, "plan validated (no report saved)" if args.dry_run else "completed")
         return 0
     except (PipelineError, RawCaptureError, OSError, ValueError, SystemExit) as exc:
         LOGGER.error("%s", exc)

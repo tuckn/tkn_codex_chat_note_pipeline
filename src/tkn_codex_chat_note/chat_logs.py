@@ -253,6 +253,10 @@ def read_thread_source(path: Path) -> ThreadSource:
             thread_cwd = str(payload.get("cwd") or thread_cwd)
             turn_cwd = thread_cwd
             continue
+        if event_type == "inter_agent_communication_metadata":
+            # Agent scheduling metadata (e.g. trigger_turn), not conversation evidence.
+            # Original fields remain available in the immutable Raw capture.
+            continue
         if event_type == "turn_context":
             turn_id = str(payload.get("turn_id") or "")
             turn_cwd = str(payload.get("cwd") or thread_cwd)

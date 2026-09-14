@@ -127,6 +127,9 @@ def test_cli_pause(tmp_path, monkeypatch, capsys, command):
         args.append("build")
     assert main(args) == 2
     out = capsys.readouterr()
-    report = json.loads(out.out)
-    assert report["generationStop"]["reason"] == "api-cost-budget"
+    assert out.out == ""
+    paths = [line.split("Run report: ", 1)[1] for line in out.err.splitlines() if "Run report: " in line]
+    assert paths
+    reports = [json.loads(Path(path).read_text(encoding="utf-8")) for path in paths]
+    assert any(report.get("generationStop", {}).get("reason") == "api-cost-budget" for report in reports)
     assert "Generation paused" in out.err and "Failed thread" not in out.err
