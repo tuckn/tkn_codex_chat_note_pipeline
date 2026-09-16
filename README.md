@@ -432,7 +432,7 @@ Input size, including instructions and schemas, is checked before every chunk, m
 If a repair would exceed the input limit, the oversized request is not submitted. Instead, the tool regenerates from the complete original chunk or merge input without the invalid draft. It includes validation feedback when it fits, shortening or omitting only that feedback if necessary. The result must pass the same validation, within the existing maximum of three generation attempts per stage and the command's call/cost limits. Validated checkpoints remain reusable.
 An original merge input that exceeds the limit still stops that thread while retaining saved chunks; adjust the limits or merge method before resuming.
 
-For Japanese output, an avoidable-English warning shows the matched phrase, JSON field path (zero-based array indices), and a short excerpt. For example: `supplied events at $.summaryItems[0].text: "The supplied events show completion."`. Excerpts are JSON-escaped to keep console lines readable; common credential patterns are redacted. The run report also records `generationMetrics.validationFailures` (including `languageMatches`) and `repairFallbacks` when regeneration was needed. Old failed drafts were not saved, so their exact wording cannot be recovered from old reports.
+The Japanese profile asks the model to write natural Japanese. English phrases such as `supplied events` or `actual execution` alone do not trigger warnings, repair calls, or generation failures. Output structure, source citations, timeline coverage, and state consistency are still validated. Actual validation failures are recorded in `generationMetrics.validationFailures`; `repairFallbacks` records regeneration caused by an oversized repair request.
 Warnings appear in yellow on supported terminals. Redirected output and terminals with `NO_COLOR` remain plain text.
 
 #### 5.5.1. Azure configuration
@@ -738,6 +738,9 @@ A branch change regenerates the same note ID; an unchanged `pull` does not regen
 
 - A Session Note is a derived record and does not replace the original evidence.
 - Unresolved or unverified items from each chunk remain in the final note unless later events in the same history show that they were resolved. Completing the latest request does not automatically clear earlier unverified items.
+- Each pending item carries its own source citations in internal `pendingStateItems`, indexed by kind and position in the partial's pending list. The overall final-state citations are not reused as every item's origin. Missing, duplicate, or unknown item citations require repair.
+- The merge generates item reviews before the final state. Resolution requires later evidence in every relevant history; that evidence remains in the final state's citations. Retained unresolved requests prevent `done`; retained unverified checks alone do not. Contradictions are reported for repair without silently dropping requests or guessing a replacement status.
+- Run reports record the item text and origins in `generationMetrics.stateItems` and successful reviews in `stateItemReviews`. Internal item evidence stays in generation checkpoints and does not change the published Session Note schema. The updated generation contract invalidates older generation fingerprints/checkpoints on the next build; reviewed and edited notes retain their existing protection. This adds no separate inference stage, but item citations increase the generated payload.
 - The model judges whether a source actually shows resolution, so factual verification remains necessary.
 - Changing Project membership does not change the conversation ID. This CLI retains observed membership, while downstream CLIs handle semantic Scope classification and approved relationships.
 

@@ -12,7 +12,7 @@ from test_thread_timeline import candidate, config, event
 from tkn_codex_chat_note import offline_tokens
 from tkn_codex_chat_note.api_inference import ApiClient
 from tkn_codex_chat_note.generation_usage import estimate_totals, usage_totals
-from tkn_codex_chat_note.session_notes import PipelineError, ProviderSummarizer, validate_note_data
+from tkn_codex_chat_note.session_notes import ProviderSummarizer
 from tkn_codex_chat_note.state_reconciliation import collect_state_items, reconcile_state
 
 
@@ -87,6 +87,7 @@ def state_case(tmp_path):
     events = (event("first"), event("later", actor="assistant"))
     first = note_data(candidate(tmp_path, (events[0],)))
     first["lastKnownState"]["unverified"] = ["追加検証は実施されていない。"]
+    first["pendingStateItems"] = [{"kind": "unverified", "itemIndex": 0, "eventIds": [events[0].id]}]
     last = note_data(candidate(tmp_path, (events[1],)))
     last.pop("timeline")
     return events, collect_state_items([first]), last
@@ -147,9 +148,8 @@ def test_retained_unresolved_cannot_be_silently_done(tmp_path):
     events, items, value = state_case(tmp_path)
     items[0]["kind"] = "unresolved"
     value["stateItemReviews"] = [review(items[0])]
-    result = reconcile_state(value, items, events)
-    with pytest.raises(PipelineError):
-        validate_note_data(result, {e.id for e in events}, overview_only=True)
+    with pytest.raises(ValueError, match="retained unresolved.*workState=done"):
+        reconcile_state(value, items, events)
 
 
 def test_merge_repair_keeps_state_context_and_resume_estimate(tmp_path, monkeypatch):
@@ -166,6 +166,7 @@ def test_merge_repair_keeps_state_context_and_resume_estimate(tmp_path, monkeypa
             data = note_data(candidate(tmp_path, (e,)))
             if e.id == "first":
                 data["lastKnownState"]["unverified"] = ["追加検証は実施されていない。"]
+                data["pendingStateItems"] = [{"kind": "unverified", "itemIndex": 0, "eventIds": [e.id]}]
             return data
         overview_calls += 1
         data = note_data(candidate(tmp_path, (events[-1],)))

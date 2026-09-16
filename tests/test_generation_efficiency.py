@@ -77,6 +77,8 @@ def fake_inference(case):
                 item.pop("endEventId")
                 item["eventId"] = anchor
             assert schema["properties"]["timeline"]["items"]["properties"]["eventId"]["enum"] == sorted(ids)
+        if "pendingStateItems" in schema["properties"]:
+            data["pendingStateItems"] = []
         validate_summary_output_schema(data, schema)
         return data
     return invoke

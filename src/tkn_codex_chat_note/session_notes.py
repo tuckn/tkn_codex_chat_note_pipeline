@@ -59,7 +59,14 @@ from .prompting import (
 )
 from .raw_capture import RawCaptureError, RawSourceInput, ingest_raw_sources
 from .safety import redact_secret_like_content
-from .state_reconciliation import REVIEW_SCHEMA, collect_state_items, reconcile_state
+from .state_reconciliation import (
+    PENDING_STATE_SCHEMA,
+    REVIEW_SCHEMA,
+    collect_state_items,
+    public_note_data,
+    reconcile_state,
+    validate_pending_state_items,
+)
 from .summary_resources import (
     DEFAULT_SUMMARY_PROFILE,
     SummaryProfile,
@@ -83,14 +90,10 @@ DEFAULT_IDLE_MINUTES = 30
 DEFAULT_RUNTIME_MINUTES = 230
 DEFAULT_MODEL_TIMEOUT_SECONDS = 1800
 DEFAULT_CHUNK_CHARACTERS = 120_000
-GENERATOR_PROMPT_VERSION = 10
+GENERATOR_PROMPT_VERSION = 11
 RENDERER_VERSION = 13
 REBUILD_WORK_SCHEMA_VERSION = 1
 IN_FLIGHT_GRACE_MINUTES = 9
-AVOIDABLE_ENGLISH_PHRASES = {
-    "actual execution",
-    "supplied events",
-}
 SUMMARY_PROFILE = load_summary_profile()
 
 
@@ -988,27 +991,6 @@ def chunk_events(
     return chunks
 
 
-def avoidable_english_matches(value: Any, path: str = "$") -> list[dict[str, str]]:
-    """Locate rejected phrases, with bounded context for diagnostics."""
-    matches: list[dict[str, str]] = []
-    if isinstance(value, dict):
-        for key, child in value.items():
-            matches.extend(avoidable_english_matches(child, f"{path}.{key}"))
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            matches.extend(avoidable_english_matches(child, f"{path}[{index}]"))
-    elif isinstance(value, str):
-        value = redact_secret_like_content(value)
-        for phrase in sorted(AVOIDABLE_ENGLISH_PHRASES):
-            # Match against the original string to keep offsets correct after Unicode case folding.
-            match = re.search(re.escape(phrase), value, flags=re.IGNORECASE)
-            if match:
-                start, end = max(0, match.start() - 70), min(len(value), match.end() + 70)
-                excerpt = ("…" if start else "") + value[start:end] + ("…" if end < len(value) else "")
-                matches.append({"phrase": phrase, "path": path, "excerpt": excerpt})
-    return matches
-
-
 def validate_note_data(
     value: Any, allowed_event_ids: set[str], *, overview_only: bool = False,
     profile: SummaryProfile = SUMMARY_PROFILE,
@@ -1047,14 +1029,6 @@ def validate_note_data(
     invalid = set(cited) - allowed_event_ids
     if invalid:
         raise PipelineError(f"Inference output cited unknown event ids: {', '.join(sorted(invalid))}")
-    if profile.name == "default-jp" and (matches := avoidable_english_matches(value)):
-        details = "; ".join(
-            f"{item['phrase']} at {item['path']}: " + json.dumps(item["excerpt"], ensure_ascii=False)
-            for item in matches[:5]
-        )
-        if len(matches) > 5:
-            details += f"; {len(matches) - 5} more matches (see validationFailures in the run report)"
-        raise PipelineError("Inference output contains avoidable English prose: " + details)
     return value
 
 
@@ -1076,6 +1050,8 @@ class ProviderSummarizer:
         self.prompt = self.profile.prompt
         self.schema = self.profile.schema.value
         self.inference_schema = deepcopy(self.schema)
+        self.inference_schema["properties"]["pendingStateItems"] = deepcopy(PENDING_STATE_SCHEMA)
+        self.inference_schema["required"].append("pendingStateItems")
         timeline = self.inference_schema["properties"]["timeline"]["items"]
         for name in ("startEventId", "endEventId"):
             timeline["properties"].pop(name)
@@ -1214,7 +1190,8 @@ class ProviderSummarizer:
                             if isinstance(item.get("eventIds"), list) and anchor not in item["eventIds"]:
                                 item["eventIds"].append(anchor)
                 # Check shape first so independent semantic checks can all run safely.
-                validate_summary_output_schema(value, self.overview_schema if overview_only else self.schema)
+                note = public_note_data(value) if not overview_only and isinstance(value, dict) else value
+                validate_summary_output_schema(note, self.overview_schema if overview_only else self.schema)
                 errors: list[str] = []
                 if api:
                     wire_aliases = set(api.aliases().values())
@@ -1227,10 +1204,15 @@ class ProviderSummarizer:
                                       + ", ".join(sorted(stray)))
                 try:
                     validate_note_data(
-                        reconcile_state(value, self.state_items, self.state_events) if overview_only else value,
+                        reconcile_state(value, self.state_items, self.state_events) if overview_only else note,
                         allowed_event_ids, overview_only=overview_only, profile=self.profile)
-                except PipelineError as error:
+                except (PipelineError, ValueError) as error:
                     errors.append(str(error))
+                if not overview_only:
+                    try:
+                        validate_pending_state_items(value, allowed_event_ids)
+                    except ValueError as error:
+                        errors.append(str(error))
                 if events and not overview_only:
                     try:
                         validate_timeline(value["timeline"], events)
@@ -1243,7 +1225,6 @@ class ProviderSummarizer:
                 self.last_metrics.setdefault("validationFailures", []).append({
                     "threadId": thread_id, "stage": "merge" if overview_only else "chunk",
                     "attempt": semantic_attempt + 1, "reason": str(exc),
-                    "languageMatches": avoidable_english_matches(value) if self.profile.name == "default-jp" else [],
                 })
                 if semantic_attempt == 2:
                     raise
@@ -1302,9 +1283,11 @@ class ProviderSummarizer:
                     if overview_only:
                         validate_summary_output_schema(cached, self.overview_schema)
                     validate_note_data(
-                        reconcile_state(cached, self.state_items, self.state_events) if overview_only else cached,
+                        reconcile_state(cached, self.state_items, self.state_events)
+                        if overview_only else public_note_data(cached),
                         allowed_ids, overview_only=overview_only, profile=self.profile)
                     if not overview_only:
+                        validate_pending_state_items(cached, allowed_ids)
                         validate_timeline(cached["timeline"], events)
                 except (PipelineError, ValueError):
                     self.last_metrics["rejectedCheckpoints"] += 1
@@ -1411,7 +1394,8 @@ class ProviderSummarizer:
                 try:
                     if api and api.azure and (not cache or not cache.last_response_model):
                         raise ValueError("Azure checkpoint lacks response model")
-                    validate_note_data(cached, ids, profile=self.profile)
+                    validate_note_data(public_note_data(cached), ids, profile=self.profile)
+                    validate_pending_state_items(cached, ids)
                     validate_timeline(
                         cached["timeline"], tuple(replace(source_by_id[e.id], text=e.text) for e in chunk))
                 except (PipelineError, ValueError):
@@ -1530,13 +1514,22 @@ class ProviderSummarizer:
                 )
             )
         if len(partials) == 1:
-            result = partials[0]
+            result = public_note_data(partials[0])
         else:
             self.state_items = collect_state_items(partials)
             if self.state_items:
-                self.overview_schema["properties"]["stateItemReviews"] = deepcopy(REVIEW_SCHEMA)
-                self.overview_schema["required"].append("stateItemReviews")
+                # Generate dispositions before the final state, which must account for retained requests.
+                review_schema = deepcopy(REVIEW_SCHEMA)
+                review_schema["items"]["properties"]["itemId"]["enum"] = [
+                    item["itemId"] for item in self.state_items
+                ]
+                self.overview_schema["properties"] = {
+                    "stateItemReviews": review_schema, **self.overview_schema["properties"],
+                }
+                self.overview_schema["required"].insert(0, "stateItemReviews")
                 self.state_context = {"stateItems": self.state_items, "partials": compact_merge_partials(partials)}
+            self.last_metrics["stateItems"] = deepcopy(self.state_items)
+            self.last_metrics["stateItemCount"] = len(self.state_items)
             reduction_prompt = render_reduction_prompt(
                 self.prompt, thread_id=candidate.thread_id, partials=partials, state_items=self.state_items)
             result = self._stage_invoke(
@@ -1544,7 +1537,6 @@ class ProviderSummarizer:
                 cache=cache,
             )
             self.last_metrics["stateItemReviews"] = deepcopy(result.get("stateItemReviews", []))
-            self.last_metrics["stateItemCount"] = len(self.state_items)
             result = reconcile_state(result, self.state_items, candidate.events)
             # Timeline entries never pass through lossy model reduction a second time.
             result["timeline"] = [item for partial in partials for item in partial["timeline"]]

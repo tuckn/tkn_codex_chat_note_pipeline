@@ -90,8 +90,7 @@ def test_english_keeps_semantic_guards_and_localizes_renderer(tmp_path: Path) ->
     data = note_data(case)
     data["summaryItems"][0]["text"] = "Actual execution was confirmed in the supplied events."
     validate_note_data(data, {"known"}, profile=profile)
-    with pytest.raises(PipelineError, match="avoidable English"):
-        validate_note_data(data, {"known"})
+    validate_note_data(data, {"known"})
     path = tmp_path / "note.md"
     path.write_text(render_note(case, data, {}, profile=profile), encoding="utf-8")
     validate_session_note(path)

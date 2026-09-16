@@ -1203,12 +1203,12 @@ class SessionNotePipelineTests(unittest.TestCase):
         self.assertIn('generatorReasoningEffort: "high"', note)
         self.assertIn('type: "sessionNote"', note)
         self.assertIn('promptId: "f5dfc679-13d3-4fcc-9736-b7d4e6bb5c11"', note)
-        self.assertIn('promptVersion: "3.9"', note)
+        self.assertIn('promptVersion: "3.10"', note)
         from tkn_codex_chat_note.summary_resources import load_summary_schema
         self.assertIn(f'outputSchemaSha256: "{load_summary_schema().sha256}"', note)
         self.assertIn('templateId: "4d19c51c-0d02-43a5-b6ad-6d67f9739b75"', note)
         self.assertIn('templateVersion: "4.1"', note)
-        self.assertIn("generatorPromptVersion: 10", note)
+        self.assertIn("generatorPromptVersion: 11", note)
         self.assertIn("rendererVersion: 13", note)
         self.assertIn("generatedAt:", note)
         self.assertIn('fileSlug: "automated-session-note"', note)
@@ -1227,14 +1227,13 @@ class SessionNotePipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "done work cannot contain unresolved"):
             validate_note_data(data, {event.id for event in candidate.events})
 
-    def test_note_validation_rejects_avoidable_english_prose(self) -> None:
+    def test_note_validation_accepts_english_phrases_in_japanese_profile(self) -> None:
         write_chat(self.sessions / "chat.jsonl", thread_id="thread-1", cwd=self.repo)
         candidate = scan_candidates(self.config, [self.project])[0][0]
         data = note_data(candidate)
         data["summaryItems"][0]["text"] = "Merged from supplied events."
 
-        with self.assertRaisesRegex(Exception, "avoidable English prose"):
-            validate_note_data(data, {event.id for event in candidate.events})
+        self.assertEqual(validate_note_data(data, {event.id for event in candidate.events}), data)
 
 
 if __name__ == "__main__":

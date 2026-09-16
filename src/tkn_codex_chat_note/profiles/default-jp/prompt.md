@@ -1,7 +1,7 @@
 ---
 type: prompt
 id: f5dfc679-13d3-4fcc-9736-b7d4e6bb5c11
-version: "3.9"
+version: "3.10"
 ---
 
 # Default Session Note instructions
@@ -134,6 +134,14 @@ is an Action; a check result can be Validation. The actor is determined from the
 
 ## Mode: `source-events`
 
+Return `pendingStateItems` as inference-only evidence for the pending lists in
+`lastKnownState`. For each `unresolved` or `unverified` entry, include exactly one
+record with `kind`, zero-based `itemIndex`, and non-empty `eventIds`. Cite only events
+that establish THIS item's pending state, including its latest explicit reaffirmation
+in each relevant history. Do not copy the overall lastKnownState.eventIds or unrelated
+completion events. Return an empty array when both lists are empty. These records are
+used for integration and are not additional timeline entries or public note fields.
+
 Create a partial or complete record from the supplied events. Cover only this part and
 retain its developments even if they might be superseded in a later part. Cite only IDs
 in this part. Every meaningful user message must have its own timeline coverage.
@@ -162,20 +170,30 @@ Do not invent facts or recommendations.
 
 
 When `stateItems` is supplied, return `stateItemReviews` with exactly one disposition
-for each itemId. `retain` keeps the original item automatically. `resolved` requires
+for each itemId. Review these items BEFORE deciding the final lastKnownState.
+Each item's eventIds refer to that item's pending evidence, not the whole partial state.
+`retain` keeps the original item automatically. `resolved` requires
 specific later eventIds in the same history and a reason explaining the observed
 completion, verification, correction, or explicit cancellation. A later unrelated
 question or a general completion message does not resolve earlier checks. Default
 to retain when evidence is uncertain. Do not combine Chrome and Computer Use outcomes.
 The application appends retained items to their original unresolved/unverified list;
-choose a compatible workState. A done latest request does not clear unverified checks.
+choose a compatible workState. If ANY unresolved item is retained, workState cannot be
+done: choose blocked, in-progress, or waiting-for-user according to the source, and
+describe the remaining work consistently. Retained unverified checks alone may coexist
+with done. Never silently discard a retained request to report completion.
 Keep new state items in lastKnownState, but do not paraphrase stateItems already handled
 by the review list. Never place event IDs or short source aliases in narrative text;
 use the structured citation fields. Reviews are internal and are not note content.
+Do not leave a resolved item's text in the final pending lists unless a separate
+occurrence with its own evidence remains pending. Cite the resolution evidence in the
+final state when it supports completion.
 
 ## Mode: `repair-invalid-draft`
 
 Correct the supplied draft only enough to satisfy the reported validation error.
+For a source-events repair, also return complete pendingStateItems matching the repaired
+pending lists. For a merge repair, reassess item reviews before choosing the final state.
 Preserve valid developments. Use the supplied source events when available to repair
 missing coverage or invalid anchors. A draft may use the published endpoint fields;
 regenerate timeline entries using a single `eventId` as required by the inference

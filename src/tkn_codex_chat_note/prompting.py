@@ -115,7 +115,7 @@ def render_chunk_prompt(
 
 def compact_merge_partials(partials: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # Timeline text and citations stay intact; the public endpoint pair is redundant here.
-    return [{**part, **({"timeline": [
+    return [{**{key: value for key, value in part.items() if key != "pendingStateItems"}, **({"timeline": [
         {key: value for key, value in item.items() if key not in {"startEventId", "endEventId"}}
         for item in part["timeline"]]} if "timeline" in part else {})} for part in partials]
 

@@ -13,7 +13,7 @@ from test_thread_timeline import candidate, config, event
 
 from tkn_codex_chat_note.api_inference import ApiBudgetExceeded, ApiClient, remap_event_ids
 from tkn_codex_chat_note.prompting import compact_merge_partials, render_reduction_prompt
-from tkn_codex_chat_note.session_notes import PipelineError, ProviderSummarizer, validate_note_data
+from tkn_codex_chat_note.session_notes import PipelineError, ProviderSummarizer
 from tkn_codex_chat_note.state_reconciliation import REVIEW_SCHEMA, collect_state_items
 
 
@@ -41,7 +41,7 @@ def test_oversized_repair_regenerates_keeps_sources_and_reuses_checkpoint(
     case = candidate(tmp_path, (event("known"),))
     good = note_data(case)
     bad = deepcopy(good)
-    bad["summaryItems"][0]["text"] = "Actual execution was confirmed in the supplied events."
+    bad["lastKnownState"]["unresolved"] = ["追加作業が未完了。"]
     replies.extend([reply(bad), reply(good)])
     progress = []
     runner = azure_runner(tmp_path, progress=progress.append)
@@ -50,7 +50,7 @@ def test_oversized_repair_regenerates_keeps_sources_and_reuses_checkpoint(
         if "MODE: repair-invalid-draft\n" in prompt:
             return 62386
         feedback = payload(prompt).get("validationError")
-        if feedback and (feedback_capacity == "none" or feedback_capacity == "short" and len(feedback) > 100):
+        if feedback and (feedback_capacity == "none" or feedback_capacity == "short" and "done work" in feedback):
             return 60001
         return 59500 if feedback else 59451
 
@@ -66,14 +66,15 @@ def test_oversized_repair_regenerates_keeps_sources_and_reuses_checkpoint(
     assert "draft" not in inputs[1]
     assert ("validationError" in inputs[1]) == (feedback_capacity != "none")
     if feedback_capacity == "detailed":
-        assert "$.summaryItems[0].text" in inputs[1]["validationError"]
+        assert "done work cannot contain unresolved" in inputs[1]["validationError"]
+    elif feedback_capacity == "short":
+        assert inputs[1]["validationError"].startswith("Previous output failed validation.")
     assert bodies[1]["response_format"] == bodies[0]["response_format"]
     assert runner.last_metrics["modelCalls"] == 2
     assert runner.last_metrics["semanticRetries"] == runner.last_metrics["repairFallbacks"] == 1
     assert runner.last_metrics["apiRequests"][1]["stage"] == "chunk-regenerate"
     diagnostic = runner.last_metrics["validationFailures"][0]
-    assert diagnostic["languageMatches"][1]["phrase"] == "supplied events"
-    assert diagnostic["languageMatches"][1]["path"] == "$.summaryItems[0].text"
+    assert "done work cannot contain unresolved" in diagnostic["reason"]
     assert any(item["type"] == "repair-input-fallback" for item in progress)
     resumed = azure_runner(tmp_path)
     assert resumed.generate(case) == good
@@ -85,7 +86,7 @@ def test_fallback_respects_budget_and_semantic_attempt_limit(tmp_path, monkeypat
     calls, replies = fake_http
     case = candidate(tmp_path, (event("known"),))
     bad = note_data(case)
-    bad["summaryItems"][0]["text"] = "Merged from supplied events."
+    bad["lastKnownState"]["unresolved"] = ["追加作業が未完了。"]
     replies.extend(reply(bad) for _ in range(3))
     runner = azure_runner(tmp_path, **limit)
     monkeypatch.setattr(ApiClient, "estimate", lambda _api, prompt, _schema:
@@ -102,6 +103,7 @@ def test_merge_fallback_retains_partials_and_pending_state_reviews(tmp_path, mon
     case = candidate(tmp_path, (event("known"),))
     partial = note_data(case)
     partial["lastKnownState"]["unverified"] = ["追加検証は未実施。"]
+    partial["pendingStateItems"] = [{"kind": "unverified", "itemIndex": 0, "eventIds": ["known"]}]
     runner = azure_runner(tmp_path)
     runner.state_events = case.events
     runner.state_items = collect_state_items([partial])
@@ -109,11 +111,12 @@ def test_merge_fallback_retains_partials_and_pending_state_reviews(tmp_path, mon
     runner.overview_schema["properties"]["stateItemReviews"] = deepcopy(REVIEW_SCHEMA)
     runner.overview_schema["required"].append("stateItemReviews")
     good = deepcopy(partial)
+    good.pop("pendingStateItems")
     good.pop("timeline")
     good["stateItemReviews"] = [{"itemId": runner.state_items[0]["itemId"], "disposition": "retain",
                                  "reason": "検証の完了は確認できない。", "eventIds": []}]
     bad = deepcopy(good)
-    bad["summaryItems"][0]["text"] = "Merged from supplied events."
+    bad["lastKnownState"]["unresolved"] = ["追加作業が未完了。"]
     replies.extend([reply(bad), reply(good)])
     monkeypatch.setattr(ApiClient, "estimate", lambda _api, prompt, _schema:
                         62386 if "MODE: repair-invalid-draft\n" in prompt else 59451)
@@ -128,29 +131,34 @@ def test_merge_fallback_retains_partials_and_pending_state_reviews(tmp_path, mon
     assert runner.last_metrics["apiRequests"][1]["stage"] == "merge-regenerate"
 
 
-def test_language_warning_has_path_bounded_excerpt_and_escaped_controls(tmp_path):
+@pytest.mark.parametrize("overview_only", [False, True])
+def test_english_phrases_do_not_trigger_warning_or_extra_api_calls(tmp_path, fake_http, overview_only):
+    calls, replies = fake_http
     case = candidate(tmp_path, (event("known"),))
     data = note_data(case)
-    data["summaryItems"][0]["text"] = "前文" * 50 + "\nSUPPLIED EVENTS\x1b[31mの記録。" + "後文" * 50
-    with pytest.raises(PipelineError) as caught:
-        validate_note_data(data, {"known"})
-    message = str(caught.value)
-    assert "supplied events at $.summaryItems[0].text" in message
-    assert "SUPPLIED EVENTS" in message and "\\n" in message and "\\u001b" in message
-    assert "\n" not in message and "\x1b" not in message and len(message) < 400
-
-
-def test_language_diagnostics_redact_credentials_without_modifying_draft(tmp_path):
-    case = candidate(tmp_path, (event("known"),))
-    data = note_data(case)
-    secret = "examplecredential1234567890"
-    data["lastKnownState"]["detail"] = f"supplied events password={secret}"
+    data["summaryItems"][0]["text"] = "Actual execution は SUPPLIED EVENTS に記録されている。"
+    data["sourceLimitations"] = [
+        "CSVのファイル属性取得コマンドは呼び出されているが、結果は supplied events 内で確認できない。",
+        "最終全件 apply の出力は sourceTruncated=true の抜粋で、全文は supplied events から確認できない。",
+        "Obsidian起動中のapply結果やtimeout時のCSV出力は supplied events には記録されていない。",
+    ]
+    progress = []
+    runner = azure_runner(tmp_path, progress=progress.append)
+    if overview_only:
+        data.pop("timeline")
+    replies.append(reply(data))
     original = deepcopy(data)
-    with pytest.raises(PipelineError) as caught:
-        validate_note_data(data, {"known"})
-    assert secret not in str(caught.value)
-    assert "[REDACTED]" in str(caught.value) and "$.lastKnownState.detail" in str(caught.value)
-    assert data == original
+    if overview_only:
+        prompt = render_reduction_prompt(runner.prompt, thread_id=case.thread_id, partials=[note_data(case)])
+        result = runner._validated_invoke(prompt, {"known"}, case.thread_id, overview_only=True)
+    else:
+        result = runner.generate(case)
+        assert azure_runner(tmp_path).generate(case) == original  # Accepted output is reusable.
+    assert result == original
+    assert len(calls) == 1
+    assert not runner.last_metrics.get("semanticRetries")
+    assert not runner.last_metrics.get("validationFailures")
+    assert not any(item["type"] in {"validation-repair", "repair-input-fallback"} for item in progress)
 
 
 @pytest.mark.parametrize("recover", [True, False])
@@ -175,7 +183,7 @@ def test_pipeline_persists_validation_diagnostics_and_only_publishes_valid_notes
     events = read_thread_events(source)
     good = note_data(candidate(tmp_path, events))
     bad = deepcopy(good)
-    bad["summaryItems"][0]["text"] = "Merged from supplied events."
+    bad["lastKnownState"]["unresolved"] = ["追加作業が未完了。"]
     mapping = {identifier: f"E{index:05d}" for index, identifier in enumerate(sorted(e.id for e in events), 1)}
     for value in ([bad, good] if recover else [bad, bad, bad]):
         replies.append(reply(remap_event_ids(value, mapping)))
@@ -186,6 +194,5 @@ def test_pipeline_persists_validation_diagnostics_and_only_publishes_valid_notes
     assert len(calls) == (2 if recover else 3)
     persisted = json.loads(Path(report["reportPath"]).read_text(encoding="utf-8"))
     diagnostic = persisted["threads"][0]["generationMetrics"]["validationFailures"][0]
-    assert diagnostic["languageMatches"][0]["path"] == "$.summaryItems[0].text"
-    assert diagnostic["languageMatches"][0]["excerpt"] == "Merged from supplied events."
+    assert "done work cannot contain unresolved" in diagnostic["reason"]
     assert bool(list(cfg.data_root.rglob("*.md"))) is recover
