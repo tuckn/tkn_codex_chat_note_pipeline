@@ -54,6 +54,7 @@ from .prompting import (
     compact_merge_partials,
     render_chunk_prompt,
     render_reduction_prompt,
+    render_regeneration_prompt,
     render_repair_prompt,
 )
 from .raw_capture import RawCaptureError, RawSourceInput, ingest_raw_sources
@@ -987,6 +988,27 @@ def chunk_events(
     return chunks
 
 
+def avoidable_english_matches(value: Any, path: str = "$") -> list[dict[str, str]]:
+    """Locate rejected phrases, with bounded context for diagnostics."""
+    matches: list[dict[str, str]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            matches.extend(avoidable_english_matches(child, f"{path}.{key}"))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            matches.extend(avoidable_english_matches(child, f"{path}[{index}]"))
+    elif isinstance(value, str):
+        value = redact_secret_like_content(value)
+        for phrase in sorted(AVOIDABLE_ENGLISH_PHRASES):
+            # Match against the original string to keep offsets correct after Unicode case folding.
+            match = re.search(re.escape(phrase), value, flags=re.IGNORECASE)
+            if match:
+                start, end = max(0, match.start() - 70), min(len(value), match.end() + 70)
+                excerpt = ("…" if start else "") + value[start:end] + ("…" if end < len(value) else "")
+                matches.append({"phrase": phrase, "path": path, "excerpt": excerpt})
+    return matches
+
+
 def validate_note_data(
     value: Any, allowed_event_ids: set[str], *, overview_only: bool = False,
     profile: SummaryProfile = SUMMARY_PROFILE,
@@ -1025,10 +1047,14 @@ def validate_note_data(
     invalid = set(cited) - allowed_event_ids
     if invalid:
         raise PipelineError(f"Inference output cited unknown event ids: {', '.join(sorted(invalid))}")
-    narrative = json.dumps(value, ensure_ascii=False)
-    avoidable = sorted(phrase for phrase in AVOIDABLE_ENGLISH_PHRASES if phrase in narrative.casefold())
-    if profile.name == "default-jp" and avoidable:
-        raise PipelineError("Inference output contains avoidable English prose: " + ", ".join(avoidable))
+    if profile.name == "default-jp" and (matches := avoidable_english_matches(value)):
+        details = "; ".join(
+            f"{item['phrase']} at {item['path']}: " + json.dumps(item["excerpt"], ensure_ascii=False)
+            for item in matches[:5]
+        )
+        if len(matches) > 5:
+            details += f"; {len(matches) - 5} more matches (see validationFailures in the run report)"
+        raise PipelineError("Inference output contains avoidable English prose: " + details)
     return value
 
 
@@ -1163,6 +1189,7 @@ class ProviderSummarizer:
         input_events: Sequence[PreparedEvent] | None = None,
     ) -> dict[str, Any]:
         current_prompt = prompt
+        retry_kind = "repair"
         api = self._api()
         if api:
             api.allowed_ids = sorted(allowed_event_ids)
@@ -1171,7 +1198,7 @@ class ProviderSummarizer:
         }
         for semantic_attempt in range(3):
             if api:
-                api.stage = ("merge" if overview_only else "chunk") + ("-repair" if semantic_attempt else "")
+                api.stage = ("merge" if overview_only else "chunk") + (f"-{retry_kind}" if semantic_attempt else "")
             value = self._invoke(current_prompt, overview_only=overview_only)
             try:
                 # An inference anchor determines both public endpoints. Supporting
@@ -1213,10 +1240,16 @@ class ProviderSummarizer:
                     raise PipelineError("; ".join(errors))
                 return value
             except (PipelineError, ValueError) as exc:
+                self.last_metrics.setdefault("validationFailures", []).append({
+                    "threadId": thread_id, "stage": "merge" if overview_only else "chunk",
+                    "attempt": semantic_attempt + 1, "reason": str(exc),
+                    "languageMatches": avoidable_english_matches(value) if self.profile.name == "default-jp" else [],
+                })
                 if semantic_attempt == 2:
                     raise
-                self._emit({"type": "validation-repair", "reason": str(exc)})
+                self._emit({"type": "validation-repair", "threadId": thread_id, "reason": str(exc)})
                 self.last_metrics["semanticRetries"] = self.last_metrics.get("semanticRetries", 0) + 1
+                retry_kind = "repair"
                 current_prompt = render_repair_prompt(
                     self.prompt,
                     thread_id=thread_id,
@@ -1227,6 +1260,30 @@ class ProviderSummarizer:
                     events=[event.as_dict() for event in input_events] if input_events is not None else
                     ([event.as_dict() for event in prepare_events(events)] if events else None),
                 )
+                if api:
+                    schema = self.overview_schema if overview_only else self.inference_schema
+                    repair_estimate = api.estimate(current_prompt, schema)
+                    if repair_estimate > api.limits.input_tokens:
+                        # The original request already fit. Keep every source event/partial and
+                        # state review; discard only the invalid draft, never the source evidence.
+                        feedback = str(exc)[:2000]
+                        current_prompt = render_regeneration_prompt(prompt, feedback)
+                        if api.estimate(current_prompt, schema) > api.limits.input_tokens:
+                            feedback = (
+                                "Previous output failed validation. Regenerate and check all output requirements."
+                            )
+                            current_prompt = render_regeneration_prompt(prompt, feedback)
+                        if api.estimate(current_prompt, schema) > api.limits.input_tokens:
+                            current_prompt = prompt
+                            feedback = ""
+                        retry_kind = "regenerate"
+                        self.last_metrics["repairFallbacks"] = self.last_metrics.get("repairFallbacks", 0) + 1
+                        self._emit({
+                            "type": "repair-input-fallback", "threadId": thread_id,
+                            "repairInputTokensEstimate": repair_estimate, "inputTokenLimit": api.limits.input_tokens,
+                            "regenerationInputTokensEstimate": api.estimate(current_prompt, schema),
+                            "validationFeedbackIncluded": bool(feedback),
+                        })
         raise PipelineError("Inference semantic validation did not produce a valid note")
 
     def _stage_invoke(

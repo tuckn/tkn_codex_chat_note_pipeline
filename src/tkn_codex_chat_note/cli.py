@@ -330,6 +330,15 @@ def _progress(value: dict[str, Any]) -> None:
                     "merge" if value.get("stage") == "reusedReductions" else "chunk", value["threadId"])
     elif event_type == "validation-repair":
         LOGGER.warning("Repairing generated output: %s", value.get("reason", "validation failed"))
+    elif event_type == "repair-input-fallback":
+        LOGGER.warning(
+            "Repair input estimate %s exceeds limit %s for thread %s; "
+            "regenerating from the original input without the invalid draft "
+            "(input estimate %s; validation feedback %s)",
+            value["repairInputTokensEstimate"], value["inputTokenLimit"], value["threadId"],
+            value["regenerationInputTokensEstimate"],
+            "included" if value["validationFeedbackIncluded"] else "omitted to fit the limit",
+        )
     elif event_type == "thread-complete":
         log_success(
             LOGGER,

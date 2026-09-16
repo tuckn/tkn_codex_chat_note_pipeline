@@ -158,3 +158,24 @@ def render_repair_prompt(
             **({"events": events} if events is not None else {}),
         },
     )
+
+
+def render_regeneration_prompt(original_prompt: str, validation_error: str) -> str:
+    """Reuse the complete original source context without carrying the invalid draft."""
+    before, rest = original_prompt.split("BEGIN_INPUT_JSON\n", 1)
+    payload, after = rest.split("\nEND_INPUT_JSON", 1)
+    value = json.loads(payload)
+    value["validationError"] = validation_error
+    before = "".join(
+        "MODE: regenerate-invalid-output\n" if line.startswith("MODE: ") else line
+        for line in before.splitlines(keepends=True)
+    )
+    before += (
+        "Regenerate the complete output, correcting the validationError below. "
+        "Apply the source-events instructions when events are supplied, or the "
+        "merge-partial-summaries instructions when partials are supplied. "
+        "The rejected draft is omitted; preserve all source coverage and citation requirements.\n\n"
+    )
+    return before + "BEGIN_INPUT_JSON\n" + json.dumps(value, ensure_ascii=False, separators=(",", ":")) + (
+        "\nEND_INPUT_JSON" + after
+    )

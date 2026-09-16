@@ -97,7 +97,7 @@ def alias_prompt(prompt: str, mapping: dict[str, str]) -> str:
     payload, after = rest.split("\nEND_INPUT_JSON", 1)
     value = remap_event_ids(json.loads(payload), mapping)
     # Repair carries the draft and source context; remove JSON whitespace only.
-    compact = "MODE: repair-invalid-draft\n" in before
+    compact = any(f"MODE: {mode}\n" in before for mode in ("repair-invalid-draft", "regenerate-invalid-output"))
     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":") if compact else None)
     return before + "BEGIN_INPUT_JSON\n" + encoded + "\nEND_INPUT_JSON" + after
 
@@ -239,7 +239,8 @@ class ApiClient:
             record: dict[str, Any] = {
                 "provider": self.config.provider,
                 "requestEncoding": "event-id-aliases-v1",
-                "inputJsonFormat": "compact" if "MODE: repair-invalid-draft\n" in prompt else "default",
+                "inputJsonFormat": "compact" if any(f"MODE: {mode}\n" in prompt for mode in (
+                    "repair-invalid-draft", "regenerate-invalid-output")) else "default",
                 "requestSequence": len(self.records) + 1,
                 "stage": getattr(self, "stage", "unknown"),
                 "outputTokenLimit": self.limits.output_tokens,

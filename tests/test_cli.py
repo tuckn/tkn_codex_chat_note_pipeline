@@ -196,10 +196,11 @@ def test_progress_events_are_human_readable(
     ("level", "name", "color"),
     [
         (SUCCESS, "SUCCESS", "\x1b[32m"),
+        (logging.WARNING, "WARNING", "\x1b[33m"),
         (logging.ERROR, "ERROR", "\x1b[31m"),
     ],
 )
-def test_console_formatter_colors_success_and_error(
+def test_console_formatter_colors_success_warning_and_error(
     level: int,
     name: str,
     color: str,
@@ -210,11 +211,23 @@ def test_console_formatter_colors_success_and_error(
     assert formatter.format(record) == f"{color}[{name}] message\x1b[0m"
 
 
-def test_console_formatter_keeps_redirected_output_plain() -> None:
+@pytest.mark.parametrize("level,name", [(SUCCESS, "SUCCESS"), (logging.WARNING, "WARNING")])
+def test_console_formatter_keeps_redirected_output_plain(level: int, name: str) -> None:
     formatter = ColorFormatter("[%(levelname)s] %(message)s", use_color=False)
-    record = logging.LogRecord("test", SUCCESS, __file__, 1, "message", (), None)
+    record = logging.LogRecord("test", level, __file__, 1, "message", (), None)
 
-    assert formatter.format(record) == "[SUCCESS] message"
+    assert formatter.format(record) == f"[{name}] message"
+
+
+def test_repair_fallback_progress_explains_unsent_draft_and_regeneration(capsys: CaptureFixture[str]) -> None:
+    _configure_logging(build_parser().parse_args(["config", "show"]))
+    _progress({"type": "repair-input-fallback", "threadId": "example-thread",
+               "repairInputTokensEstimate": 62386, "inputTokenLimit": 60000,
+               "regenerationInputTokensEstimate": 59500, "validationFeedbackIncluded": True})
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "[WARNING] Repair input estimate 62386 exceeds limit 60000" in captured.err
+    assert "without the invalid draft" in captured.err and "feedback included" in captured.err
 
 
 def test_config_show_reports_application_owned_summary_profile(

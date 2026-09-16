@@ -14,6 +14,7 @@ logging.addLevelName(SUCCESS, "SUCCESS")
 _RESET = "\x1b[0m"
 _LEVEL_COLORS: Mapping[int, str] = {
     SUCCESS: "\x1b[32m",
+    logging.WARNING: "\x1b[33m",
     logging.ERROR: "\x1b[31m",
     logging.CRITICAL: "\x1b[31m",
 }

@@ -429,8 +429,11 @@ Available models and authentication are managed by each service.
 
 Azure OpenAI and Ollama configured with `limits` support estimates before submission, actual usage tracking during execution, and stopping at limits.
 Input size, including instructions and schemas, is checked before every chunk, merge, and repair request; chunks are adjusted automatically until they fit.
-If a merge or repair exceeds the available capacity, processing stops while retaining saved chunks.
-Adjust the limits or change the merge method before resuming.
+If a repair would exceed the input limit, the oversized request is not submitted. Instead, the tool regenerates from the complete original chunk or merge input without the invalid draft. It includes validation feedback when it fits, shortening or omitting only that feedback if necessary. The result must pass the same validation, within the existing maximum of three generation attempts per stage and the command's call/cost limits. Validated checkpoints remain reusable.
+An original merge input that exceeds the limit still stops that thread while retaining saved chunks; adjust the limits or merge method before resuming.
+
+For Japanese output, an avoidable-English warning shows the matched phrase, JSON field path (zero-based array indices), and a short excerpt. For example: `supplied events at $.summaryItems[0].text: "The supplied events show completion."`. Excerpts are JSON-escaped to keep console lines readable; common credential patterns are redacted. The run report also records `generationMetrics.validationFailures` (including `languageMatches`) and `repairFallbacks` when regeneration was needed. Old failed drafts were not saved, so their exact wording cannot be recovered from old reports.
+Warnings appear in yellow on supported terminals. Redirected output and terminals with `NO_COLOR` remain plain text.
 
 #### 5.5.1. Azure configuration
 
