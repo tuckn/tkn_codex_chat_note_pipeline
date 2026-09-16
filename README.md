@@ -1,328 +1,402 @@
 # Tkn Codex Chat Note Pipeline
 
-Console logs summarize actions and results. Azure authentication is reported on one line; SDK HTTP headers and transport details are suppressed even with `--verbose`. Warnings and errors remain visible (`--quiet` shows errors only).
+日本語: [README_ja.md](README_ja.md)
 
-Japanese: [README_ja.md](README_ja.md)
+> If you are new to this tool, sections 1–3 (What it does / Setup / Running the CLI) are enough to get started.
+> Sections 4 onward provide reference information to consult as needed.
 
-Preserve local Codex conversations as source evidence and turn each conversation into
-a reusable Session Note. Notes retain requests, corrections, failed attempts,
-unresolved questions, a source-backed timeline, and the last known state.
-They support later reconsideration from different viewpoints.
+## 1. What it does
 
-A **session** means one continuous sequence of conversation, listed chronologically
-in one Markdown note.
+This local CLI preserves the conversation logs that Codex CLI stores locally and generates one Markdown note per conversation thread, referred to below as a **Session Note** or simply a note.
 
-Processing ends at Session Notes. Classification and Working Context belong to
-[tkn_genai_context_curation_pipeline](https://github.com/tuckn/tkn_genai_context_curation_pipeline);
-Decision distillation belongs to
-[tkn_genai_insight_pipeline](https://github.com/tuckn/tkn_genai_insight_pipeline).
-Each CLI installs independently and exchanges versioned files.
+It performs three tasks.
 
-## Usage: get the first result
+1. **Preserve**: Copy Codex JSONL logs as Raw without modifying their contents.
+2. **Structure**: Parse Raw into Canonical Events containing messages, timestamps, and line references to the original logs.
+3. **Generate**: Pass Canonical Events to a generative AI model to create a Session Note.
 
-### Requirements and installation
+A Session Note preserves requests, corrections, failed attempts, unresolved questions, a timeline with evidence IDs, and the last confirmed state.
+It is a record for revisiting a conversation from different perspectives, rather than a brief summary.
 
-Python 3.11+, uv, readable local Codex JSONL logs, and a configured inference
-provider for generation. Codex CLI is the default; Claude Code, GitHub Copilot
-CLI, and local Ollama are inference alternatives. **Chat acquisition is Codex-only.** Inference provider selection is independent.
-Other applications' chat acquisition is outside this repository's scope.
+### 1.1. Example of a generated note
 
-~~~console
+This is an excerpt from the Timeline section.
+
+```markdown
+### 2026-05-17
+
+- **11:27:35 - 11:27:47**
+  - Actor: AI
+  - Type: Action
+  - Text: Investigated the publication scope and whether a listing could be retrieved.
+  - EventRange: L000010 -> L000020
+  - Sources: L000010, L000012, L000020
+```
+
+Each entry includes event IDs from the source logs that support it.
+Timestamps and actors are determined programmatically from the cited events, rather than inferred by AI.
+See [Session Note format](docs/reference/session-note-format.md) for the structure of a complete note.
+
+### 1.2. Scope
+
+| Item | Details |
+| --- | --- |
+| Conversation sources | Local Codex logs only |
+| AI used for inference | Choose from Codex CLI / Claude Code / GitHub Copilot CLI / Ollama / Azure OpenAI |
+| Output | Session Notes (Markdown), Raw copies, Canonical Events, and provenance |
+| Out of scope | Capturing conversations from apps other than Codex, cloud-only history, Scope classification, Decision extraction, and Working Context generation |
+
+**Conversation capture is exclusive to Codex.**
+You can choose the AI used for inference independently.
+Claude Code, Copilot, and Ollama are options for generating notes; the tool does not capture their conversations.
+
+This CLI's processing ends with Session Note generation.
+Session Note classification and Working Context are handled by [tkn_genai_context_curation_pipeline](https://github.com/tuckn/tkn_genai_context_curation_pipeline), and Decision extraction by [tkn_genai_insight_pipeline](https://github.com/tuckn/tkn_genai_insight_pipeline).
+Each CLI can be installed independently and exchanges data through versioned files.
+
+### 1.3. Terminology
+
+| Term | Meaning |
+| --- | --- |
+| session | A continuous chronological conversation. One session corresponds to one Session Note. |
+| conversation / thread | One conversation in Codex, identified by `threadKey`. |
+| Raw | A byte-for-byte copy of the source logs. Its contents are not modified. |
+| Canonical Events | Normalized events parsed from Raw, with messages, timestamps, and line references to the original logs. |
+| source | A local Codex folder to read, identified by `source_id`. |
+| inference provider / provider | The execution method used by AI to generate Session Notes: `codex`, `claude-code`, `github-copilot`, `ollama`, or `azure-openai`. |
+| generation profile / profile | A named collection of settings such as provider, model, and limits. Select it with `--profile`. |
+| provenance | Records of input hashes, IDs, and generation conditions, used to trace how an output was created. |
+| generation conditions | The combination of input events, model, profile, prompt, chunking settings, and limits. Changes make affected notes eligible for regeneration. |
+| intermediate results / cache | Temporary storage of validated chunk summaries and merged results. Reused when generation conditions match. |
+| reviewed | A note marked as checked by a person. It is protected from overwriting. |
+
+### 1.4. Overview
+
+```mermaid
+flowchart LR
+    L["Local Codex logs"] --> R["Raw copies and manifest"]
+    R --> E["Canonical Events"]
+    E --> T["Session Note"]
+    M["Observed Project membership"] --> C["Conversation catalog"]
+    T --> C
+    C --> U["Context classification CLI<br/>(separate repository)"]
+    T --> I["Insight CLI<br/>(separate repository)"]
+    R --> P["Versioned evidence"]
+    E --> P
+    T --> P
+```
+
+### 1.5. Four storage areas
+
+| Area | Configuration key | Contents | Impact of losing it |
+| --- | --- | --- | --- |
+| Raw | `raw_root` | Copies of source logs and a manifest | Cannot be restored if the original logs have disappeared from the source |
+| data | `data_root` | Canonical Events, Session Notes, catalog, and provenance | Outputs and published evidence are lost |
+| state | `state_root` | Initialization information, per-conversation checkpoints, and run reports | Processing cannot resume; generation must be repeated |
+| cache | `cache_root` | Intermediate generation results | Can be recreated, but regeneration takes time and may incur costs |
+
+You can set `raw_root`, `data_root`, and `state_root` separately for each source.
+`cache_root` is shared by all sources and cannot be configured per source.
+
+## 2. Setup
+
+### 2.1. Requirements
+
+- Python 3.11 or later
+- uv
+- Readable local Codex JSONL logs (default location: `~/.codex`)
+- One inference provider for generation; Codex CLI is the default
+
+When using Codex, verify that `codex --version` and `codex login status` succeed in your terminal.
+The ChatGPT desktop app (formerly Codex App) alone does not replace the CLI.
+
+### 2.2. Install and create the configuration file
+
+```console
 cd "C:\path\to\tkn_codex_chat_note_pipeline"
 uv tool install .
 tkn-codex-chat-note --help
 tkn-codex-chat-note config init
-~~~
+```
 
-Edit the displayed `~/.tkn/codex_chat_note_pipeline/config.yaml`. Select storage
-roots and an available model. For Codex inference, check `codex --version` and
-`codex login status` in the terminal; the desktop app does not replace the CLI.
-See the packaged [configuration example](src/tkn_codex_chat_note/resources/config.example.yaml).
+`config init` creates `~/.tkn/codex_chat_note_pipeline/config.yaml` and displays its path.
+An edited configuration file is protected; it is backed up and replaced only when you specify `--force`.
 
-### First capture and generation
+### 2.3. Edit the configuration file
 
-~~~console
-tkn-codex-chat-note config show
-tkn-codex-chat-note clone --dry-run
-tkn-codex-chat-note clone
-~~~
-
-`clone` initializes missing owned storage, captures all locally available
-history, normalizes supported events, and generates eligible Session Notes.
-It writes by default and may use substantial inference time/tokens.
-`--dry-run` reads local inputs and validates the plan; it makes no inference or
-network calls and creates no directories, locks, caches, or reports.
-
-### Daily updates and results
-
-~~~console
-tkn-codex-chat-note pull
-tkn-codex-chat-note status
-tkn-codex-chat-note provenance validate
-~~~
-
-`pull` captures changed or newly discovered logs, updates eligible notes, and
-resumes unfinished work. Repeating a successful unchanged run makes no model
-calls. The default idle interval is 30 minutes; Raw capture still precedes
-deferral of active conversations. `--limit 20` bounds note generation attempts.
-
-Press `Ctrl+C` to interrupt `clone` or `pull`. Saved Raw files and completed
-notes remain; the next `pull` skips successfully generated notes whose inputs,
-generation settings, and note content are unchanged. Validated chunks and merges
-are checkpointed in the cache. With identical inputs and generation settings,
-a retry reuses saved stages and repeats the unfinished stage. Changed inputs,
-models, prompts, or chunk settings and `--force` bypass stage reuse. Corrupt
-checkpoints are regenerated. Deleting the cache removes this resume capability.
-Interruption may display `KeyboardInterrupt` and leave the run report unfinished.
-
-Open the note and report paths shown in the result. `status` reads the last-run
-record, not live source state. Completion now depends only on eligible Session
-Notes; no Scope, Decision, or Working Context build is required.
-
-### Generation cost and comparison baselines
-
-When completion and result records have the same invocation ID, turn and history,
-identical command output is represented once with an original event reference.
-All event IDs, completion metadata, Raw and Canonical Events remain available;
-actual retries and different output are retained. The model selects one timeline
-anchor event; code derives its time, actor and both public endpoints. Content and
-source validation still apply.
-
-Each report thread exposes `generationMetrics`: input characters removed, chunks,
-model calls, repairs, checkpoint reuse and elapsed time. `submittedPromptCharacters`
-counts prompt characters across repairs and transport attempts; it excludes schema
-or other material added by the provider and is not a billing token count.
-
-Version 0.17.0 changes generation conditions: unreviewed notes made with older
-conditions become regeneration candidates on the next normal run. Before installing
-and running, preserve comparison notes, source snapshots from provenance, hashes
-and generation settings in a separate evaluation area. Current Raw paths may change.
-Compare the same source version and judge against the original evidence rather than
-treating the previous note as ground truth. Reviewed/edited-note protections remain.
-
-### Weekly updates with Windows Task Scheduler
-
-After the initial `clone`, register a weekly `pull` using the same Windows user
-that normally signs in to the inference CLI. Set the program to the absolute
-path of the installed `tkn-codex-chat-note.exe` and the arguments to
-`--config "C:\path\to\config.yaml" pull`. Config options precede `pull`.
-A `.tkn/config.yaml` in the starting directory joins the configuration layers;
-use a starting directory consistent with your normal resolved configuration.
-Enabled WSL sources must be readable through their configured UNC paths by that user.
-
-Unfinished notes resume on the next `pull`. A limited verification run or a run
-with notes deferred by activity or the runtime limit returns exit code `2`.
-For exit code `1`, inspect the failure reasons in the report. `runtime_minutes`
-is the deadline for starting generation; in-flight generation has up to nine
-additional minutes. Raw capture and normalization are not interrupted by this
-generation deadline. Allow sufficient time before Task Scheduler stops the process.
-
-## Commands
-
-Global options, including `--config` and inference options, precede the command.
-
-| Command | Behavior |
-| --- | --- |
-| `config init` | Create packaged user configuration; preserve edits; `--force` backs up before replacement |
-| `config show` | Read resolved values, five configuration layers, and summary profile hashes |
-| `clone` | Initialize and capture/build available history; resumable |
-| `pull` | Update an initialized store and resume notes |
-| `raw ingest` | Capture source bytes without inference |
-| `session-notes build` | Refresh notes; `--thread-id` selects one conversation |
-| `session-notes validate <artifact>` | Read-only note validation |
-| `status` | Read the previous run's coverage and report path |
-| `provenance validate` | Read-only hash, identity, and relationship checks |
-| `storage migrate` | Copy a source store into fresh roots using `--from-config`; inspect with `--dry-run` |
-
-Build commands support `--dry-run`, `--force`, `--allow-edited`, and
-`--full-output`. `--force` re-evaluates unchanged input but does not unlock
-reviewed files. `--allow-edited` explicitly permits replacing manually edited,
-unreviewed notes. Raw ingest supports `--dry-run` and `--full-output`.
-
-Generation and Raw ingest use stderr for concise results and saved report paths; stdout is empty by default.
-`--full-output` explicitly prints the full JSON report. Read-only inspection commands such as `config show` retain JSON output.
-`-q` suppresses progress, `-v` adds
-diagnostics. Exit codes: `0` successful command/plan, `1` failure, `2` incomplete
-clone/pull (for example deferred or protected work). A leaf build's report
-describes overall note coverage even when one thread was selected.
-
-## Configuration
-
-Precedence: built-in → user-global → current directory `.tkn/config.yaml` →
-explicit `--config` → CLI options. Each supplied layer is validated before
-merging. Relative paths resolve against the file declaring them. Schema 7.0.0
-uses snake_case keys and quoted SemVer; unknown keys and newer unsupported
-versions fail visibly.
-
-~~~console
-tkn-codex-chat-note --config "C:\path\to\config.yaml" clone
-tkn-codex-chat-note --idle-minutes 0 --runtime-minutes 60 pull --limit 20
-~~~
-
-### Storage directories
-
-By default, data is stored under `~/.tkn/codex_chat_note_pipeline/<kind>/codex/<source_id>`.
-To change the storage directories, set `raw_root`, `data_root`, and `state_root` under each `sources.<source_id>` entry in `config.yaml`.
-`cache_root` is shared and cannot be configured separately for each `sources.<source_id>` entry.
+Open `config.yaml` at the displayed path and specify the source and the model to use for generation.
+The following is a minimal configuration.
 
 ```yaml
 schema_version: "8.0.0"
-cache_root: ~/.cache/codex_chat_note_pipeline
 sources:
   my-windows-pc:
     enabled: true
     source_root: ~/.codex
     include_archived: true
-    raw_root: C:/path/to/my-chat-store/raw
-    data_root: C:/path/to/my-chat-store/data
-    state_root: C:/path/to/my-chat-store/state
+generation:
+  session_note_profile: default-jp
+  active_profile: codex
+  profiles:
+    codex:
+      provider: codex
+      model: <model-name>
+      reasoning_effort: high
+```
+
+The key under `sources` (`my-windows-pc` in this example) is the `source_id`.
+When storage directories are omitted, data is stored under `~/.tkn/codex_chat_note_pipeline/<area>/codex/<source_id>`.
+See [5. Configuration](#configuration) for available settings and [config.example.yaml](src/tkn_codex_chat_note/resources/config.example.yaml) for the bundled example.
+
+```console
+tkn-codex-chat-note config show
+```
+
+`config show` displays the effective settings, the configuration layer each value came from, resolved storage paths, and the selected summary profile and its hash.
+It does not write any files.
+
+## 3. Running the CLI
+
+### 3.1. First run: clone
+
+```console
+tkn-codex-chat-note clone --dry-run
+tkn-codex-chat-note clone
+```
+
+`--dry-run` reads local input and validates the execution conditions and plan.
+It performs no inference or network access and creates no directories, locks, cache, or reports.
+
+`clone` initializes storage that has not yet been created, preserves and normalizes all available history, and generates the target Session Notes.
+Depending on the amount of history, **this can consume a substantial amount of inference time and tokens**.
+
+When execution ends, a result summary and the run report's location are printed to standard error.
+Open that report first to check the results.
+Add `--full-output` if you need detailed JSON.
+
+### 3.2. Daily updates: pull
+
+```console
+tkn-codex-chat-note pull
+tkn-codex-chat-note status
+tkn-codex-chat-note provenance validate
+```
+
+`pull` ingests new and changed logs, updates the affected notes, and resumes unfinished generation.
+It does not call the model again for successfully generated notes whose input conditions have not changed.
+Use an option such as `--limit 20` to limit how many notes the CLI attempts to generate in one run.
+`status` displays records from the previous run (scope, status, and report path); it does not rescan the current input.
+`provenance validate` checks the hashes, IDs, and provenance relationships in stored data without modifying it.
+
+A conversation is considered active until `idle_minutes` (30 minutes by default) have elapsed since its last event, and summarization is deferred until a later run.
+Its Raw data is saved first, even when summarization is deferred.
+
+Completion is determined solely by Session Notes; it does not wait for downstream CLIs to generate Scope, Decision, or Working Context outputs.
+
+### 3.3. Interrupting and resuming
+
+You can interrupt `clone` and `pull` with `Ctrl+C`.
+
+- Saved Raw data and completed notes remain intact.
+- Validated chunk summaries and merged results are saved to the cache as processing progresses. Rerunning with the same generation conditions reuses saved results and restarts the part that was being generated at interruption.
+- Cached results are not reused if generation conditions change or `--force` is specified. Corrupted intermediate results and parts whose cache has been deleted are regenerated.
+
+An interruption displays `KeyboardInterrupt`, and the run report may not be marked complete.
+
+### 3.4. Weekly runs with Windows Task Scheduler
+
+After the initial `clone`, schedule a weekly `pull` under the same Windows user account you normally use to log in to the CLI.
+
+| Setting | Value |
+| --- | --- |
+| Program/script | Absolute path to the installed `tkn-codex-chat-note.exe` |
+| Arguments | `--config "C:\path\to\config.yaml" pull` |
+| Start in | Choose a working directory that produces the same effective configuration as a normal run; a `.tkn/config.yaml` in that directory participates in configuration layering |
+
+Place configuration options before `pull`.
+If a WSL source is enabled, that user must be able to read the configured UNC path.
+
+`runtime_minutes` (230 minutes by default) sets the deadline for starting new generation work.
+Generation already running at that deadline has a grace period of up to 9 minutes.
+Raw ingestion and normalization are not interrupted by this deadline.
+Allow additional time in Task Scheduler's stop settings.
+
+Interpret exit codes as follows.
+
+| Exit code | Meaning | Action |
+| --- | --- | --- |
+| `0` | Success. Successful `--dry-run` plan validation also returns `0`. | None |
+| `1` | Failure | Check the failure reason in the run report |
+| `2` | Incomplete, for example because of `--limit`, active-conversation deferral, a runtime limit, or a budget stop | Resume with the next `pull` |
+
+## 4. Commands
+
+Place common options such as `--config`, `--profile`, and `--source` **before the command**.
+
+| Command | Behavior |
+| --- | --- |
+| `config init` | Creates the bundled configuration. Protects edited settings; with `--force`, backs them up before replacement. |
+| `config show` | Displays effective settings, their sources across the five configuration layers, and the summary profile hash. |
+| `clone` | Initializes storage, captures all Raw data, and generates Session Notes. Can be rerun to resume. |
+| `pull` | Applies changes to initialized storage and generates only the Session Notes still needed. |
+| `raw ingest` | Ingests Raw data only; does not generate Session Notes. |
+| `session-notes build` | Updates Session Notes. Use `--thread-id` to select a specific conversation. |
+| `session-notes validate <artifact>` | Validates an existing note without modifying it. |
+| `status` | Displays the previous run's scope, status, and report path. |
+| `provenance validate` | Validates hashes, IDs, and provenance relationships without modifying data. |
+| `storage migrate` | Copies data from the source specified by `--from-config` to new storage directories. |
+
+The following options are available for commands that perform generation.
+
+| Option | Behavior |
+| --- | --- |
+| `--dry-run` | Validates execution conditions and the plan without inference or file writes. |
+| `--force` | Re-evaluates even unchanged input. Does not remove protection from reviewed files. |
+| `--allow-edited` | Explicitly permits replacement of manually edited, unreviewed notes. |
+| `--limit N` | Limits the number of notes for which generation is attempted in one run. It is not an API call or cost limit. |
+| `--full-output` | Prints a detailed JSON report to standard output. By default, only the summary and report paths are displayed. |
+
+`raw ingest` supports `--dry-run` and `--full-output`.
+
+Generation and Raw ingestion commands print progress, result summaries, and run report paths to standard error.
+Detailed JSON is printed to standard output only with `--full-output` (read-only commands such as `config show` continue to print JSON to standard output).
+`-q` suppresses progress, and `-v` adds diagnostics.
+Even when `session-notes build` targets one note, the run report includes processing status for all notes.
+
+<a id="configuration"></a>
+
+## 5. Configuration
+
+### 5.1. Configuration precedence
+
+Later layers override earlier ones; higher numbers below take precedence.
+
+1. Built-in defaults
+2. User configuration (`~/.tkn/codex_chat_note_pipeline/config.yaml`)
+3. `.tkn/config.yaml` in the current working directory
+4. The file explicitly specified with `--config`
+5. CLI options
+
+Each configuration file is validated separately before merging.
+Relative paths are resolved from the directory of the configuration file that declares the value.
+The configuration schema version is `8.0.0`.
+Keys use snake_case, and the version is written as a quoted SemVer string.
+Unknown keys and unsupported newer versions produce errors.
+
+```console
+tkn-codex-chat-note --config "C:\path\to\config.yaml" clone
+tkn-codex-chat-note --idle-minutes 0 --runtime-minutes 60 pull --limit 20
+```
+
+Across configuration layers, `sources` and `generation.profiles` are merged by map key, overriding only the specified fields of matching keys.
+Explicitly defining a map in a layer replaces its built-in default entries, so adding your own `source_id` does not leave an extra default `windows` source enabled.
+Use `sources: {}` to clear the entire source map or `enabled: false` to disable an inherited source (duplicate YAML keys are rejected).
+
+### 5.2. Sources (sources)
+
+`sources` lists the local Codex folders to read.
+
+```yaml
+sources:
+  my-windows-pc:
+    enabled: true
+    source_root: ~/.codex
+    include_archived: true
   my-wsl-ubuntu:
     enabled: false
     source_root: '//wsl$/Ubuntu/home/<user>/.codex'
     include_archived: true
 ```
 
-Keep all actual roots separate from one another, source roots, and configuration.
-A common parent such as `my-chat-store/` can group `raw/`, `data/`, and `state/`
-for backup and relocation. Treat state as durable restart/checkpoint data and
-retain it with data; provenance under data contains the published evidence.
-Cache is disposable and is not copied by migration. Missing app metadata does
-not prevent conversation capture.
+| Key | Default | Meaning |
+| --- | --- | --- |
+| Map key | None | The `source_id`. Do not repeat `source_id` inside the value. |
+| `enabled` | `true` | Disabled sources are not scanned, and their input folders do not need to exist. |
+| `source_root` | `~/.codex` | Points to the parent `.codex` folder, not `sessions/`. Reads sessions, archives, and auxiliary app information. |
+| `include_archived` | `true` | Includes archived conversations. |
+| `raw_root` / `data_root` / `state_root` | Optional | Final storage directories. Defaults to `~/.tkn/codex_chat_note_pipeline/<area>/codex/<source_id>` when omitted. |
 
-Inference transport configuration and authentication details are retained in
-[inference providers](#inference-configuration). Generation through an
-external CLI may send selected inputs to its service; Ollama is restricted to
-a loopback endpoint. Model availability and authentication are provider-owned.
+A `source_id` identifies an input folder that you continue to ingest over time.
+**Lowercase ASCII kebab-case is recommended**, for example `laptop-windows` or `laptop-wsl-ubuntu`.
+It is used as a configuration key, folder name, and provenance identifier, rather than a Python variable name.
 
-### Session Note language
+- Allowed characters are ASCII letters (including uppercase), digits, `.`, `_`, and `-`; the first character must be alphanumeric.
+- Spaces, Japanese or full-width characters, leading or trailing whitespace, and trailing dots are not allowed.
+- Windows reserved names such as `CON`, `nul.txt`, and `COM1` are not allowed.
+- IDs that differ only in letter case are rejected as duplicates. No automatic normalization is performed.
+- Quote YAML keys that consist only of digits.
 
-Set `generation.session_note_profile` in your existing `config.yaml` to `default-jp` (Japanese, the default) or `default-en` (English). The following is a configuration fragment; retain your other settings.
+Published data is identified by `(codex, source_id)`.
+Keep this identity fixed once ingestion begins to maintain compatibility with downstream tools.
+Changing the key does not rename or migrate existing data.
+Paths for `source_root` and storage directories can contain spaces and Japanese characters.
+Do not register the same input folder under multiple IDs.
+
+Use separate IDs for Windows and WSL input folders.
+From Windows, you can use the UNC path shown above when the distribution is accessible.
+When running this CLI inside WSL, configure Linux paths and the generation executable available there (`~` follows the OS running the CLI).
+The WSL example illustrates configuration only; actual WSL operation has not been verified.
+Per-account filtering is not implemented.
+
+#### 5.2.1. Using multiple sources
+
+Enabled sources are processed in their order in the map.
+
+- `--limit` (generation attempts across the run) and `runtime_minutes` (the generation deadline) are shared across all sources.
+- Catalogs, provenance, checkpoints, and run reports are kept per source, and all storage areas are validated before writing.
+- A failure in one source contributes to the overall failure result, but other sources can continue.
+
+```console
+tkn-codex-chat-note --source my-windows-pc pull
+tkn-codex-chat-note --source my-windows-pc session-notes build --thread-id <thread-id>
+```
+
+Place `--source` before the command to select one source for processing, `status`, `provenance validate`, or `storage migrate`.
+When omitted, processing, `status`, and `provenance validate` target all enabled sources.
+If multiple sources are enabled, select one with `--source` when using `--thread-id` or `storage migrate`.
+Specifying an unknown ID or a disabled source produces an error.
+`config show` always displays configuration and resolved storage paths for all sources.
+
+If no sources are enabled, execution stops before writing (`config show` remains available).
+
+### 5.3. Session Note language
+
+Use `generation.session_note_profile` to select `default-jp` (Japanese, the default) or `default-en` (English).
 
 ```yaml
 generation:
-  session_note_profile: default-en
+  session_note_profile: default-jp
 ```
 
-For a single run, use `tkn-codex-chat-note --session-note-profile default-en pull`. The option precedes the command. `config show` reports the selected profile, its resources and hashes, and the configuration source.
+For a single run, use an override such as `tkn-codex-chat-note --session-note-profile default-en pull`.
 
-Both built-in profiles preserve the same schema, headings, timeline, citations, and state rules. Only narrative language and explanatory notices change; times remain in Asia/Tokyo. Custom profile names, directories, and prompts are not supported. Bundles are packaged under `profiles/default-jp/` and `profiles/default-en/`.
+Both profiles share the same schema, headings, timeline, citations, and state evaluation.
+Only the body language and explanatory text change; timestamps remain in `Asia/Tokyo`.
+Bundled resources are located in `profiles/default-jp/` and `profiles/default-en/`; custom profile names, folders, and prompts are not supported.
 
-Changing language makes an existing note eligible for regeneration on the next build/pull. Each conversation retains one note and its identity; this does not create parallel language editions. Reviewed or edited notes retain their existing protection, and dry-run never generates or writes. Interrupted work from a different profile is not reused.
-
-### Chat sources and generation AI
-
-`sources` configures local Codex conversation directories; `generation.profiles`
-configures the AI used to generate notes. `--profile` changes only
-`generation.active_profile`, independently of acquisition. Claude Code, Copilot
-and Ollama remain inference options; their chat acquisition is outside this CLI.
-
-Each top-level `sources` key is a stable `source_id`. Do not repeat `source_id`
-inside entries. Each source has `enabled` (default `true`), `source_root` (default
-`~/.codex`), `include_archived` (default `true`), and optional final `raw_root`,
-`data_root`, and `state_root`. `source_root` is the parent `.codex` directory,
-not `sessions/`; it supplies sessions, archives, and app metadata. It does not
-change Codex's own storage configuration, authentication, or inference provider.
-
-Choose an ID for a persistent input directory: for example `laptop-windows` or
-`laptop-wsl-ubuntu`. Lowercase ASCII **kebab-case** is recommended; an ID is a
-configuration key, directory component, and provenance identifier, not a Python
-variable. The exact rules are:
-
-- ASCII letters (`A-Z`, `a-z`), digits, `.`, `_`, and `-`; start with a letter or digit.
-- No spaces, Japanese/full-width characters, leading/trailing whitespace, or trailing dot.
-- Windows device names such as `CON`, `nul.txt`, and `COM1` are rejected.
-- IDs must be unique ignoring case across the sources map. Exact spelling is retained;
-  IDs are never trimmed or automatically lowercased. Quote numeric-only YAML keys.
-
-Published identity remains `(codex, source_id)` for compatibility with evidence and downstream readers.
-Keep it stable after ingestion; changing the key does not rename or migrate an
-existing store. Display-oriented folder names in `source_root` and output paths
-can still contain spaces and Unicode. Register each input directory once.
-
-Enabled Codex sources run sequentially in map order. `--limit` counts generation
-attempts across the whole invocation (including failed attempts and dry-run plans),
-and `runtime_minutes` provides one shared generation deadline. All selected stores
-are checked before writes. Each source retains its own catalog, provenance,
-checkpoint, and run report; a source processing failure is included in the overall
-failure result while other sources can continue. `--full-output` includes per-source
-thread details; ordinary output includes per-source totals and report paths.
-
-~~~console
-tkn-codex-chat-note clone --dry-run
-tkn-codex-chat-note --source my-windows-pc pull
-tkn-codex-chat-note --source my-windows-pc session-notes build --thread-id <thread-id>
-tkn-codex-chat-note status
-tkn-codex-chat-note provenance validate
-~~~
-
-`--source` precedes the command. It selects one enabled source for processing,
-status, provenance validation, or storage migration; omitted selection means all
-enabled sources for processing/status/provenance. `--thread-id` and storage migration
-require one selected source when several are enabled. Unknown or disabled selections
-fail visibly. `config show` always displays all configured sources and resolved roots.
-
-Source maps merge by ID across config layers; later fields override only the same
-source. An explicit map replaces the implicit built-in source, so adding your own
-IDs never silently enables an extra `windows` source. `sources: {}` clears the
-entire acquisition map; `enabled: false` disables one inherited source. Duplicate YAML keys
-and case-only source IDs are rejected.
-
-Disabled sources are not scanned and their input directories need not exist.
-With no enabled source, processing stops before writes; `config show` remains
-available. Retired `chat` and acquisition-provider wrappers are rejected.
-
-Windows and WSL input directories need separate IDs. Windows can use the WSL UNC
-path shown above when the distribution is accessible. When running this CLI inside
-WSL, configure Linux paths and its generation executable; `~` follows the OS running
-this CLI. The WSL example is a path configuration example, not a claim of completed
-WSL integration testing. Account-based filtering is not implemented.
+Changing the language makes existing notes eligible for regeneration on the next `build` / `pull`.
+Notes in different languages do not coexist: each conversation retains one note and one ID.
 
 <a id="inference-configuration"></a>
 
-### Inference providers
+### 5.4. Inference providers (generation.profiles)
 
-`generation.profiles` keys are arbitrary configuration names. Each entry explicitly
-sets `provider`: `codex`, `claude-code`, `github-copilot`, `ollama`, or `azure-openai`.
-The name, executable and URL never determine the provider. `executable` is an optional
-CLI program/path; `endpoint` is an HTTP address. Azure `authentication`, `pricing` and
-`limits` are siblings of `model`, with no `azure` wrapper. CLI executable defaults are
-codex/claude/copilot; Ollama defaults to http://127.0.0.1:11434.
+Keys under `generation.profiles` are arbitrary configuration names.
+Each configuration explicitly specifies its execution method with `provider`.
+The method is never inferred from the name, executable, or URL.
 
-Multiple profiles may share a provider (for example `azure-high` and `azure-low`).
-Select one with `tkn-codex-chat-note --profile azure-high pull --dry-run`.
-`--model` and `--reasoning-effort` override only that selected profile for the run.
-`--provider` is a compatibility selector: multiple matching profiles require an explicit
-`--profile`; with no match, `--model` can create a temporary CLI/Ollama profile.
-A profile name alone never creates or selects a different provider.
-`--profile` is independent of `--session-note-profile` (the note's language).
-
-Schema 7.0–7.2 is converted in memory before merging configuration layers:
-`active_provider` → `active_profile`, `providers` → `profiles`, map key → `provider`,
-`base_url` → `endpoint`, and the former `azure` fields move beside `model`.
-An optional Azure tenant moves to `authentication.tenant_id`. Files remain unchanged
-on read; `config show` displays the normalized values, sources and migration status.
-The first new-style profile map replaces built-in profile names; subsequent layers
-merge by profile name. Switching a profile's provider requires its new model/settings
-instead of inheriting the previous provider's connection. Mixed old/new keys in one
-layer are rejected. Storage paths, account caches and note IDs are unaffected.
-Renaming a profile alone does not invalidate generation checkpoints. Reports and
-provenance record `generationProfile` separately from the provider and model.
-
-
-This CLI acquires locally stored Codex conversation logs.
-You can change the generative AI model used for inference through
-`generation.active_profile` and the selected provider's `model` setting.
-Set the selected provider's model and transport; model
-availability and authentication belong to the chosen service.
-
-| Provider ID | Required transport setting | Execution |
+| `provider` | Connection setting | Execution method |
 | --- | --- | --- |
-| `codex` | `executable: codex` | Standalone `codex exec` |
+| `codex` | `executable: codex` | An independent `codex exec` invocation |
 | `claude-code` | `executable: claude` | Non-interactive Claude Code |
 | `github-copilot` | `executable: copilot` | Non-interactive Copilot CLI |
-| `ollama` | `endpoint: http://127.0.0.1:11434` | Local chat endpoint, loopback addresses only |
+| `ollama` | `endpoint: http://127.0.0.1:11434` | Local chat endpoint; loopback only |
+| `azure-openai` | `endpoint: https://<resource>.openai.azure.com/openai/v1/` | v1 Chat Completions |
 
-For example, replace the generation block to use an already available local model:
+`executable` is the CLI executable name or path, and `endpoint` is the HTTP connection URL.
+Place Azure's `authentication`, `pricing`, and `limits` at the same level as `model`.
+
+Here is an example using a local model.
 
 ```yaml
 generation:
@@ -335,512 +409,377 @@ generation:
       endpoint: http://127.0.0.1:11434
 ```
 
-CLI providers send the selected generation input through their configured
-service. Raw captures and provenance snapshots retain source content locally;
-choose storage appropriate for private conversation data. Generation profiles,
-output validation, and retry limits are application-owned. Changing a model,
-provider, reasoning setting, or Session Note language profile invalidates affected stages.
-
-### Rebuilding without retaining an existing store
-
-Create a separate configuration, select empty `raw_root`, `data_root`, and
-`state_root` directories, then follow "First capture and generation".
-Rebuilding covers conversation logs still available in the source. The new
-store does not inherit old note IDs, manual edits, or review status.
-
-~~~console
-tkn-codex-chat-note --config "C:\path\to\rebuild.yaml" config init
-~~~
-
-Edit the generated configuration and pass the same `--config` to subsequent
-`config show` and `clone` commands. An explicit new configuration path also works
-when default `config init` stops after detecting an old user configuration.
-Any current user configuration or `.tkn/config.yaml` loaded by the CLI must
-use schema 8 or supported schema 7.0–7.2; `--config` does not bypass validation of lower layers.
-
-## Azure API and bounded Ollama generation
-
-Version 0.21.1 uses configuration schema 8.0.0. Azure CLI is not required.
-Azure authentication follows the same SDK browser/persistent-cache approach as the
-local audio transcriber: try cached credentials, open a browser only when interaction
-is required, then retain the account record and encrypted token cache for later runs.
-Sign-in can be required again after revocation or an organization policy change.
-Browser access and a local callback connection are required for interactive sign-in.
-Cancelling or timing out stops inference before submission; `pull` may already have
-captured source history. Dry-run never authenticates or opens a browser.
-
-The account record is stored below `~/.tkn/codex_chat_note_pipeline/authentication/`.
-Access/refresh tokens remain in the SDK's encrypted cache, with no plaintext fallback.
-Cache names are isolated by this application, endpoint and optional tenant. Other
-applications' caches and Azure CLI accounts are not copied or modified. To select
-another account, remove only this application's matching account record while no run
-is active; the next generation requests browser account selection.
-
-Minimal Azure configuration under `generation.profiles` (select
-`generation.active_profile: azure-high`):
-
-```yaml
-azure-high:
-  provider: azure-openai
-  model: <deployment-name>
-  reasoning_effort: high
-  endpoint: https://<resource>.openai.azure.com/openai/v1/
-```
-
-`model` is the requested Azure deployment, not a separately maintained underlying
-model name. Do not add `deployment`, `model_version`, or `subscription_id`.
-`authentication.tenant_id` is optional for environments requiring explicit tenant selection.
-The API response supplies the actual model identity, including its revision when
-returned; the CLI does not guess a revision. Notes use `generatorModel` for that
-identity and `generatorDeployment` for the requested deployment. Provenance records
-likewise separate `model` from `requestedDeployment`.
-
-Prices are optional and keyed by deployment, so a `--model` override cannot silently
-reuse another deployment's rates. Without matching rates, token estimates and usage
-remain available, cost stays unknown, and the JPY cap is **not enforced**. Input/output
-and call limits still apply. Add verified rates beside `model` and `endpoint` when a cost cap is needed:
-
-```yaml
-pricing:
-  <deployment-name>:
-    input_jpy_per_million: 100.0  # Placeholder; replace with the applicable rate.
-    output_jpy_per_million: 500.0
-    pricing_date: YYYY-MM-DD
-```
-
-`limits` is optional. Defaults: input 60,000, output 16,000, context 100,000 tokens,
-chunk size 120,000 characters, 30 calls and a JPY 100 reservation cap when priced.
-These limits do not claim to describe every deployment's model capabilities. Rates
-are user-maintained estimates, not Azure billing discovery; refresh them when the
-model behind an unchanged deployment changes.
-
-Legacy schema-7.0/7.1 Azure config is normalized in memory: `azure.deployment` becomes
-`model`, the old model/version and subscription requirement are removed, and flat
-prices move under that deployment. Files are not rewritten automatically. Explicitly
-update the user config and use `config show` to inspect effective values.
-
-The v1 Chat Completions request uses strict JSON, `store=false`, an explicit completion
-limit including reasoning, and the deployment name. Each response must identify its
-actual model. Cached stages retain that identity; if a later response or cached stage
-has another identity, generation stops without combining models. Run `--force` to
-regenerate after changing the model behind the same deployment. Fully cached/current
-notes do not contact Azure, so they cannot detect server-side deployment updates.
-Endpoint/deployment/config changes naturally select another generation identity.
-
-Schema constraints unsupported by the API are omitted only from transport and still
-checked locally. Refusals, incomplete output and 401/403 fail without blind retries.
-429 and transient server/network failures allow at most three attempts; Retry-After
-seconds/date and millisecond headers are honored. Delays over 60 seconds stop for a
-later resume. Semantic repairs count toward budgets.
-
-For Ollama, configure `limits` and a pinned `model_digest` under its provider entry.
-`context_tokens` and `output_tokens` set `num_ctx` and `num_predict`. For example,
-start an explicit experiment with input 48000, output 8192, context 65536; these are
-experiment limits, not a hardware recommendation. The tokenizer-independent UTF-8
-byte bound is deliberately conservative and can result in many small chunks.
-Without `limits`, the older Ollama behavior is preserved.
-
-Complete prompts and schemas are checked before sending chunks, merges, and
-repairs. Azure estimates use a verified local `o200k_base` cache plus a margin, or
-a conservative byte bound when unavailable; estimates are not billed tokens. Chunk size is
-reduced automatically to fit. An oversized merge/repair stops with saved chunks
-rather than silently dropping input; raise suitable limits or revise the reduction
-strategy before resuming. Dry-run does not acquire credentials, authenticate, or call AI.
-
-Budgets apply to one sequential provider runner/command, shared across selected sources. Each submitted attempt
-reserves its estimated input plus maximum output cost; failed attempts with unknown
-billing keep their reservation. Reservations are not refunds or invoice values.
-A new command/process gets a new budget; concurrent processes do not share a global
-cap. Azure budget alerts also do not stop spending. Use current applicable prices,
-run one process, and account for earlier attempts when restarting an evaluation.
-
-Run reports include `generationMetrics.apiRequests`: actual input/output/reasoning/
-cached input tokens when returned, response model, elapsed time, and an estimated
-JPY cost. Missing usage stays null. The estimate charges cached input at the normal
-input rate (conservative); cache-write tokens are unknown unless reported. Connection,
-deployment/settings, limits, and digest enter generation fingerprints and provenance.
-Actual response models are tracked separately in requests and validated checkpoints.
-
-To evaluate pinned Canonical Events without touching the live store, use
-`scripts/evaluate_session_notes.py --manifest <private-baseline-manifest.json>
---config <generation-config.yaml> --output <fresh-evaluation-directory>
---thread <thread-id>`. `--dry-run` only validates the plan. The script verifies
-snapshot hashes, saves validated Markdown/structured JSON and per-attempt metrics in
-`run-history` (including earlier attempts after a resume),
-and reuses completed outputs/checkpoints when the same conditions are repeated.
-The output directory must be dedicated to that evaluation. A manifest row contains
-`metadata`, the original provenance `activity`, and `files` mapping `sessionNote`,
-`raw`, and `canonicalEvents` to copied SHA-256-named snapshot files.
-
-Implementation references: [Azure structured outputs](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs),
-[Browser credential](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.interactivebrowsercredential),
-[Ollama chat API](https://docs.ollama.com/api/chat).
-
-API requests use short, reversible source-ID aliases in structured input and a shared
-JSON Schema enum for all citations. Responses are mapped back to the original IDs
-before validation; source prose, Raw and Canonical Events are unchanged. This reduces
-repeated identifier tokens and prevents abbreviated/invented citation IDs. Merge
-repairs also receive the allowed IDs without resending raw events. `apiRequests`
-records the wire encoding as `event-id-aliases-v1`.
-
-### Preview size/cost and observe actual usage (0.19.0)
+You can define multiple configurations for the same provider, such as `azure-high` and `azure-low`.
 
 ```console
-tkn-codex-chat-note clone --dry-run
+tkn-codex-chat-note --profile azure-high pull --dry-run
+```
+
+- `--profile` changes only `generation.active_profile`. It does not change the source.
+- `--model` and `--reasoning-effort` override the selected profile for that run only.
+- `--profile` (generation profile) and `--session-note-profile` (note body language) are separate settings.
+- Even when a profile name matches a provider name, the execution method is not inferred from the name.
+- Run reports and provenance record `generationProfile` separately from provider and model.
+
+For CLI-based providers, the selected generation input is sent to the service configured in that CLI.
+Choose a destination appropriate for your conversation data (Ollama endpoints are restricted to loopback).
+Available models and authentication are managed by each service.
+
+### 5.5. Input size and cost controls (Azure OpenAI / Ollama)
+
+Azure OpenAI and Ollama configured with `limits` support estimates before submission, actual usage tracking during execution, and stopping at limits.
+Input size, including instructions and schemas, is checked before every chunk, merge, and repair request; chunks are adjusted automatically until they fit.
+If a merge or repair exceeds the available capacity, processing stops while retaining saved chunks.
+Adjust the limits or change the merge method before resuming.
+
+#### 5.5.1. Azure configuration
+
+```yaml
+generation:
+  active_profile: azure-high
+  profiles:
+    azure-high:
+      provider: azure-openai
+      model: <deployment-name>
+      reasoning_effort: high
+      endpoint: https://<resource>.openai.azure.com/openai/v1/
+      # Optional settings below
+      # authentication:
+      #   tenant_id: <tenant-guid>
+      # pricing:
+      #   <deployment-name>:
+      #     input_jpy_per_million: 100.0   # Placeholder rates; replace with verified rates
+      #     output_jpy_per_million: 500.0
+      #     pricing_date: YYYY-MM-DD
+```
+
+Set `model` to the **deployment name** to call.
+The actual model name and version are recorded from API responses, so you do not need to specify them in configuration.
+A note's `generatorModel` identifies the model that actually responded, while `generatorDeployment` identifies the requested deployment (provenance records them separately as well).
+
+Configure `pricing` only if you want monetary amounts displayed.
+If no matching rates are available, only token estimates and actual usage are shown; the cost is reported as unknown and **the JPY limit is not enforced** (input, output, and call limits still apply).
+Costs are estimates based on user-configured rates, not billing information retrieved automatically from Azure.
+Changing the deployment with `--model` or another setting does not reuse another deployment's rates.
+
+Azure CLI is not required for authentication.
+The SDK uses browser authentication and a persistent cache, first attempting to obtain a token with saved authentication and opening a browser only when interaction is required.
+
+- Account records are stored in `~/.tkn/codex_chat_note_pipeline/authentication/`, and tokens are stored in the SDK's encrypted cache (there is no fallback to plaintext storage).
+- Cache names are isolated by this app, endpoint, and tenant. Authentication belonging to other apps or Azure CLI is not copied or modified.
+- To select a different account, stop execution and delete only this app's corresponding account record.
+- `--dry-run` does not authenticate or open a browser. Authentication cancellation or timeout stops execution before inference is submitted (`pull` may already have ingested history).
+
+#### 5.5.2. Limits (limits)
+
+`limits` is optional.
+The defaults below do not describe the capabilities of every deployment.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `input_tokens` | 60,000 | Input limit per call |
+| `output_tokens` | 16,000 | Output limit per response, including reasoning |
+| `context_tokens` | 100,000 | Context limit |
+| `chunk_characters` | 120,000 | Chunk size in characters |
+| `max_calls` | 30 | Call limit per command |
+| `max_cost_jpy` | 100 | Reserved cost limit per command; applies only when rates are configured |
+
+For Ollama, you can configure `limits` and a pinned `model_digest`.
+`context_tokens` and `output_tokens` are passed as `num_ctx` and `num_predict`.
+A tokenizer-independent UTF-8 byte upper bound is used, which can produce more chunks.
+When `limits` is omitted, execution is unbounded.
+
+#### 5.5.3. Estimates before execution (dry-run)
+
+```console
 tkn-codex-chat-note pull --dry-run --limit 1
-tkn-codex-chat-note pull --limit 1
 ```
 
-Dry-run reports estimates for selected notes that need generation; current, reviewed,
-edited/protected and deferred notes do not add inference cost. It reads validated chunk
-checkpoints and excludes reusable chunks. A final merge reserves one call until its exact
-input is known, even if a merge or staged note might later be reusable. Nothing is written,
-no login occurs, and no network request is made. `--full-output` includes each thread's
-`generationEstimate`; saved reports retain the aggregate estimate.
+- Only notes requiring generation are estimated. Up-to-date, reviewed, edit-protected, and deferred notes are excluded, as are reusable validated chunk-cache results.
+- Because the final merge input size cannot be determined in advance, the estimate reserves one merge call.
+- No files are created, and no authentication or communication takes place. `--full-output` also displays `generationEstimate` for each conversation.
+- A dry run does not save a report. To retain its plan, save the standard output produced with `--full-output` to a file.
+- For command-based providers such as Codex, token counts and costs are unknown because the CLI's internally added context and schema are not visible. Azure also displays estimated total input tokens, the output token ceiling, and the estimated cost ceiling in JPY.
+- Azure token estimates use a validated local `o200k_base` cache with a margin. If unavailable, a UTF-8 byte upper bound is used and recorded as `utf8-byte-upper-bound`.
 
-All providers show prepared input characters, pending prompt characters and base calls.
-Codex/other command providers have unknown token counts/prices because their own context,
-schemas and billing are not observable. Azure also shows estimated **total input tokens
-across calls**, maximum output tokens (including reasoning), and a **base cost ceiling in
-JPY**. These are different units from the per-request input limit. Future merge input
-reserves its full configured input limit; every generated answer reserves the configured
-output maximum. Repairs/retries are additional. This is a conservative estimate, not an
-expected bill or a guarantee that the whole plan fits the command budget. The command's
-call/cost limits and an over-budget indication are shown separately.
+#### 5.5.4. Reading progress output
 
-Azure token counting reads an existing SHA-256-verified `o200k_base` tokenizer cache and
-adds a margin. Without that cache it uses a more conservative UTF-8-byte bound and reports
-`utf8-byte-upper-bound`; it never downloads or repairs a cache while estimating. Ollama
-with explicit limits uses the same byte bound. This can increase the estimated chunk count.
+During execution, standard error shows each call's input estimate and reserved cost, actual response token counts and estimated JPY cost, and per-conversation and overall summaries.
+Unknown usage or local execution costs are never displayed as 0.
+For a conversation split into 12 chunks, interpret the output as follows.
 
-During a run, stderr shows each request's input estimate/reservation and returned input,
-output tokens and estimated JPY cost, plus thread/run totals. Unknown usage or local costs
-are shown as unknown. Codex calls show prompt characters. Normal run reports persist:
+| Display | Meaning |
+| --- | --- |
+| `13 base calls` | 12 chunk summaries + 1 merge |
+| `output ceiling 208,000 tokens` | 13 calls × a 16,000-token output limit |
+| `base cost ceiling JPY 53.64 (repairs/retries extra)` | A conservative ceiling estimate based on estimated input and maximum output for the base processing. Content repairs and communication retries are additional. |
+| `16 model calls, 3 semantic retries, ... estimated JPY 28.69` | 12 chunks + 1 merge + 3 content repairs = 16 submitted calls. Tokens come from API responses; JPY is calculated using configured rates. |
+| `command reserve` | Reserved cost for the entire command, including earlier notes and other sources |
+| `no request submitted` | This call was not submitted and incurred no charge; usage and costs from earlier submissions remain |
 
-- `threads[].generationEstimate`: pre-generation assumptions and limits.
-- `threads[].generationMetrics.apiRequests[]`: sequence, chunk/merge/repair stage, actual
-  usage, elapsed time, response model, reservation and estimated cost, including failed attempts.
-- `threads[].generationMetrics.usageTotals` and top-level `usageTotals`: complete totals,
-  `knownInputTokens` / `knownEstimatedCostJpy` subtotals, and missing-request counts.
+Reserved cost accumulates the cost of estimated input plus maximum output; a short response does not release the reservation.
+As a result, processing can stop at the default JPY 100 reservation limit even when the estimate based on actual usage is below JPY 100.
+None of these JPY amounts is a confirmed Azure bill.
 
-Merge repairs reuse the full partial records, omit a redundant citation-ID list, and
-compact JSON whitespace without changing source strings or facts.
+Run reports are saved under `<state_root>/reports/` with run IDs.
+They retain estimates before generation (`generationEstimate`), per-call actual usage, reserved cost, and responding models (`generationMetrics.apiRequests[]`, including failed attempts), and per-conversation and overall totals (`usageTotals`).
+If any call's usage is unavailable, the total is `null`, with a separate subtotal for known usage.
+For analysis that includes runs resumed after failure, aggregate the reports for each run (also adding `last-run.json` or copies of standard output would double-count usage).
 
-Any missing usage makes its complete total null; known subtotals remain available.
-Source reports have unique run IDs under `<state_root>/reports/`; use `reportPath` or
-`reportPaths` to find them. Aggregate unique run reports to include earlier failed runs
-and resumed work; do not also count `last-run.json` or duplicate exported reports.
-Dry-run prints a concise summary and creates no report file. Use `--full-output` and redirect stdout to retain the full plan.
+#### 5.5.5. Budget stops and resuming
 
-### Reading estimates, actual usage, and budget stops
+At the first rejection caused by a cost or call limit, further generation stops and unfinished work is marked `deferred`.
 
-For a 12-chunk note, `13 base calls` means 12 summaries plus one merge.
-`output ceiling 208,000 tokens` is 13 × the 16,000-token output limit.
-`base cost ceiling JPY 53.64 (repairs/retries extra)` prices estimated input plus
-maximum output for those base calls. It is a conservative planning figure, not an
-expected bill; semantic repairs and transport retries are extra.
-A completion line with `16 model calls, 3 semantic retries, ... estimated JPY 28.69`
-includes all 16 submitted calls for that note: 12 chunks, one merge and three repairs.
-The input/output token totals come from API usage; the yen amount is calculated from
-configured prices, not retrieved from Azure billing. With input 410,889 and output
-81,574 tokens at 31.864/191.184 JPY per million, the calculation is 28.688210712 JPY.
-The configured units/prices may differ from these illustrative values.
+- One warning is displayed, and no further estimation or generation is performed. The stop applies across all selected sources.
+- Up-to-date notes and review protection are preserved as usual; source ingestion and final report saving may continue.
+- The report's `generationStop` records the reason, reserved cost, call count, and limits. The deferral reason is `api-cost-budget` or `api-call-budget`; if there are no other failures, the exit code is `2`.
+- The budget applies to one command. A separate command or process receives a new allowance. Azure cost notifications do not stop charges.
 
-`command reserve` accumulates each request's estimated input plus maximum output
-across the whole command, including previous notes and selected sources. Successful
-shorter responses do not release unused reservations in the current implementation.
-Consequently, a command can hit its default JPY 100 reservation cap even when the
-actual-usage-based cost estimate is much lower. `no request submitted` means that
-blocked call was not sent or charged; previously submitted calls remain in usage.
-
-Before 0.21.1 this command-level stop appeared as repeated thread failures. From
-0.21.1 the first cost/call budget denial pauses all subsequent generation in that
-command, marks unfinished work `deferred`, and logs one warning. Further candidates
-are not estimated or submitted. Current/reviewed notes retain their normal status;
-source capture and final status/report persistence may still finish. All selected
-sources share the stop. Reports include `generationStop` (reason, reservation and
-call counts/limits), with `api-cost-budget` or `api-call-budget` as the deferred reason.
-The exit code is 2 (incomplete), unless an independent failure also occurred.
-A cheaper later call could sometimes fit the remaining cost budget, but the command
-deliberately stops at its first budget denial instead of probing every later note.
-
-To resume, keep the same profile/settings and run without `--force`:
+To resume, keep the same profile and settings and run without `--force`.
 
 ```console
-tkn-codex-chat-note --profile azure-high pull --dry-run --limit 1
 tkn-codex-chat-note --profile azure-high pull --limit 1
 ```
 
-Completed unchanged notes are skipped; validated chunks are reused. Each new command
-gets a fresh budget and additional submitted requests incur additional cost. `--limit 1`
-limits attempted notes, not API calls or yen. A 36-chunk note plus merge can progress
-across several commands despite a 30-call cap. Reuse requires unchanged input and
-generation settings and intact checkpoints; the blocked chunk itself is not cached.
-If even one necessary call cannot fit a fresh budget, repeating the command cannot
-solve that condition. Review the profile's `limits.max_cost_jpy` and `limits.max_calls`.
-Increasing only the cost cap does not remove the call cap. In the current cache contract,
-limits are part of generation identity, so changing them invalidates previous checkpoints
-and may regenerate completed unreviewed notes. Prefer same-setting resume first; do not
-use `--force` for normal budget recovery. The application never increases your cap automatically.
+Completed, unchanged notes are skipped, and validated chunks are reused.
+Each new command receives a new budget allowance, so even a large conversation with 36 chunks plus a merge can progress across multiple commands under a 30-call limit (additional submissions incur additional costs).
 
-### Preserve pending state across merges
+Reconsider `limits.max_cost_jpy` and `limits.max_calls` only if even one required call cannot fit within a fresh allowance (raising only the cost limit does not remove the call limit).
+Limits are part of the generation conditions, so changing them can make existing intermediate results ineligible for reuse and completed, unreviewed notes eligible for regeneration.
+The application never increases configured limits automatically.
 
-Generator prompt 10, Japanese profile 3.8 and English profile 1.4 require a disposition
-for every partial unresolved/unverified item. Retained text is copied into the final state;
-removal requires a reason and later cited evidence within the same history. Missing,
-duplicate or invalid dispositions trigger bounded repair. Reviews are saved as internal
-`generationMetrics.stateItemReviews`; public Session Note schema stays 6. The model still
-judges whether the cited evidence actually resolves an item, so factual review remains useful.
-A completed latest request does not automatically clear earlier unverified checks.
-Merge inputs omit redundant timeline endpoints while retaining all text/citations; final
-timelines remain unchanged. Repairs carry the required state context. These prompt changes
-invalidate older generation/checkpoint identities for all providers; reviewed/edited notes
-remain protected. Existing Ollama configuration remains supported.
+#### 5.5.6. Submitted content and retries
 
-## Data and responsibility boundaries
+- To reduce input size, identical duplicate content is replaced with references to its original events, and source IDs are converted to short, reversible aliases before submission. Raw, Canonical Events, and all event IDs are preserved; responses are restored to the original IDs before validation.
+- Refusals, truncated responses, and 401/403 errors fail without retries. A 429 or transient error allows up to 3 attempts, respecting `Retry-After` (if the requested wait exceeds 60 seconds, processing stops and advises resuming after that interval).
+- Intermediate results retain the responding model's identifier. If a later response differs, processing stops without mixing results (regenerate with `--force`).
 
-~~~mermaid
-flowchart LR
-    L["Local Codex logs"] --> R["Raw copies and manifest"]
-    R --> E["Canonical Events"]
-    E --> T["Session Notes"]
-    M["Observed Project membership"] --> C["Thread catalog"]
-    T --> C
-    C --> U["Context curation CLI<br/>(separate repository)"]
-    T --> I["Insight CLI<br/>(separate repository)"]
-    R --> P["Versioned evidence"]
-    E --> P
-    T --> P
-~~~
+### 5.6. How configuration changes affect regeneration
 
-Default storage is ordered by role, the fixed acquisition application (`codex`), source environment,
-then kind of data. Explicit roots start directly with the kind of data. `P` below is the fixed acquisition provider (`codex`), `I` the source_id, `T` the
-threadKey, and `H` a content hash. Changing `generation.active_profile` does
-not change these paths.
+| Changed setting | Effect |
+| --- | --- |
+| `session_note_profile` (language) | Existing notes become eligible for regeneration. Intermediate results from a different profile are not reused. |
+| `provider` / `model` / `reasoning_effort` | Generation conditions change, making notes eligible for regeneration. |
+| `endpoint` / `deployment` / `limits` / `model_digest` | Generation conditions change; previous intermediate results are not reused. |
+| Profile name only | Does not invalidate intermediate results. |
+| Switching `active_profile` | Does not change storage locations. |
+| `raw_root` / `data_root` / `state_root` | Only storage locations change; no regeneration occurs (use `storage migrate` for migration). |
+
+Protection for reviewed and manually edited notes remains in effect in all cases.
+
+## 6. Storage layout
+
+Default storage paths follow this order: area role → source application → source environment → data type.
+When a root such as `raw_root` is specified explicitly, data types are placed directly beneath that root.
+
+In the following table, `P` is the capture provider (always `codex`), `I` is the `source_id`, `T` is the `threadKey`, and `H` is the content hash.
 
 | Storage path | Contents |
 | --- | --- |
-| `<raw_root>/sessions/...` | Latest Codex source copies preserving relative paths and bytes |
-| `<raw_root>/archived_sessions/...` | Latest copies preserving Codex's archived layout |
-| `<raw_root>/manifest.jsonl` | Raw source references, hashes, and acquisition metadata |
-| `<raw_root>/metadata/H.json` | Observed application Project metadata |
-| --- | --- |
-| `<data_root>/source-aligned/T/H.json` | Canonical Events retaining source references |
-| `<data_root>/session-notes/YYYY/MM/...md` | Current Session Notes by conversation start year/month |
-| `<data_root>/catalog/threads.json` | This source’s catalog, observations, states, and note references |
-| `<data_root>/provenance/...` | This source’s immutable snapshots, entities, activities, and published index |
-| --- | --- |
-| `<state_root>/pipeline.json` | Per-source initialization and storage version |
-| `<state_root>/threads/T/...` | Per-conversation checkpoints |
-| `<state_root>/ledger.json`, `reports/`, `last-run.json`, `normalization/` | Per-source run and normalization state |
-| --- | --- |
-| `<cache_root>/P/I/...` | Reusable generation work for one source |
+| `<raw_root>/sessions/...` | Latest copies preserving the relative structure and bytes of the original Codex logs |
+| `<raw_root>/archived_sessions/...` | Latest copies preserving Codex's archive structure |
+| `<raw_root>/manifest.jsonl` | Raw manifest recording sources, references, and hashes |
+| `<raw_root>/metadata/H.json` | Observed app Project information |
+| `<data_root>/source-aligned/T/H.json` | Canonical Events with references to positions in the original logs |
+| `<data_root>/session-notes/YYYY/MM/...md` | Current Session Notes organized by the conversation's start year and month |
+| `<data_root>/catalog/threads.json` | Catalog of this source's conversations, memberships, states, and note references |
+| `<data_root>/provenance/...` | Immutable snapshots, entities, activities, and a published index for this source |
+| `<state_root>/pipeline.json` | Per-source initialization information and storage version |
+| `<state_root>/threads/T/...` | Internal checkpoints per conversation |
+| `<state_root>/ledger.json`, `reports/`, `last-run.json`, `normalization/` | Per-source execution and normalization state |
+| `<cache_root>/P/I/...` | Reusable intermediate generation cache per source |
 
-For provider `codex` and source_id `my-windows-pc`, Raw goes to
-`~/.tkn/codex_chat_note_pipeline/raw/codex/my-windows-pc/sessions/...`; notes go to
-`~/.tkn/codex_chat_note_pipeline/data/codex/my-windows-pc/session-notes/YYYY/MM/...md`.
-The storage namespace keeps the fixed `codex` component for compatibility.
-Inspect resolved paths under `storage.sourceRoots.<source_id>` in `config show`.
+For example, with `source_id` set to `my-windows-pc` and storage directories omitted, Raw is stored under `~/.tkn/codex_chat_note_pipeline/raw/codex/my-windows-pc/sessions/...`, and notes under `~/.tkn/codex_chat_note_pipeline/data/codex/my-windows-pc/session-notes/YYYY/MM/...md`.
+The `codex` path segment is retained for compatibility.
+Use `config show` to inspect each source's final storage directories under `storage.sourceRoots.<source_id>`.
 
-Each root has a source-bound ownership marker and lock. Reusing it for another
-source identity is rejected. `status` and `provenance validate` cover the configured
-source. Identical threadKeys in different environments have independent note IDs,
-checkpoints, catalogs and provenance. `data:/` resolves under this source’s data_root.
-For Raw, `raw:/codex/<source_id>/` is a logical source prefix; append only the
-remaining path to this source’s raw_root. `store.json` retains source identity
-and legacy reference aliases alongside the data.
+When choosing storage locations:
+
+- Keep all roots separate from one another and from the source's `source_root` and configuration files.
+- Placing `raw/`, `data/`, and `state/` under a common parent makes it easier to back them up or move them together.
+- State is persistent data for resuming processing and maintaining checkpoints; manage it together with data.
+- Published evidence is retained in provenance under data.
+- Cache can be recreated and is not copied during migration.
+
+Each root contains an ownership marker with the source ID and a lock; reuse for a different source is rejected.
+Even when the same conversation `threadKey` exists in another environment, note IDs, checkpoints, catalogs, and provenance remain independent per source.
+See the [output data and CLI integration contract](docs/reference/data-contract.md) for how references in output files (`data:/` and `raw:/codex/<source_id>/`) are resolved.
 
 <a id="processing-flow"></a>
 
-### session-notes build: generate Session Notes from Raw
+### 6.1. How session-notes build works
 
-Capture and normalize conversation logs, then generate Markdown Session Notes for
-eligible conversations. Use `--thread-id` to select one conversation. This command
-does not generate Decisions or Working Context. The model receives event content
-and IDs, generation instructions, and the output schema.
+`session-notes build` preserves and normalizes conversation logs as Raw, then generates Markdown Session Notes for the target conversations.
+Use `--thread-id` to select one conversation.
+This command does not generate Decisions or Working Context.
+The AI receives event contents, event IDs, generation instructions, and an output schema.
 
-The following shows `tkn-codex-chat-note session-notes build`. The legend applies
-to the diagram immediately below it.
+The following table defines the abbreviations used in the diagram.
 
-| Diagram notation | Configuration key | Default location |
+| Diagram label | Configuration setting | Default storage path |
 | --- | --- | --- |
 | `C` | `sources.<source_id>.source_root` | `~/.codex` |
-| `R` | `sources.<source_id>.raw_root` | `~/.tkn/codex_chat_note_pipeline/raw/codex/windows` |
-| `D` | `sources.<source_id>.data_root` | `~/.tkn/codex_chat_note_pipeline/data/codex/windows` |
-| `S` | `sources.<source_id>.state_root` | `~/.tkn/codex_chat_note_pipeline/state/codex/windows` |
+| `R` | `sources.<source_id>.raw_root` | `~/.tkn/codex_chat_note_pipeline/raw/codex/<source_id>` |
+| `D` | `sources.<source_id>.data_root` | `~/.tkn/codex_chat_note_pipeline/data/codex/<source_id>` |
+| `S` | `sources.<source_id>.state_root` | `~/.tkn/codex_chat_note_pipeline/state/codex/<source_id>` |
 
-`T` is a conversation's `threadKey` and `H` is a content hash.
-They are placeholders in the diagram.
+`T` is the conversation's `threadKey`, and `H` is the content hash.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor U as User or scheduler
+    actor U as User / scheduled run
     participant P as Pipeline CLI
     participant C as Codex storage
-    participant F as Storage R, D, S
-    participant AI as Inference backend
+    participant F as Storage R / D / S
+    participant AI as Generative AI
 
     U->>P: session-notes build
-    P->>P: Read config.yaml<br/>Paths, source identity, model
-    P->>F: Read S/ledger.json and stage state
+    P->>P: Read config.yaml<br/>Storage paths, source ID, model
+    P->>F: Read S/ledger.json and related files<br/>Check previous processing state
 
     P->>C: C/sessions/**/*.jsonl<br/>C/archived_sessions/**/*.jsonl
-    C-->>P: Original conversation bytes
-    P->>F: R/sessions/YYYY/MM/DD/rollout-*.jsonl<br/>Preserve original bytes
-    P->>F: R/manifest.jsonl<br/>Update source, time, hash
+    C-->>P: Original conversation log bytes
+    P->>F: R/sessions/YYYY/MM/DD/rollout-*.jsonl<br/>Save without changing the original contents
+    P->>F: R/manifest.jsonl<br/>Record sources, timestamps, and hashes
 
-    opt Project metadata is available
+    opt Project membership information is available
         P->>C: C/.codex-global-state.json
-        C-->>P: Projects and conversation membership
-        P->>F: R/metadata/H.json
+        C-->>P: Project information and conversation membership
+        P->>F: R/metadata/H.json<br/>Snapshot of membership information
     end
 
-    P->>P: Parse Raw and normalize events<br/>IDs, messages, times, source line references
-    P->>F: D/source-aligned/T/H.json<br/>Canonical Events
+    P->>P: Parse Raw and normalize events<br/>Conversation IDs, messages, timestamps, original line references
+    P->>F: D/source-aligned/T/H.json<br/>Save Canonical Events
 
-    loop New, changed, or unfinished eligible conversation
-        P->>P: Prepare events and split long input
-        P->>AI: Thread ID, event content and IDs<br/>Generation instructions and output schema
-        AI-->>P: Partial timeline, overview, and evidence IDs
-        opt Input was split
-            P->>AI: Synthesize overview and final state
-            AI-->>P: Overview and final-state JSON
+    loop New, changed, or unfinished target conversations
+        P->>P: Prepare events for summarization<br/>Split long conversations into chunks
+        P->>AI: Conversation ID, event contents, event IDs<br/>Generation instructions and output schema
+        AI-->>P: Partial records as JSON<br/>Timeline text, summary, and evidence IDs
+        opt Conversation was split into chunks
+            P->>AI: Merge summaries and final states from partial records
+            AI-->>P: Summary and final state as JSON
         end
-        P->>P: Preserve and concatenate timelines<br/>Derive timestamps and actors, validate, render Markdown
-        P->>F: D/session-notes/YYYY/MM/*.md<br/>Session Note
-        P->>F: Record provenance and checkpoint
+        P->>P: Join timelines while retaining partial records<br/>Validate timestamps, actors, and evidence; render Markdown
+        P->>F: D/session-notes/YYYY/MM/*.md<br/>Save Session Note
+        P->>F: Record provenance and processing checkpoints
     end
 ```
 
-The saved Canonical Events and the summarizer's input originate from the same
-parse. The current implementation passes in-memory events to the summarizer;
-it does not re-read the saved canonical JSON for that step. Summarization is
-per conversation, independent of work-scope grouping.
+The stored Canonical Events and the events used for summarization come from the same parsing results (events are passed in memory without rereading the saved JSON).
+At this stage, the unit of summarization is a conversation, independent of consolidation by work scope.
 
-### Changing storage directories
+### 6.2. Moving storage to another folder
 
-Use `storage migrate` to copy a current-format store to new directories.
-It preserves Raw, Session Notes, canonical data, provenance, restart state,
-note IDs, note content, and review status. It never invokes inference, and
-changing storage paths alone does not trigger regeneration.
+Use `storage migrate` to move a store in the current format to another folder.
+It copies Raw, Session Notes, normalized data, provenance, and resume state while preserving note IDs, contents, and review status.
+No inference is performed, so changing storage locations alone does not regenerate notes.
 
-1. Prepare a standalone source configuration that resolves the source ID and
-   final roots. `--from-config` is not merged with other configuration layers.
-2. Prepare a separate destination configuration with the same source ID and
-   new final `raw_root`, `data_root`, and `state_root` paths disjoint from the source.
-   Select one source with `--source` when several are enabled.
-3. Stop writers to the source store, then check and execute the copy:
+1. Prepare a source configuration file that independently resolves the source's final storage paths and source ID. Configuration from other layers is not merged into the `--from-config` file.
+2. Prepare a separate destination configuration with the same source ID, setting `raw_root`, `data_root`, and `state_root` to new final storage directories that do not overlap the source. If multiple sources are enabled, select one with `--source`.
+3. Stop writes to the source during copying, then check and execute in the following order.
 
-~~~console
+```console
 tkn-codex-chat-note --config "C:\path\to\destination.yaml" config show
 tkn-codex-chat-note --config "C:\path\to\destination.yaml" --source my-windows-pc storage migrate --from-config "C:\path\to\source.yaml" --dry-run
 tkn-codex-chat-note --config "C:\path\to\destination.yaml" --source my-windows-pc storage migrate --from-config "C:\path\to\source.yaml"
 tkn-codex-chat-note --config "C:\path\to\destination.yaml" --source my-windows-pc provenance validate
-~~~
+```
 
-Source data and configuration are never modified or deleted. Cache is not copied
-and can be recreated at the destination. Conflicting destination files stop the
-operation; interrupted copies can resume with the same configurations.
-Repeating a completed copy performs no writes. For Raw-only stores, run
-`provenance validate` after the first note generation.
-Use the destination configuration for subsequent runs. Update downstream
-`notes_roots` paths while keeping input names stable. See the
-[output data and CLI integration contract](reference/data-contract.md#storage-layout-5)
-for reference resolution and copy guarantees.
+Source data and configuration are not modified or deleted.
+Cache is not copied; it is recreated at the destination.
+A conflict at the destination stops the operation, and an interrupted copy can be resumed with the same settings (rerunning a completed copy performs no writes).
+Use the destination configuration for subsequent runs, and update downstream CLIs' `notes_roots` paths while keeping input names unchanged.
+See the [output data and CLI integration contract](docs/reference/data-contract.md#storage-layout-5) for copy guarantees.
 
-### Coverage and limitations
+### 6.3. Rebuilding without retaining existing data
 
-Thread identity survives Project reassignment. Membership observations are
-retained upstream; semantic scopes and approved relationships belong downstream.
-Session Notes are derived records, not a replacement for original evidence.
-Source and inference providers remain separate concepts.
+Create a new configuration file, specify empty `raw_root`, `data_root`, and `state_root` directories, and follow [3. Running the CLI](#3-running-the-cli).
 
-Local `sessions` and, by default, `archived_sessions` are scanned. Projectless,
-unmatched, and ambiguous conversations remain eligible. Internal/approval
-conversations and sources without a clean user message are retained and
-normalized but excluded from notes. Cloud-only ChatGPT/Work history is not
-fetched. Agent communication metadata (`inter_agent_communication_metadata`, including `trigger_turn`) is recognized as control data, retained in Raw, and excluded from summary evidence.
-Unsupported records and invalid JSONL remain visible in reports.
-Legacy logs are supported; missing event timestamps remain unknown in notes.
-Unicode string separators are not mistaken for JSONL record boundaries.
-Embedded image payloads remain intact in Raw and canonical evidence. Text inference
-receives the image format, byte size, and hash instead of base64 characters; notes
-explicitly state that visual content was not inspected. Ordinary long text is
-preserved and split into bounded inputs.
+```console
+tkn-codex-chat-note --config "C:\path\to\rebuild.yaml" config init
+```
 
-On Windows, transient file replacement failures are retried briefly while keeping
-the old file intact. Unchanged thread ledger entries are not repeatedly rewritten.
-Persistent errors remain failures in the run report.
+Edit the created configuration, and use the same `--config` for subsequent `config show` and `clone` commands.
+Only conversation logs still present in the source can be rebuilt.
+Because this creates a separate store, it does not retain old note IDs, manual edits, or review status.
+Specifying `--config` does not bypass validation of lower configuration layers, so any user configuration or `.tkn/config.yaml` that is loaded must also use a valid schema.
 
-When multiple files share a conversation ID, identical captures and provable
-byte-prefix versions are coalesced. Other histories and branches are retained
-in one Session Note, with a timeline and source locators for each History ID.
-The pipeline does not infer a winning branch or cancellation across histories.
-It records `history_base` as observed source metadata. All files remain in Raw
-and participate in normalization and note-generation provenance. Branch changes
-regenerate the same note ID; unchanged `pull` runs do not regenerate it.
+## 7. Coverage and limitations
 
-See [output data and CLI integration contract](reference/data-contract.md),
-[Session Note format](docs/session-note-format.md), and
-[processing sequence](#processing-flow) for IDs, hashes, schemas,
-citations, storage details, and input preparation.
+### 7.1. Capture scope
 
-## Reinstall after updates
+- Local `sessions` and, by default, `archived_sessions` are included.
+- Conversations without a Project, with an unknown assignment, or with ambiguous membership are also included. Conversations can be preserved without the app's Project information.
+- Cloud-only ChatGPT / Work history is not captured.
+- Internal processing and approval-review conversations, and logs without ordinary user messages, are preserved and normalized but excluded from summarization.
+- Older log formats are included. When an event has no timestamp, the note marks the time as unknown.
+- `inter_agent_communication_metadata` (such as `trigger_turn`) is retained in Raw as known control information and is not used as evidence for summarization.
+- Unsupported records and invalid JSONL are recorded in the run report. Unicode separator characters are not mistaken for JSONL line breaks.
 
-After source or resource changes:
+### 7.2. Images and long text
 
-~~~console
+Embedded image payloads are preserved in Raw and normalized data.
+Text inference receives the image format, byte count, and hash instead of the base64 payload, and the note explicitly states that visual content has not been verified.
+Ordinary long text is preserved and split according to input size.
+
+### 7.3. Multiple files for the same conversation
+
+Exact matches and byte-level append relationships are consolidated as duplicates.
+Other histories and branches are preserved, with timelines and sources shown by History ID within one Session Note (the tool does not infer which branch was adopted or whether another history superseded it).
+All files are saved in Raw, and each input remains in normalization and note-generation provenance.
+`history_base` is recorded as source metadata.
+A branch change regenerates the same note ID; an unchanged `pull` does not regenerate it.
+
+### 7.4. Nature of generated results
+
+- A Session Note is a derived record and does not replace the original evidence.
+- Unresolved or unverified items from each chunk remain in the final note unless later events in the same history show that they were resolved. Completing the latest request does not automatically clear earlier unverified items.
+- The model judges whether a source actually shows resolution, so factual verification remains necessary.
+- Changing Project membership does not change the conversation ID. This CLI retains observed membership, while downstream CLIs handle semantic Scope classification and approved relationships.
+
+### 7.5. Execution environment
+
+If Windows temporarily refuses a file replacement, the CLI briefly retries while preserving the original file.
+Persistent errors are recorded as failures in the run report.
+
+The minimum supported version is Python 3.11, but the recorded execution environment is Windows / Python 3.12.10.
+Other Python versions and non-Windows environments, including WSL, have not been verified.
+
+## 8. Reinstalling after updates
+
+Reinstall after updating code or resources.
+
+```console
 cd "C:\path\to\tkn_codex_chat_note_pipeline"
 uv tool install . --reinstall
-~~~
+```
 
-## Development and verification
+## 9. Development and verification
 
-~~~console
+```console
 uv sync --locked
 uv run python -m pytest
 uv run python -m ruff check .
 uv run python -m mypy src
 uv build
-~~~
+```
 
-Automated tests use anonymous conversations and substitute inference implementations
-to check configuration, storage, restart, edit protection, and output validation.
-They do not establish service authentication or real-model summary quality.
-Evaluate quality separately by comparing representative source logs with notes.
+Automated tests use anonymous conversation data and inference test doubles to check configuration, storage, resuming, edit protection, and generated-output validation.
+They do not guarantee authentication with real services or summary quality from real models.
+Use temporary directories managed by the test framework or OS for temporary data.
 
-When changing distribution artifacts, install the built wheel into a temporary
-environment and check `--version`, `--help`, `config init`, `config show`, and
-bundled language profiles from outside the checkout. When changing integration
-contracts, use anonymous output to verify IDs, hashes, and input references in
-downstream CLIs. Use framework-managed or OS temporary directories for test data.
-Python 3.11 is the declared minimum; recorded execution used Windows / Python 3.12.10.
-Other Python versions and non-Windows execution, including WSL, remain unverified.
+When changing distribution artifacts, install the built wheel into a temporary environment and check `--version`, `--help`, `config init`, `config show`, and bundled language profiles from outside the checkout.
+When changing the integration contract, use anonymous outputs to verify IDs, hashes, and input references in downstream CLIs.
 
-## Related documentation
+To compare note quality separately from live data storage, run `scripts/evaluate_session_notes.py` against a dedicated evaluation directory (specify `--manifest`, `--config`, `--output`, and `--thread`; `--dry-run` validates the plan only).
+
+## 10. Related documentation
 
 | Document | When to read it |
 | --- | --- |
-| [Output data and CLI integration contract](reference/data-contract.md) | Implement a consumer: IDs, schemas, hashes, provenance, and consistency checks |
-| [Session Note format](docs/session-note-format.md) | Understand generated note structure and field meanings |
-
-
-### Smaller inference inputs (0.22.0)
-
-Raw and canonical events remain unchanged. Inference preparation removes terminal color
-codes, extracts visible article text from complete HTML, and references proven duplicates
-from the same call/turn/branch. Large patches and recognized bulk listings/search outputs
-use marked source-line excerpts. Boundary excerpts and every diagnostic line with nearby
-context remain; ordinary conversation and unrecognized prose are not shortened. Truncated
-HTML falls back to retaining the text. Excerpts are not a complete account of file contents.
-
-Only chunks exceeding the full API input-token limit are subdivided. Other chunks remain
-intact; source IDs, ordering and text offsets survive repeated subdivision. Saved generation
-metrics include `inputPreparationVersion`, `compactedCharacters`, `compactedEventCount`,
-and the existing deduplication counts. Dry-run estimates also include removed character counts.
-
-The input preparation and prompt versions participate in generation/cache identity. Previous
-checkpoints are retained but incompatible ones are not reused; the next ordinary `pull` may
-regenerate stale notes. Edited/reviewed-note protections still apply. No automatic historical
-regeneration is performed during installation.
+| [Output data and CLI integration contract](docs/reference/data-contract.md) | Implement a tool that consumes the output: IDs, schemas, hashes, provenance, and consistency checks |
+| [Session Note format](docs/reference/session-note-format.md) | Understand the structure of generated notes and the meaning of each field |
+| [Azure structured outputs](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs) | Understand the structured output specification for Azure requests |
+| [Browser authentication](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.interactivebrowsercredential) | Understand Azure interactive authentication |
+| [Ollama chat API](https://docs.ollama.com/api/chat) | Understand the Ollama endpoint specification |

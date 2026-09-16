@@ -8,8 +8,8 @@ published schemas, content verification, reference resolution, and safe reads
 during concurrent updates. Consumers use these published files rather than
 depending on the producer's Python package or private checkpoints.
 
-For installation and normal operation, see the [README](../README.md).
-For the contents of a generated note, see [Session Note format](../docs/session-note-format.md).
+For installation and normal operation, see the [README](../../README.md).
+For the contents of a generated note, see [Session Note format](session-note-format.md).
 Supported historical formats below describe reader compatibility; new stores
 use the current versions listed above.
 

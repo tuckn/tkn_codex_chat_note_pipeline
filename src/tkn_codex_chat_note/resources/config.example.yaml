@@ -11,21 +11,23 @@ sources:
     enabled: true
     source_root: ~/.codex
     include_archived: true
+
     # Optional final directories; no codex/source_id suffix is added.
     # Omit roots for ~/.tkn/codex_chat_note_pipeline/<kind>/codex/<source_id>.
     # When upgrading, explicitly retain the old final raw/data/state paths.
-    # raw_root: C:/path/to/codex/raw
-    # data_root: C:/path/to/codex/data
-    # state_root: C:/path/to/codex/state
-  # my-wsl-ubuntu:
-  #   enabled: false
-  #   source_root: '//wsl$/Ubuntu/home/<user>/.codex'
-  #   include_archived: true
+    raw_root: C:/path/to/codex/raw
+    data_root: C:/path/to/codex/data
+    state_root: C:/path/to/codex/state
+  my-wsl-ubuntu:
+    enabled: false
+    source_root: '//wsl$/Ubuntu/home/<user>/.codex'
+    include_archived: true
 
 generation:
   # Inference is independent of the Codex acquisition sources.
   # Built-in profiles only: default-jp (Japanese) or default-en (English).
   session_note_profile: default-jp
+
   # Profile names are arbitrary; provider explicitly selects the implementation.
   # Select with active_profile or --profile <name> (before the command).
   active_profile: codex
@@ -35,37 +37,40 @@ generation:
       model: gpt-5.6-sol
       reasoning_effort: high
       executable: codex  # Optional executable name/path; defaults to codex.
+
+    local-gemma:
+      provider: ollama
+      model: <installed-local-model>
+      reasoning_effort: high
+      endpoint: http://127.0.0.1:11434
+
     # To use Azure, uncomment and set active_profile: azure-high.
     # model is the deployment name; actual model identity comes from the response.
     # Azure CLI is not required. Browser sign-in occurs only when needed.
-    # azure-high:
-    #   provider: azure-openai
-    #   endpoint: https://<resource>.openai.azure.com/openai/v1/
-    #   model: <deployment-name>
-    #   reasoning_effort: high
-    #   # Optional account selection:
-    #   # authentication:
-    #   #   tenant_id: <tenant-guid>
-    #   # Optional deployment-specific rates; omit for token-only estimates.
-    #   pricing:
-    #     <deployment-name>:
-    #       input_jpy_per_million: 100.0  # Placeholder; use your confirmed rate.
-    #       output_jpy_per_million: 500.0
-    #       pricing_date: "YYYY-MM-DD"
-    #   # Optional; defaults shown. Cost limit requires matching pricing.
-    #   limits:
-    #     input_tokens: 60000
-    #     output_tokens: 16000
-    #     context_tokens: 100000
-    #     chunk_characters: 120000
-    #     max_calls: 30
-    #     max_cost_jpy: 100
+    azure-high:
+      provider: azure-openai
+      endpoint: https://<resource>.openai.azure.com/openai/v1/
+      model: <deployment-name>
+      reasoning_effort: high
+
+      # Optional account selection:
+      # authentication:
+      #   tenant_id: <tenant-guid>
+      # Optional deployment-specific rates; omit for token-only estimates.
+      pricing:
+        <deployment-name>:
+          input_jpy_per_million: 100.0  # Placeholder; use your confirmed rate.
+          output_jpy_per_million: 500.0
+          pricing_date: "YYYY-MM-DD"
+      # Optional; defaults shown. Cost limit requires matching pricing.
+      limits:
+        input_tokens: 60000
+        output_tokens: 16000
+        context_tokens: 100000
+        chunk_characters: 120000
+        max_calls: 30
+        max_cost_jpy: 100
     # The same provider can have multiple profiles, e.g. azure-low.
-    # local-gemma:
-    #   provider: ollama
-    #   model: <installed-local-model>
-    #   reasoning_effort: high
-    #   endpoint: http://127.0.0.1:11434
 idle_minutes: 30
 runtime_minutes: 230
 model_timeout_seconds: 1800
