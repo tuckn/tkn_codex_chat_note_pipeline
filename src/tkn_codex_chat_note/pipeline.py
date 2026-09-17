@@ -123,6 +123,51 @@ def _notes(
     planner.reuse_cache = not force
     if thread_id and thread_id not in {entry["threadId"] for entry in discovery.entries}:
         raise PipelineError(f"unknown thread ID: {thread_id}")
+    # Inspect every candidate before generation so current notes later in the
+    # discovery order are included in the initial progress count.
+    note_states: dict[str, tuple[Path | None, str, bool] | Exception] = {}
+    unchanged_count = 0
+    generated_count = 0
+    for entry in discovery.entries:
+        key = entry["threadKey"]
+        candidate = discovery.candidates.get(key)
+        if candidate is None:
+            continue
+        prior = ledger["threads"].get(key, {})
+        candidate = replace(candidate, artifact_id=prior.get("noteId"))
+        try:
+            existing = _existing_note(candidate)
+            if entry["status"] == "deferred":
+                note_states[key] = existing, "", False
+                continue
+            fingerprint = generation_fingerprint(pipeline_config, candidate)
+            unchanged = bool(
+                existing
+                and prior.get("generationFingerprint") == fingerprint
+                and prior.get("noteHash") == _hash(existing)
+                and provenance.has_activity(prior.get("activityId"))
+                and current_note_matches_generation(candidate, pipeline_config)
+            ) and not (force and (not thread_id or entry["threadId"] == thread_id))
+            if unchanged:
+                validate_session_note(existing)  # type: ignore[arg-type]
+                unchanged_count += 1
+            note_states[key] = existing, fingerprint, unchanged
+        except Exception as exc:
+            # Preserve the usual per-thread failure handling below.
+            note_states[key] = exc
+
+    def report_note_status() -> None:
+        if progress:
+            progress({
+                "type": "session-note-status",
+                "sourceId": config.source_id,
+                "total": len(discovery.candidates),
+                "currentCount": unchanged_count + generated_count,
+                "unchangedCount": unchanged_count,
+                "generatedCount": generated_count,
+            })
+
+    report_note_status()
     for entry in discovery.entries:
         key = entry["threadKey"]
         candidate = discovery.candidates.get(key)
@@ -132,7 +177,10 @@ def _notes(
         candidate = replace(candidate, artifact_id=prior.get("noteId"))
         generation_started = False
         try:
-            existing = _existing_note(candidate)
+            note_state = note_states[key]
+            if isinstance(note_state, Exception):
+                raise note_state
+            existing, fingerprint, unchanged = note_state
             if existing:
                 entry.update(
                     noteRef="data:/" + existing.relative_to(config.data_root).as_posix(),
@@ -141,16 +189,7 @@ def _notes(
             if entry["status"] == "deferred":
                 continue
             selected = not thread_id or entry["threadId"] == thread_id
-            fingerprint = generation_fingerprint(pipeline_config, candidate)
-            unchanged = bool(
-                existing
-                and prior.get("generationFingerprint") == fingerprint
-                and prior.get("noteHash") == _hash(existing)
-                and provenance.has_activity(prior.get("activityId"))
-                and current_note_matches_generation(candidate, pipeline_config)
-            )
-            if unchanged and not (force and selected):
-                validate_session_note(existing)  # type: ignore[arg-type]
+            if unchanged:
                 entry.update(status="current", reason=None)
                 continue
             if not generate or not selected:
@@ -214,6 +253,7 @@ def _notes(
                 progress(
                     {
                         "type": "thread-start",
+                        "attemptLimit": limit,
                         "threadId": entry["threadId"],
                         "index": attempted,
                         "total": len(discovery.candidates),
@@ -261,10 +301,12 @@ def _notes(
             metrics = {**getattr(summarizer, "last_metrics", {}),
                        "durationSeconds": round(time.monotonic() - thread_started, 3)}
             entry["generationMetrics"] = metrics
+            generated_count += 1
             if progress:
                 progress(
                     {
                         "type": "thread-complete",
+                        "attemptLimit": limit,
                         **metrics,
                         "threadId": entry["threadId"],
                         "sessionNotePath": str(note),
@@ -272,6 +314,7 @@ def _notes(
                         "total": len(discovery.candidates),
                     }
                 )
+            report_note_status()
         except ApiBudgetExceeded as exc:
             entry.update(status="deferred", reason=exc.details["reason"], generationStop=exc.details)
             if generation_started and summarizer is not None:
@@ -289,6 +332,7 @@ def _notes(
                 progress(
                     {
                         "type": "thread-failed",
+                        "attemptLimit": limit,
                         "threadId": entry["threadId"],
                         "error": str(exc),
                         "index": attempted,

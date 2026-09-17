@@ -275,6 +275,15 @@ def _session_note_path_summary(value: dict[str, Any]) -> str:
     return f" — Session Note: {path}" if isinstance(path, str) and path else ""
 
 
+def _thread_progress_label(value: dict[str, Any]) -> str:
+    index = value.get("index", "?")
+    if "attemptLimit" in value:
+        limit = value["attemptLimit"]
+        suffix = f", limit {limit}" if limit is not None else ""
+        return f"(attempt {index} this run{suffix})"
+    return f"{index}/{value.get('total', '?')}"
+
+
 def _progress(value: dict[str, Any]) -> None:
     LOGGER.debug(
         "Progress event: %s",
@@ -283,11 +292,16 @@ def _progress(value: dict[str, Any]) -> None:
     event_type = value.get("type")
     if event_type == "source-start":
         LOGGER.info("Source: %s/%s", value["sourceProvider"], value["sourceId"])
+    elif event_type == "session-note-status":
+        LOGGER.info(
+            "Session Notes up to date (no regeneration needed): %s/%s "
+            "(already current: %s; generated this run: %s)",
+            value["currentCount"], value["total"], value["unchangedCount"], value["generatedCount"],
+        )
     elif event_type == "thread-start":
         LOGGER.info(
-            "Starting thread %s/%s: %s",
-            value.get("index", "?"),
-            value.get("total", "?"),
+            "Starting thread %s: %s",
+            _thread_progress_label(value),
             value.get("threadId", "unknown"),
         )
     elif event_type == "thread-resumed":
@@ -342,9 +356,8 @@ def _progress(value: dict[str, Any]) -> None:
     elif event_type == "thread-complete":
         log_success(
             LOGGER,
-            "Completed thread %s/%s: %s%s%s",
-            value.get("index", "?"),
-            value.get("total", "?"),
+            "Completed thread %s: %s%s%s",
+            _thread_progress_label(value),
             value.get("threadId", "unknown"),
             _metric_summary(value),
             _session_note_path_summary(value),
@@ -357,9 +370,8 @@ def _progress(value: dict[str, Any]) -> None:
         )
     elif event_type == "thread-failed":
         LOGGER.error(
-            "Failed thread %s/%s: %s — %s",
-            value.get("index", "?"),
-            value.get("total", "?"),
+            "Failed thread %s: %s — %s",
+            _thread_progress_label(value),
             value.get("threadId", "unknown"),
             value.get("error", "unknown error"),
         )

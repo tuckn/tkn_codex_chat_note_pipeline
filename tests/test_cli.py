@@ -219,6 +219,27 @@ def test_console_formatter_keeps_redirected_output_plain(level: int, name: str) 
     assert formatter.format(record) == f"[{name}] message"
 
 
+def test_pipeline_progress_separates_current_notes_from_generation_attempts(capsys: CaptureFixture[str]) -> None:
+    _configure_logging(build_parser().parse_args(["config", "show"]))
+    _progress({"type": "session-note-status", "currentCount": 12, "total": 359,
+               "unchangedCount": 12, "generatedCount": 0})
+    for kind in ("thread-start", "thread-complete", "thread-failed"):
+        _progress({"type": kind, "index": 1, "total": 359, "attemptLimit": 3,
+                   "threadId": "example", "error": "failed"})
+    _progress({"type": "session-note-status", "currentCount": 13, "total": 359,
+               "unchangedCount": 12, "generatedCount": 1})
+    _progress({"type": "thread-start", "index": 2, "total": 359, "attemptLimit": None,
+               "threadId": "example"})
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "12/359 (already current: 12; generated this run: 0)" in captured.err
+    assert "13/359 (already current: 12; generated this run: 1)" in captured.err
+    for verb in ("Starting", "Completed", "Failed"):
+        assert f"{verb} thread (attempt 1 this run, limit 3): example" in captured.err
+    assert "Starting thread (attempt 2 this run): example" in captured.err
+    assert "thread 1/359" not in captured.err
+
+
 def test_repair_fallback_progress_explains_unsent_draft_and_regeneration(capsys: CaptureFixture[str]) -> None:
     _configure_logging(build_parser().parse_args(["config", "show"]))
     _progress({"type": "repair-input-fallback", "threadId": "example-thread",

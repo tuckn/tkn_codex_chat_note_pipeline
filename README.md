@@ -263,6 +263,13 @@ Detailed JSON is printed to standard output only with `--full-output` (read-only
 `-q` suppresses progress, and `-v` adds diagnostics.
 Even when `session-notes build` targets one note, the run report includes processing status for all notes.
 
+Before generation, each source reports `Session Notes up to date (no regeneration needed): 12/359`:
+12 notes are current under the selected generation settings, out of 359 candidate sessions (including deferred sessions).
+The count increases only after successful generation; failures, dry-run plans, and protected or deferred notes are not
+counted as newly current. Already-current and newly generated counts are shown separately. Generation messages such as
+`Starting thread (attempt 1 this run, limit 3)` count attempts in this source's run, not all candidate sessions.
+The limit shown is the allowance remaining for this source; `--limit` is shared across sources.
+
 <a id="configuration"></a>
 
 ## 5. Configuration

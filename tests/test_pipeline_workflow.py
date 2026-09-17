@@ -125,6 +125,67 @@ def test_dry_run_has_no_writes_or_inference(tmp_path: Path) -> None:
     assert not config.raw_root.exists() and not config.state_root.exists() and not config.data_root.exists()
 
 
+def test_progress_counts_current_notes_before_generation_and_across_pulls(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    write_chat(config.sessions_root / "zcurrent.jsonl", thread_id="zcurrent", cwd=tmp_path)
+    assert execute(config)["complete"]
+    # This new candidate sorts before the already-current note.
+    write_chat(config.sessions_root / "old.jsonl", thread_id="old", cwd=tmp_path,
+               started_at="2020-01-01T00:00:00Z")
+    write_chat(config.sessions_root / "later.jsonl", thread_id="later", cwd=tmp_path,
+               started_at="2021-01-01T00:00:00Z")
+    events: list[dict[str, Any]] = []
+    summary = Summary()
+    report = execute(config, "pull", limit=1, summarizer=summary, progress=events.append)
+    statuses = [e for e in events if e["type"] == "session-note-status"]
+    assert [(e["currentCount"], e["total"]) for e in statuses] == [(1, 3), (2, 3)]
+    assert statuses[-1]["unchangedCount"] == 1 and statuses[-1]["generatedCount"] == 1
+    assert summary.calls == ["later"] and report["generatedSessionNoteCount"] == 1
+    assert events.index(statuses[0]) < next(i for i, e in enumerate(events) if e["type"] == "thread-start")
+    assert next(e for e in events if e["type"] == "thread-start")["attemptLimit"] == 1
+    events.clear()
+    execute(config, "pull", limit=1, progress=events.append)
+    assert [(e["currentCount"], e["total"]) for e in events
+            if e["type"] == "session-note-status"] == [(2, 3), (3, 3)]
+    events.clear()
+    execute(config, "pull", limit=1, progress=events.append)
+    assert [e["currentCount"] for e in events if e["type"] == "session-note-status"] == [3]
+    assert not any(e["type"] == "thread-start" for e in events)
+
+
+@pytest.mark.parametrize("mode", ["failed", "dry-run", "force", "edited", "changed", "active"])
+def test_progress_does_not_count_unsuccessful_or_stale_notes(tmp_path: Path, mode: str) -> None:
+    config = config_for(tmp_path)
+    chat = config.sessions_root / "one.jsonl"
+    write_chat(chat, thread_id="one", cwd=tmp_path)
+    options: dict[str, Any] = {}
+    if mode in {"force", "edited", "changed"}:
+        first = execute(config)
+        if mode == "force":
+            options.update(force=True, summarizer=Summary(fail_thread="one"))
+        elif mode == "edited":
+            note = config.data_root / first["threads"][0]["noteRef"].removeprefix("data:/")
+            note.write_text(note.read_text(encoding="utf-8") + "\nUser edit\n", encoding="utf-8")
+        else:
+            with chat.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"timestamp": "2026-07-02T00:00:00Z", "type": "event_msg",
+                                         "payload": {"type": "user_message", "message": "new request"}}) + "\n")
+            options["dry_run"] = True
+    elif mode == "failed":
+        options["summarizer"] = Summary(fail_thread="one")
+    elif mode == "active":
+        config.idle_minutes = 30
+        write_chat(chat, thread_id="one", cwd=tmp_path, started_at=datetime.now(UTC).isoformat())
+    else:
+        options["dry_run"] = True
+    events: list[dict[str, Any]] = []
+    execute(config, "clone", progress=events.append, **options)
+    statuses = [e for e in events if e["type"] == "session-note-status"]
+    assert len(statuses) == 1
+    assert statuses[0]["currentCount"] == statuses[0]["generatedCount"] == 0
+    assert statuses[0]["total"] == 1
+
+
 def test_retry_failed_thread_keeps_success_and_raw(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     for identity in ["one", "two"]:
