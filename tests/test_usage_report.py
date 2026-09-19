@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -326,3 +327,108 @@ def test_codex_pipeline_records_usage_and_pull_does_not_double_count(tmp_path, m
     next_run = run_pipeline(cfg, mode="pull")
     assert next_run["generatedSessionNoteCount"] == 0
     assert len(collect_usage(cfg)["records"]) == 1
+
+
+def save_report(cfg, row, entry, **extra):
+    report = {
+        "runId": row["runId"], "mode": "pull", "generationProvider": "codex",
+        "generationProfile": "codex", "startedAt": row["startedAt"], "threads": [entry], **extra,
+    }
+    atomic_write_json(cfg.reports_root / "report.json", report)
+    return report
+
+
+def test_titles_are_read_from_current_frontmatter_without_exporting_body(tmp_path):
+    cfg, row, _ = saved(tmp_path)
+    note = cfg.data_root / "session-notes" / "summary.md"
+    note.parent.mkdir(parents=True)
+    note.write_text('---\ntitle: >-\n  Reviewed title with\n  日本語\n---\nPRIVATE NOTE BODY\n', encoding="utf-8")
+    entry = {"threadId": row["threadId"], "title": "Historical title", "noteRef": "data:/session-notes/summary.md",
+             "generated": True, "generationMetrics": {"usageRecords": [row]}}
+    report = save_report(cfg, row, entry)
+    atomic_write_json(cfg.state_root / "last-run.json", report)
+    data = collect_usage(cfg)
+    assert len(data["records"]) == 1
+    assert data["records"][0]["noteFile"] == "summary.md"
+    assert data["records"][0]["taskTitle"] == "Historical title"
+    assert data["records"][0]["displayTitle"] == "Reviewed title with 日本語"
+    assert data["notes"][0]["titleSource"] == "frontmatter-current"
+    assert "PRIVATE NOTE BODY" not in json.dumps(data)
+    assert len([s for s in data["sources"] if s.get("scope") == "frontmatter-utf8"]) == 1
+    note.unlink()
+    data = collect_usage(cfg)
+    assert data["records"][0]["displayTitle"] == "Historical title"
+    assert data["records"][0]["noteFile"] == "summary.md"
+    assert any(d["category"] == "note-metadata" for d in data["diagnostics"])
+
+
+@pytest.mark.parametrize("ref", [
+    "data:/../private.md", "data:/C:/private.md", "data:/session-notes/../../../private.md",
+])
+def test_note_references_cannot_read_outside_data(tmp_path, ref):
+    cfg, row, _ = saved(tmp_path)
+    (tmp_path / "private.md").write_text("---\ntitle: SECRET\n---\n", encoding="utf-8")
+    save_report(cfg, row, {"threadId": row["threadId"], "title": "Safe fallback", "noteRef": ref})
+    data = collect_usage(cfg)
+    assert data["records"][0]["displayTitle"] == "Safe fallback"
+    assert "SECRET" not in json.dumps(data)
+    assert any(d["category"] == "note-metadata" for d in data["diagnostics"])
+
+
+def test_diagnostics_include_recovered_validation_and_failures_without_usage(tmp_path):
+    cfg, row, _ = saved(tmp_path, status="rejected", httpStatus=429)
+    entry = {"threadId": row["threadId"], "generated": True, "title": "Recovered note", "generationMetrics": {
+        "usageRecords": [row], "validationFailures": [
+            {"stage": "chunk", "attempt": 1, "reason": "invalid anchor"},
+            {"stage": "chunk", "attempt": 1, "reason": "invalid anchor"}], "transportRetries": 1}}
+    report = save_report(cfg, row, entry, warnings=["Missing application metadata"],
+                         failed=[{"stage": "raw", "error": "cannot read capture", "sourceRef": "source:/missing"}],
+                         rawIngest={"failed": [{"stage": "raw", "error": "cannot read capture",
+                                               "sourceRef": "source:/missing"}]})
+    report["threads"].extend([
+        {"threadId": "budget", "status": "deferred", "generationStop": {"reason": "api-cost-budget",
+                                                                          "message": "No request submitted"}},
+        {"threadId": "deadline", "status": "deferred", "reason": "runtime-deadline"},
+        {"threadId": "broken", "status": "failed", "error": "Cannot load note"},
+    ])
+    atomic_write_json(cfg.reports_root / "report.json", report)
+    atomic_write_json(cfg.state_root / "last-run.json", report)
+    data = collect_usage(cfg)
+    rows = data["diagnostics"]
+    assert len(data["records"]) == 1
+    assert len([d for d in rows if d["message"] == "cannot read capture"]) == 1
+    validation = [d for d in rows if d["category"] == "validation"]
+    assert len(validation) == 2 and validation[0]["diagnosticId"] != validation[1]["diagnosticId"]
+    assert all(d["severity"] == "WARNING" and d["noteStatus"] == "generated" for d in validation)
+    assert all(d["models"] == ["example-model"] for d in validation)
+    assert any(d["message"] == "Cannot load note" and d["models"] == ["unknown"] for d in rows)
+    assert any(d["category"] == "budget-stop" and "No request submitted" in d["message"] for d in rows)
+    assert any(d["severity"] == "INFO" and d["message"] == "runtime-deadline" for d in rows)
+    assert any("HTTP 429" in d["message"] for d in rows)
+    assert len([d for d in rows if d["category"] == "attempt"]) == 1
+
+
+def test_diagnostic_export_is_safe_and_dry_run_stays_read_only(tmp_path, monkeypatch):
+    cfg, row, _ = saved(tmp_path)
+    warning = '</script><script>alert("x")</script>'
+    save_report(cfg, row, {"threadId": row["threadId"], "title": "=HYPERLINK()", "status": "failed",
+                          "error": "=PRIVATE_ERROR()"}, warnings=[warning])
+    monkeypatch.setattr("webbrowser.open", lambda *a: pytest.fail("browser opened"))
+    before = {str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    assert build_usage_report(cfg, dry_run=True)["diagnosticCount"] == 2
+    assert before == {str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    result = build_usage_report(cfg, no_open=True)
+    html = Path(result["htmlPath"]).read_text(encoding="utf-8")
+    assert warning not in html
+    csv = Path(result["diagnosticsCsvPath"]).read_text(encoding="utf-8")
+    assert "'=PRIVATE_ERROR()" in csv and "'=HYPERLINK()" in csv
+    assert result["diagnosticCount"] == 2
+
+
+def test_usage_report_interactions():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for report interaction tests")
+    result = subprocess.run([node, "--test", str(Path(__file__).with_name("usage_report_ui.cjs"))],
+                            capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stdout + result.stderr

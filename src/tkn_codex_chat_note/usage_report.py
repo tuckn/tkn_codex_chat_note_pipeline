@@ -14,6 +14,7 @@ from typing import Any
 
 from .config import AppConfig
 from .generation_usage import metric_records, usage_totals
+from .report_evidence import DIAGNOSTIC_FIELDS, LABEL_FIELDS, ReportEvidence
 from .report_settings import PriceScenario
 from .session_notes import PipelineError, atomic_write_text
 from .usage_records import TOKEN_FIELDS, timestamp, token_number
@@ -38,6 +39,10 @@ DIMENSIONS = (
     "usageScope",
     "usageComplete",
     "durationSeconds",
+    "httpStatus",
+    "error",
+    "evidencePath",
+    *LABEL_FIELDS,
 )
 
 
@@ -90,6 +95,7 @@ def collect_usage(config: AppConfig) -> dict[str, Any]:
     records: dict[str, dict[str, Any]] = {}
     notes: dict[tuple[str, str, str], dict[str, Any]] = {}
     warnings: list[str] = []
+    evidence = ReportEvidence(inventory)
     for source in config.enabled_source_configs():
         for path in sorted((source.state_root / "usage").glob("*/*.json")):
             record = _read(path, inventory)
@@ -100,7 +106,7 @@ def collect_usage(config: AppConfig) -> dict[str, Any]:
             key = f"{source.source_id}/{record['usageId']}"
             if key in records:
                 raise PipelineError(f"duplicate usage identity: {path}")
-            records[key] = record
+            records[key] = {**record, "evidencePath": str(path)}
         # Never read last-run.json: it is a duplicate pointer/snapshot, not history.
         for path in sorted(source.reports_root.glob("*.json")):
             report = _read(path, inventory)
@@ -109,6 +115,7 @@ def collect_usage(config: AppConfig) -> dict[str, Any]:
             run_id = report.get("runId")
             if not isinstance(run_id, str) or not run_id or not isinstance(report.get("threads", []), list):
                 raise PipelineError(f"invalid run report: {path}")
+            run_context = evidence.run(report, source.source_id, path)
             for entry in report.get("threads", []):
                 if not isinstance(entry, dict):
                     raise PipelineError(f"invalid thread record: {path}")
@@ -116,20 +123,18 @@ def collect_usage(config: AppConfig) -> dict[str, Any]:
                 if not isinstance(thread_id, str) or not thread_id:
                     raise PipelineError(f"invalid thread identity: {path}")
                 context = {
-                    "sourceId": source.source_id,
-                    "runId": run_id,
+                    **run_context,
                     "threadId": thread_id,
-                    "command": report.get("mode"),
-                    "generationProfile": report.get("generationProfile"),
-                    "provider": report.get("generationProvider"),
                     "startedAt": entry.get("generationStartedAt") or report.get("startedAt"),
                     "noteStatus": "generated" if entry.get("generated") else entry.get("status"),
+                    "taskTitle": entry.get("title"),
                 }
                 if entry.get("generated"):
                     notes[(source.source_id, run_id, thread_id)] = context
                 metrics = entry.get("generationMetrics") or {}
                 if not isinstance(metrics, dict):
                     raise PipelineError(f"invalid generation metrics: {path}")
+                evidence.thread(entry, {**context, "reportStartedAt": report.get("startedAt")}, source.data_root)
                 requests = metric_records(metrics)
                 if any(not isinstance(request, dict) for request in requests):
                     raise PipelineError(f"invalid usage entries: {path}")
@@ -139,14 +144,21 @@ def collect_usage(config: AppConfig) -> dict[str, Any]:
                         raise PipelineError(f"invalid modelCalls: {path}")
                     requests = [{"usageSource": "legacy-unavailable", "status": "unknown"} for _ in range(calls)]
                     if not calls and entry.get("generated") and not metrics:
-                        warnings.append(f"{source.source_id}/{run_id}/{thread_id}: historical usage was not recorded")
+                        warning = f"{source.source_id}/{run_id}/{thread_id}: historical usage was not recorded"
+                        warnings.append(warning)
+                        evidence.add(context, "WARNING", "usage-missing", warning)
                 for index, request in enumerate(requests):
                     usage_id = request.get("usageId") or f"legacy:{run_id}:{thread_id}:{index}"
                     key = f"{source.source_id}/{usage_id}"
                     if key not in records:
-                        records[key] = {**context, **request, "usageId": usage_id}
+                        records[key] = {**context, **request, "usageId": usage_id,
+                                        "requestedModel": request.get("requestedModel")
+                                        or request.get("requestedDeployment")}
+                    else:
+                        records[key]["taskTitle"] = context["taskTitle"]
                     # Journal has the finer execution timestamp and remains authoritative.
     normalized = [_normalize(record, config.usage_report.utc_offset_minutes) for record in records.values()]
+    evidence.enrich(normalized)
     normalized.sort(key=lambda record: (record.get("startedAt") or "", record["sourceId"], record["usageId"]))
     for record in normalized:
         if record.get("noteStatus") == "generated":
@@ -167,10 +179,32 @@ def collect_usage(config: AppConfig) -> dict[str, Any]:
                     "provider",
                     "generationProfile",
                     "command",
+                    *LABEL_FIELDS,
                 )
             }
         )
-    return {"records": normalized, "notes": note_rows, "sources": inventory, "warnings": warnings}
+    evidence.enrich(note_rows)
+    evidence.attempts(normalized)
+    evidence.enrich(evidence.diagnostics)
+    diagnostics: dict[str, dict[str, Any]] = {}
+    for item in evidence.diagnostics:
+        item["date"] = _normalize(item, config.usage_report.utc_offset_minutes)["date"]
+        related = [r for r in normalized if r["sourceId"] == item["sourceId"] and r["runId"] == item["runId"]
+                   and (not item.get("threadId") or r["threadId"] == item["threadId"])
+                   and (not item.get("usageId") or r["usageId"] == item["usageId"])]
+        models = sorted({r["displayModel"] for r in related}) or ["unknown"]
+        row = {key: item.get(key) for key in DIAGNOSTIC_FIELDS}
+        row.update(models=models, displayModel=", ".join(models), sourceRef=item.get("sourceRef"))
+        # Remove duplicated run/raw failures, retaining distinct requests and validation attempts.
+        identity = json.dumps([row.get(k) for k in (
+            "sourceId", "runId", "threadId", "usageId", "severity", "message",
+            "stage", "attempt", "occurrence", "sourceRef"
+        )], ensure_ascii=False)
+        row["diagnosticId"] = sha256(identity.encode()).hexdigest()[:20]
+        diagnostics.setdefault(identity, row)
+    diagnostic_rows = sorted(diagnostics.values(), key=lambda r: (r.get("startedAt") or "", r["diagnosticId"]))
+    return {"records": normalized, "notes": note_rows, "sources": inventory,
+            "warnings": warnings, "diagnostics": diagnostic_rows}
 
 
 def reference_cost(record: dict[str, Any], price: PriceScenario) -> float | None:
@@ -214,7 +248,7 @@ def _validate_destination(config: AppConfig) -> Path:
     for path in (root,):
         if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
             raise PipelineError(f"report_path must not be a link: {path}")
-    for name in ("index.html", "usage.json", "usage.csv"):
+    for name in ("index.html", "usage.json", "usage.csv", "diagnostics.csv"):
         path = root / name
         if path.exists() or path.is_symlink():
             if path.is_symlink() or getattr(path, "is_junction", lambda: False)() or not path.is_file():
@@ -230,9 +264,9 @@ def _validate_destination(config: AppConfig) -> Path:
     return root
 
 
-def _csv_text(records: list[dict[str, Any]]) -> str:
+def _csv_text(records: list[dict[str, Any]], columns: list[str] | None = None) -> str:
     stream = io.StringIO(newline="")
-    columns = [
+    columns = columns or [
         *DIMENSIONS,
         "date",
         "displayModel",
@@ -275,11 +309,13 @@ def build_usage_report(config: AppConfig, *, dry_run: bool = False, no_open: boo
         "ok": True,
         "dryRun": dry_run,
         "recordCount": len(data["records"]),
+        "diagnosticCount": len(data["diagnostics"]),
         "usageTotals": payload["usageTotals"],
         "warnings": data["warnings"],
         "htmlPath": str(root / "index.html"),
         "jsonPath": str(root / "usage.json"),
         "csvPath": str(root / "usage.csv"),
+        "diagnosticsCsvPath": str(root / "diagnostics.csv"),
         "opened": False,
     }
     if dry_run:
@@ -304,6 +340,8 @@ def build_usage_report(config: AppConfig, *, dry_run: bool = False, no_open: boo
     html = html.replace("__USAGE_PAYLOAD__", embedded)
     atomic_write_text(root / "usage.json", serialized + "\n")
     atomic_write_text(root / "usage.csv", _csv_text(data["records"]))
+    atomic_write_text(root / "diagnostics.csv", _csv_text(
+        data["diagnostics"], ["diagnosticId", *DIAGNOSTIC_FIELDS, "sourceRef"]))
     atomic_write_text(root / "index.html", html)
     if not no_open:
         try:

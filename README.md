@@ -615,12 +615,33 @@ The default destination is ~/.tkn/codex_chat_note_pipeline/reports, configurable
 | --- | --- |
 | index.html | Offline HTML with execution date, model, provider, command, source, generation-profile, and thread filters |
 | usage.json | Normalized records, source-file SHA-256 hashes, aggregation settings, price scenarios, and missing-data information |
+| diagnostics.csv | Saved warnings, errors, validation failures, retry summaries, and deferred/blocked outcomes with task and run context |
 | usage.csv | One row per attempt; empty token cells mean unknown. Formula-like strings are protected for spreadsheet readers |
 
-HTML embeds its own data and works alone. Keep all three files together to use its JSON/CSV links.
+HTML embeds its own data and works alone. Keep all four files together to use its JSON/CSV links.
 Exports contain the full snapshot, not the current UI selection. Rebuilds replace these files;
 input history is untouched. Each file is replaced atomically and HTML is published last.
 Do not read exports during a build; rerun after an interruption. HTML always uses its embedded snapshot.
+
+From 0.25.0, the timeline switches between input/output, model, and model × input/output.
+Legend buttons hide/show chart series; page filters apply to every section. A numeric table accompanies the chart.
+Task rows show the current note Frontmatter title and filename, falling back to the saved task title or ID.
+Search by title, filename, or task ID. Only bounded Frontmatter is read from referenced notes inside data_root;
+missing, moved, or malformed notes do not prevent the report from building. Titles describe the current note,
+not its historical contents. Note bodies are never included. Source hashes distinguish full evidence files
+from the decoded Frontmatter content (UTF-8, LF newlines, excluding delimiter lines).
+
+The warning/error section shows saved messages, stages, task/run identities, and final note outcomes,
+including runs without token records. Filter by severity, category, or message. INFO includes budget/time
+or protection-related deferrals; an explicit budget stop is a WARNING. Validation warnings can remain after
+successful repair. Models on run-level diagnostics indicate the models observed in that run, not attribution
+of the cause; unknown identifies diagnostics without observed models. Terminal-only warnings and unsaved
+failure details cannot be recovered. Diagnostic counts count records, not unique failed tasks.
+
+Use the top-ten task ranking, stage totals, per-model repair tokens/shares, and repeated successful-generation
+counts to find expensive tasks to inspect. Repair usage includes repair/regenerate stages and is distinct from
+transport retries. These are operational signals, not quality scores or controlled model comparisons.
+Read the actual notes and source evidence before deciding whether their summaries meet your needs.
 
 Daily/weekly/monthly views use generation start dates, in UTC by default; set 540 minutes for Japan.
 Historical API run reports are imported and deduplicated against the journal. Earlier ephemeral Codex
