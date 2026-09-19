@@ -1065,6 +1065,7 @@ class ProviderSummarizer:
         self.last_metrics: dict[str, Any] = {}
         self.api_client: ApiClient | None = None
         self.api_record_start = 0
+        self.usage_stage = "unknown"
         self.state_items: list[dict[str, Any]] = []
         self.state_events: Sequence[ChatEvent] = ()
         self.state_context: dict[str, Any] = {}
@@ -1081,6 +1082,14 @@ class ProviderSummarizer:
     def _emit(self, event: dict[str, Any]) -> None:
         if self.observer:
             self.observer(event)
+
+    def _usage_event(self, event: dict[str, Any]) -> None:
+        event = {**event, "stage": self.usage_stage}
+        if event["type"] == "usage-complete":
+            records = self.last_metrics.setdefault("usageRecords", [])
+            records.append({key: value for key, value in event.items() if key != "type"})
+            self.last_metrics["usageTotals"] = usage_totals(records)
+        self._emit(event)
 
     def _api(self) -> ApiClient | None:
         if self.config.provider == "azure-openai" or (
@@ -1126,6 +1135,7 @@ class ProviderSummarizer:
                                               timeout=timeout)
                         finally:
                             self.last_metrics["apiRequests"] = deepcopy(api.records[self.api_record_start:])
+                            self.last_metrics["usageRecords"] = deepcopy(api.records[self.api_record_start:])
                             self.last_metrics["modelCalls"] = len(api.records) - self.api_record_start
                             self.last_metrics["submittedPromptCharacters"] = sum(
                                 record["promptCharacters"] for record in api.records[self.api_record_start:])
@@ -1137,6 +1147,7 @@ class ProviderSummarizer:
                         self.overview_schema if overview_only else self.inference_schema,
                         cwd=temp,
                         timeout=timeout,
+                        usage_observer=self._usage_event,
                     )
                 except ApiBudgetExceeded:
                     raise
@@ -1173,8 +1184,9 @@ class ProviderSummarizer:
             "type": "string", "enum": sorted(allowed_event_ids),
         }
         for semantic_attempt in range(3):
+            self.usage_stage = ("merge" if overview_only else "chunk") + (f"-{retry_kind}" if semantic_attempt else "")
             if api:
-                api.stage = ("merge" if overview_only else "chunk") + (f"-{retry_kind}" if semantic_attempt else "")
+                api.stage = self.usage_stage
             value = self._invoke(current_prompt, overview_only=overview_only)
             try:
                 # An inference anchor determines both public endpoints. Supporting

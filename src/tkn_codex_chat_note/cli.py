@@ -100,6 +100,9 @@ def build_parser() -> argparse.ArgumentParser:
         )
         _add_build_options(command)
         command.add_argument("--limit", type=int, help="Maximum Session Note generations; remaining work is deferred")
+    usage_report = commands.add_parser("build-report", help="Build an offline token usage and reference-cost report")
+    usage_report.add_argument("--dry-run", action="store_true", help="Aggregate without writing or opening")
+    usage_report.add_argument("--no-open", action="store_true", help="Write the report without opening a browser")
     storage = commands.add_parser("storage", help="Inspect or migrate storage layout")
     migrate = storage.add_subparsers(dest="storage_command", required=True).add_parser(
         "migrate", help="Copy one source store into fresh provider-local roots; retain original evidence"
@@ -329,7 +332,7 @@ def _progress(value: dict[str, Any]) -> None:
                         value["inputTokenEstimate"], value["reservedCostJpy"], value["commandReservedCostJpy"])
         else:
             LOGGER.info("API input estimate %s tokens", value["inputTokenEstimate"])
-    elif event_type == "api-request-complete":
+    elif event_type in {"api-request-complete", "usage-complete"}:
         LOGGER.info("API %s: %s", value.get("status"), _usage_summary(value))
     elif event_type == "model-attempt":
         LOGGER.info(
@@ -469,6 +472,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.source is not None:
             selected = config.enabled_source_configs(args.source)
             config = selected[0]
+        if args.command == "build-report":
+            from .usage_report import build_usage_report
+
+            result = build_usage_report(config, dry_run=args.dry_run, no_open=args.no_open)
+            _emit(result)
+            log_success(LOGGER, "Usage report: %s", result["htmlPath"])
+            return 0
         if args.command == "provenance":
             from .provenance import validate_provenance
 

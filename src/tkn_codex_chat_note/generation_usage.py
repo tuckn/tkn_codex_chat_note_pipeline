@@ -7,14 +7,22 @@ from typing import Any
 
 def usage_totals(records: list[dict[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {"requestCount": len(records)}
-    for key in ("inputTokens", "outputTokens", "reasoningTokens", "cachedInputTokens", "estimatedCostJpy"):
+    for key in (
+        "inputTokens", "outputTokens", "reasoningTokens", "cachedInputTokens", "cacheWriteTokens", "estimatedCostJpy",
+    ):
         known = [r[key] for r in records if r.get(key) is not None]
         result[key] = sum(known) if len(known) == len(records) else None
-        result["known" + key[0].upper() + key[1:]] = sum(known)
+        known_key = "known" + key[0].upper() + key[1:]
+        result[known_key] = sum(known) + sum(r.get(known_key, 0) for r in records if r.get(key) is None)
         result[key + "MissingRequests"] = len(records) - len(known)
     known_reserved = [r["reservedCostJpy"] for r in records if r.get("reservedCostJpy") is not None]
     result["reservedCostJpy"] = sum(known_reserved) if len(known_reserved) == len(records) else None
     return result
+
+
+def metric_records(metrics: dict[str, Any]) -> list[dict[str, Any]]:
+    """New unified records supersede their API-only compatibility view."""
+    return list(metrics.get("usageRecords", metrics.get("apiRequests", [])))
 
 
 def estimate_totals(estimates: list[dict[str, Any]]) -> dict[str, Any]:

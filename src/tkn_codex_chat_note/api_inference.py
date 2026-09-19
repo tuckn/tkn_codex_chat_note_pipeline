@@ -16,6 +16,7 @@ from .api_settings import ApiLimits, AzureSettings
 from .azure_auth import token_provider
 from .inference import InferenceConfig, InferenceExecutionError, schema_grounded_prompt, validate_ollama_base_url
 from .offline_tokens import token_estimate
+from .usage_records import new_record, timestamp
 
 
 class ApiError(InferenceExecutionError):
@@ -237,7 +238,10 @@ class ApiClient:
                 ):
                     raise ApiError("Ollama model digest differs from configured model_digest")
             record: dict[str, Any] = {
+                **new_record(self.config.provider, self.config.model, self.config.reasoning_effort),
                 "provider": self.config.provider,
+                "usageSource": "azure.response.usage" if self.azure else "ollama.response.counts",
+                "usageScope": "api-request",
                 "requestEncoding": "event-id-aliases-v1",
                 "inputJsonFormat": "compact" if any(f"MODE: {mode}\n" in prompt for mode in (
                     "repair-invalid-draft", "regenerate-invalid-output")) else "default",
@@ -258,7 +262,7 @@ class ApiClient:
                 "cacheWriteTokens": None,
                 "estimatedCostJpy": None,
                 "model": None,
-                "status": "unknown",
+                "status": "started",
                 "durationSeconds": None,
             }
             self.records.append(record)
@@ -320,6 +324,8 @@ class ApiClient:
                 record["status"] = "rejected"
                 raise
             finally:
+                record["finishedAt"] = timestamp()
+                record["usageComplete"] = record["inputTokens"] is not None and record["outputTokens"] is not None
                 record["durationSeconds"] = round(time.monotonic() - started, 3)
                 if self.observer:
                     self.observer({"type": "api-request-complete", **record})

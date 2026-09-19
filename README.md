@@ -128,7 +128,7 @@ Open `config.yaml` at the displayed path and specify the source and the model to
 The following is a minimal configuration.
 
 ```yaml
-schema_version: "8.0.0"
+schema_version: "8.1.0"
 sources:
   my-windows-pc:
     enabled: true
@@ -243,6 +243,7 @@ Place common options such as `--config`, `--profile`, and `--source` **before th
 | `session-notes build` | Updates Session Notes. Use `--thread-id` to select a specific conversation. |
 | `session-notes validate <artifact>` | Validates an existing note without modifying it. |
 | `status` | Displays the previous run's scope, status, and report path. |
+| `build-report [--dry-run] [--no-open]` | Build HTML/JSON/CSV from saved usage; open HTML by default. |
 | `provenance validate` | Validates hashes, IDs, and provenance relationships without modifying data. |
 | `storage migrate` | Copies data from the source specified by `--from-config` to new storage directories. |
 
@@ -286,7 +287,7 @@ Later layers override earlier ones; higher numbers below take precedence.
 
 Each configuration file is validated separately before merging.
 Relative paths are resolved from the directory of the configuration file that declares the value.
-The configuration schema version is `8.0.0`.
+The configuration schema version is `8.1.0`.
 Keys use snake_case, and the version is written as a quoted SemVer string.
 Unknown keys and unsupported newer versions produce errors.
 
@@ -576,6 +577,82 @@ The application never increases configured limits automatically.
 | `raw_root` / `data_root` / `state_root` | Only storage locations change; no regeneration occurs (use `storage migrate` for migration). |
 
 Protection for reviewed and manually edited notes remains in effect in all cases.
+
+### 5.7. Token usage history and HTML reports
+
+Starting with 0.24.0, Codex inference records actual token usage for clone, pull, and
+session-notes build. This measures this pipeline's generation, not the usage of the original chats.
+
+- Codex reads turn.completed.usage from codex exec --json: input, output, cached input, reasoning, and cache-write counts when supplied.
+- Azure OpenAI and Ollama configured with limits also write the common usage history.
+- Claude Code, GitHub Copilot, and Ollama without limits currently record attempt time/status with unknown token counts.
+- Failed attempts and retries are included. Missing values remain null, never zero or a preflight estimate.
+- Codex records invocation-wide turn totals; API records are per request. Attempt counts are not the same granularity across transports.
+- Cached input is part of total input; reasoning is part of total output. Do not add either subset again.
+
+History lives at <state_root>/usage/<runId>/<usageId>.json. A started record is saved before
+inference and updated after each attempt, followed by the note's outcome. A hard interruption can
+leave a started record with unknown consumption. Prompts, answers, and credentials are not stored
+in usage history. Run reports also contain generationMetrics.usageRecords and usageTotals.
+The API-only apiRequests compatibility view remains; do not sum it with usageRecords.
+Back up state: usage history is durable application data, not disposable cache.
+
+These commands use saved records only, without inference, price lookup, or scanning original chats:
+
+~~~console
+tkn-codex-chat-note build-report --dry-run
+tkn-codex-chat-note build-report
+tkn-codex-chat-note build-report --no-open
+~~~
+
+Normal execution writes HTML/JSON/CSV and opens the HTML. --no-open suppresses opening only;
+--dry-run validates and aggregates without writing or opening. All history from all enabled sources
+is included by default. Put --source <source_id> before the command to replace the report with that source alone.
+
+The default destination is ~/.tkn/codex_chat_note_pipeline/reports, configurable with report_path.
+
+| Output | Contents |
+| --- | --- |
+| index.html | Offline HTML with execution date, model, provider, command, source, generation-profile, and thread filters |
+| usage.json | Normalized records, source-file SHA-256 hashes, aggregation settings, price scenarios, and missing-data information |
+| usage.csv | One row per attempt; empty token cells mean unknown. Formula-like strings are protected for spreadsheet readers |
+
+HTML embeds its own data and works alone. Keep all three files together to use its JSON/CSV links.
+Exports contain the full snapshot, not the current UI selection. Rebuilds replace these files;
+input history is untouched. Each file is replaced atomically and HTML is published last.
+Do not read exports during a build; rerun after an interruption. HTML always uses its embedded snapshot.
+
+Daily/weekly/monthly views use generation start dates, in UTC by default; set 540 minutes for Japan.
+Historical API run reports are imported and deduplicated against the journal. Earlier ephemeral Codex
+usage cannot be reconstructed if it was not recorded. Known sums, missing attempts, and unfinished
+attempts are distinct. Per-note averages with missing usage are lower-bound references.
+
+Reference prices live in usage_report.price_scenarios, independently of inference budgets.
+Changing scenarios never regenerates notes or invokes models. These are fictional example prices:
+
+~~~yaml
+schema_version: "8.1.0"
+report_path: ~/.tkn/codex_chat_note_pipeline/reports
+usage_report:
+  utc_offset_minutes: 540
+  price_scenarios:
+    comparison-model:
+      currency: USD
+      pricing_date: "2026-09-19"
+      input_per_million: 1.0
+      output_per_million: 5.0
+      cache_policy: no-cache
+~~~
+
+no-cache prices all input at the ordinary input rate. observed uses measured cache counts and requires
+cached_input_per_million. If cache_write_per_million is supplied, cache-write counts must also be known.
+Missing required counts make the scenario unavailable for that attempt, not zero cost.
+
+Costs answer “what would the same token counts cost at these rates?” They are not invoices or predictions
+of another model's tokenization, reasoning, answer length, or retries. Subscription fees, tool fees, taxes,
+and currency conversion are excluded. Separately priced cache reads/writes are subtracted from ordinary
+input before applying their rates. Reasoning is never added again to total output.
+With no configured prices, the report still shows usage. No prices are fetched automatically.
 
 ## 6. Storage layout
 

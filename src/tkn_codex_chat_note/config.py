@@ -18,6 +18,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PrivateAttr, 
 from .api_settings import ApiLimits, AzurePricing, AzureSettings, normalize_azure_generation
 from .config_validation import validate_config_layer
 from .inference import InferenceProvider, validate_ollama_base_url
+from .report_settings import UsageReportSettings
 from .session_notes import (
     DEFAULT_IDLE_MINUTES,
     DEFAULT_MODEL,
@@ -29,8 +30,8 @@ from .session_notes import (
     atomic_write_text,
 )
 
-CONFIG_SCHEMA_VERSION: Literal["8.0.0"] = "8.0.0"
-_CONFIG_SCHEMA_VERSION_PARTS = (8, 0, 0)
+CONFIG_SCHEMA_VERSION: Literal["8.1.0"] = "8.1.0"
+_CONFIG_SCHEMA_VERSION_PARTS = (8, 1, 0)
 _CONFIG_SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 APP_DIRECTORY_NAME = "codex_chat_note_pipeline"
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
@@ -270,10 +271,12 @@ class AppConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["8.0.0"] = CONFIG_SCHEMA_VERSION
+    schema_version: Literal["8.1.0"] = CONFIG_SCHEMA_VERSION
     installed_at: datetime | None = None
     sources: dict[SourceId, CodexSourceConfig] = Field(default_factory=lambda: {DEFAULT_SOURCE_ID: CodexSourceConfig()})
     cache_root: Path = Field(default_factory=default_user_cache_root)
+    report_path: Path = Field(default_factory=lambda: default_app_root() / "reports")
+    usage_report: UsageReportSettings = Field(default_factory=UsageReportSettings)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     idle_minutes: int = Field(default=DEFAULT_IDLE_MINUTES, ge=0)
     runtime_minutes: int = Field(default=DEFAULT_RUNTIME_MINUTES, gt=0)
@@ -678,7 +681,7 @@ def _resolve_paths(value: dict[str, Any], base: Path) -> dict[str, Any]:
             expanded = Path(expanded_text).expanduser()
         return expanded if expanded.is_absolute() else (base / expanded).absolute()
 
-    for key in ("raw_root", "data_root", "state_root", "cache_root"):
+    for key in ("raw_root", "data_root", "state_root", "cache_root", "report_path"):
         if result.get(key) is not None:
             result[key] = resolve(result[key])
     source_map = result.get("sources")

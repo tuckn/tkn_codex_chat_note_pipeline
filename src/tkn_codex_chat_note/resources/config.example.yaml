@@ -1,4 +1,4 @@
-schema_version: "8.0.0"
+schema_version: "8.1.0"
 # One shared cache base; codex/source_id partitions are automatic.
 cache_root: ~/.cache/codex_chat_note_pipeline
 
@@ -74,3 +74,20 @@ generation:
 idle_minutes: 30
 runtime_minutes: 230
 model_timeout_seconds: 1800
+
+# Offline usage reports; no inference or price lookup occurs during build-report.
+report_path: ~/.tkn/codex_chat_note_pipeline/reports
+usage_report:
+  utc_offset_minutes: 0  # Use 540 for Japan; execution dates, not original chat dates.
+  price_scenarios: {}
+  # Reference cost for the same token counts; not an invoice or model prediction.
+  # Replace the empty mapping above with your confirmed rates, for example:
+  # price_scenarios:
+  #   comparison-model:
+  #     currency: USD
+  #     pricing_date: "2026-09-19"
+  #     input_per_million: 1.0   # Fictional example, not a published price.
+  #     output_per_million: 5.0
+  #     cache_policy: no-cache  # Or observed; requires cached_input_per_million.
+  #     cached_input_per_million: 0.1
+  #     cache_write_per_million: 1.25  # Optional; observed mode requires known counts.

@@ -35,29 +35,26 @@ def test_packaged_example_config_uses_portable_home_paths() -> None:
         assert value[key].startswith("~/")
     assert "installed_at" not in value
     assert "chat" not in value
-    assert value["sources"] == {
-        "my-windows-note-pc": {
-            "enabled": True,
-            "source_root": "~/.codex",
-            "include_archived": True,
-        }
-    }
+    source = value["sources"]["my-windows-note-pc"]
+    assert source["source_root"] == "~/.codex" and source["enabled"]
+    assert source["include_archived"]
+    for kind in ("raw", "data", "state"):
+        assert source[kind + "_root"] == f"C:/path/to/codex/{kind}"
+    assert not value["sources"]["my-wsl-ubuntu"]["enabled"]
+    assert value["report_path"].startswith("~/")
+    assert value["usage_report"]["price_scenarios"] == {}
     assert not {"codex_home", "source_id", "include_archived"}.intersection(value)
     assert "scopes" not in value
     assert value["schema_version"] == CONFIG_SCHEMA_VERSION
     assert config_example_text().splitlines()[0] == f'schema_version: "{CONFIG_SCHEMA_VERSION}"'
-    assert value["generation"] == {
-        "session_note_profile": "default-jp",
-        "active_profile": "codex",
-        "profiles": {
-            "codex": {
-                "provider": "codex",
-                "model": "gpt-5.6-sol",
-                "reasoning_effort": "high",
-                "executable": "codex",
-            }
-        },
+    generation = value["generation"]
+    assert generation["session_note_profile"] == "default-jp"
+    assert generation["active_profile"] == "codex"
+    assert generation["profiles"]["codex"] == {
+        "provider": "codex", "model": "gpt-5.6-sol", "reasoning_effort": "high", "executable": "codex",
     }
+    assert generation["profiles"]["azure-high"]["provider"] == "azure-openai"
+    assert generation["profiles"]["local-gemma"]["provider"] == "ollama"
     assert "summary_prompt" not in value
 
 
@@ -203,7 +200,7 @@ def test_config_file_requires_schema_version(tmp_path: Path) -> None:
         ('"2.0.0-rc1"', "expected a quoted MAJOR.MINOR.PATCH"),
         ('"1.9.0"', "schema v1 is no longer supported"),
         ('"7.3.0"', "unsupported newer configuration schema_version"),
-        ('"8.1.0"', "unsupported newer configuration schema_version"),
+        ('"8.2.0"', "unsupported newer configuration schema_version"),
     ],
 )
 def test_unsupported_schema_versions_are_rejected(
@@ -220,13 +217,13 @@ def test_unsupported_schema_versions_are_rejected(
 
 def test_same_major_minor_newer_patch_is_accepted(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
-    write_yaml(path, {"schema_version": "8.0.7", "idle_minutes": 10})
+    write_yaml(path, {"schema_version": "8.1.7", "idle_minutes": 10})
 
     resolution = resolve_app_config(explicit_path=path, cwd=tmp_path)
 
     assert resolution.config.schema_version == CONFIG_SCHEMA_VERSION
     explicit = resolution.layers[-1]
-    assert explicit["schemaVersion"] == "8.0.7"
+    assert explicit["schemaVersion"] == "8.1.7"
     assert explicit["effectiveSchemaVersion"] == CONFIG_SCHEMA_VERSION
     assert explicit["migration"] is None
 

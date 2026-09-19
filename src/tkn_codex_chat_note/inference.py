@@ -6,11 +6,15 @@ import json
 import os
 import shutil
 import subprocess
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
+
+from .usage_records import Observer, new_record, read_codex_usage, timestamp
 
 InferenceProvider = Literal["codex", "claude-code", "github-copilot", "ollama", "azure-openai"]
 
@@ -143,6 +147,7 @@ def _run_process(
     cwd: Path,
     timeout: int,
     provider: str,
+    on_stdout: Callable[[str | bytes | None], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
         completed = subprocess.run(
@@ -157,9 +162,13 @@ def _run_process(
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
+        if on_stdout:
+            on_stdout(exc.stdout)
         raise InferenceExecutionError(f"{provider} timed out after {exc.timeout} seconds") from exc
     except OSError as exc:
         raise InferenceExecutionError(f"cannot execute {provider}: {exc}") from exc
+    if on_stdout:
+        on_stdout(completed.stdout)
     if completed.returncode != 0:
         diagnostic = (completed.stderr.strip() or completed.stdout.strip())[-2000:]
         raise InferenceExecutionError(
@@ -175,6 +184,7 @@ def _invoke_codex(
     *,
     cwd: Path,
     timeout: int,
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     schema_path = cwd / "schema.json"
     output_path = cwd / "output.json"
@@ -182,6 +192,7 @@ def _invoke_codex(
     command = [
         resolve_provider_executable(config.codex_bin, provider="codex"),
         "exec",
+        "--json",
         "--ephemeral",
         "--ignore-user-config",
         "--skip-git-repo-check",
@@ -197,7 +208,8 @@ def _invoke_codex(
         str(output_path),
         "-",
     ]
-    _run_process(command, prompt=prompt, cwd=cwd, timeout=timeout, provider="Codex")
+    _run_process(command, prompt=prompt, cwd=cwd, timeout=timeout, provider="Codex",
+                 on_stdout=lambda output: read_codex_usage(output, usage if usage is not None else {}))
     if not output_path.is_file():
         raise InferenceExecutionError("Codex completed without an output file")
     return _parse_json_object(output_path.read_text(encoding="utf-8-sig"), provider="Codex")
@@ -335,18 +347,34 @@ def invoke_structured(
     *,
     cwd: Path,
     timeout: int,
+    usage_observer: Observer | None = None,
 ) -> dict[str, Any]:
     """Run one provider call and return a JSON object matching the requested schema."""
 
     if config.provider == "azure-openai":
         from .api_inference import ApiClient
         return ApiClient(config).invoke(prompt, schema, timeout=timeout)
-    if config.provider == "codex":
-        return _invoke_codex(config, prompt, schema, cwd=cwd, timeout=timeout)
-    if config.provider == "claude-code":
-        return _invoke_claude_code(config, prompt, schema, cwd=cwd, timeout=timeout)
-    if config.provider == "github-copilot":
-        return _invoke_github_copilot(config, prompt, schema, cwd=cwd, timeout=timeout)
-    if config.provider == "ollama":
-        return _invoke_ollama(config, prompt, schema, timeout=timeout)
-    raise InferenceExecutionError(f"unsupported inference provider: {config.provider}")
+    record = new_record(config.provider, config.model, config.reasoning_effort)
+    if usage_observer:
+        usage_observer({"type": "usage-start", **record})
+    started = time.monotonic()
+    try:
+        if config.provider == "codex":
+            result = _invoke_codex(config, prompt, schema, cwd=cwd, timeout=timeout, usage=record)
+        elif config.provider == "claude-code":
+            result = _invoke_claude_code(config, prompt, schema, cwd=cwd, timeout=timeout)
+        elif config.provider == "github-copilot":
+            result = _invoke_github_copilot(config, prompt, schema, cwd=cwd, timeout=timeout)
+        elif config.provider == "ollama":
+            result = _invoke_ollama(config, prompt, schema, timeout=timeout)
+        else:
+            raise InferenceExecutionError(f"unsupported inference provider: {config.provider}")
+        record["status"] = "received"
+        return result
+    except BaseException:
+        record["status"] = "failed"
+        raise
+    finally:
+        record.update(finishedAt=timestamp(), durationSeconds=round(time.monotonic() - started, 3))
+        if usage_observer:
+            usage_observer({"type": "usage-complete", **record})

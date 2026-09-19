@@ -127,7 +127,7 @@ tkn-codex-chat-note config init
 最小構成は次のとおりです。
 
 ```yaml
-schema_version: "8.0.0"
+schema_version: "8.1.0"
 sources:
   my-windows-pc:
     enabled: true
@@ -241,6 +241,7 @@ Raw の取得と正規化はこの期限では中断されません。
 | `session-notes build`               | Session Note を更新する。`--thread-id` で得意の会話を1件選べる                  |
 | `session-notes validate <artifact>` | 既存ノートを読み取り専用で検証する                                                 |
 | `status`                            | 前回の対象範囲・状態・レポートのパスを表示する                                     |
+| `build-report [--dry-run] [--no-open]` | 保存済み使用量からHTML・JSON・CSVを生成します。通常はHTMLを開きます。 |
 | `provenance validate`               | hash・ID・来歴の関係を読み取り専用で検証する                                       |
 | `storage migrate`                   | `--from-config` で指定した取得元を新しい保存先へコピーする                       |
 
@@ -284,7 +285,7 @@ Raw の取得と正規化はこの期限では中断されません。
 
 各設定ファイルは、統合する前に個別に検証します。
 相対パスは、その値を宣言した設定ファイルの場所から解決します。
-設定スキーマは `8.0.0` です。キーは snake_case、バージョンは引用符付きの SemVer 文字列で書きます。
+設定スキーマは `8.1.0` です。キーは snake_case、バージョンは引用符付きの SemVer 文字列で書きます。
 未知のキーや、未対応の新しいバージョンはエラーになります。
 
 ```console
@@ -569,6 +570,85 @@ tkn-codex-chat-note --profile azure-high pull --limit 1
 | `raw_root` / `data_root` / `state_root`                 | 保存先が変わるだけで、再生成はしない（移行は`storage migrate`）        |
 
 いずれの場合も、レビュー済み・手編集ノートの保護は維持されます。
+
+### 5.7. 使用トークンの記録とHTMLレポート
+
+0.24.0から、Codexの生成でも実使用トークンを保存します。対象はこのCLIの
+clone / pull / session-notes build による推論です。要約対象の元チャットの使用量とは別です。
+
+- Codexは codex exec --json の turn.completed.usage を取得します。入力・出力・キャッシュ入力・推論・キャッシュ書込を、提供された範囲で保存します。
+- Azure OpenAIと limits を設定したOllamaも同じ使用量履歴に保存します。
+- Claude Code、GitHub Copilot、limits 未設定のOllamaは、現時点では試行の日時・結果を保存し、トークン数は不明として記録します。
+- 失敗・再試行も対象です。取得できない値は null で、ゼロや推定値に置き換えません。
+- Codexは1回のCLI実行内のターン合計、APIはリクエスト単位です。両者の「試行数」は同じ粒度ではありません。
+- 入力合計にはキャッシュ入力、出力合計には推論を含みます。これらをさらに足すと二重計上になります。
+
+使用量履歴は <state_root>/usage/<runId>/<usageId>.json に保存します。
+呼び出し前に開始状態、終了時に取得済み使用量を保存し、ノート生成の成否も追記します。
+強制停止時には開始状態が残ることがあります。応答未取得分の消費量は不明です。
+使用量履歴にプロンプト・回答本文・認証情報は保存しません。
+既存の実行レポートには generationMetrics.usageRecords と usageTotals も記録します。
+API専用の apiRequests は既存の読み取り側向けに維持しますが、同時に合計しないでください。
+stateは使用量分析の正本を含むため、削除可能なキャッシュとして扱わずバックアップしてください。
+
+次のコマンドは保存済み履歴だけを読み、生成AI・外部価格取得・元チャットの走査を行いません。
+
+~~~console
+tkn-codex-chat-note build-report --dry-run
+tkn-codex-chat-note build-report
+tkn-codex-chat-note build-report --no-open
+~~~
+
+通常実行はHTML・JSON・CSVを更新してHTMLを開きます。--no-open は生成のみ、
+--dry-run は検証・集計のみで、保存とブラウザ起動を行いません。
+既定では全有効ソースの全履歴を集計します。--source <source_id> をコマンドの前に置くと、
+そのソースだけのレポートへ更新します。
+
+既定の保存先は ~/.tkn/codex_chat_note_pipeline/reports で、report_path で変更できます。
+
+| 出力 | 内容 |
+| --- | --- |
+| index.html | 外部通信なしで開けるHTML。期間・モデル・プロバイダー・コマンド・ソース・生成プロファイル・対象タスクで絞り込み |
+| usage.json | 正規化した使用量、元ファイルのSHA-256、集計設定・単価シナリオ、欠測情報 |
+| usage.csv | 1試行1行の使用量。空欄は不明。表計算ソフト向けに数式となる文字列の先頭を保護 |
+
+HTML内に表示データを埋め込み、HTMLだけでも閲覧できます。JSON・CSVへのリンクを使う場合は
+3ファイルを同じフォルダに置いてください。JSON・CSVは画面フィルターを反映しない全件です。
+再生成では同名ファイルを置換します。入力の使用量履歴は変更しません。
+各ファイルは個別に置換し、HTMLを最後に公開します。書き込み中は外部ツールで読み取らず、
+中断した場合は再実行してください。HTMLはその中に埋め込まれた世代のデータで表示されます。
+
+日・週・月は生成の実行開始日で集計し、既定はUTCです。日本時間には540分を設定します。
+旧実行レポートのAPI使用量も取り込み、履歴との重複を除きます。
+旧Codexは --ephemeral 実行だったため、記録されていない過去使用量を復元できません。
+「取得済み合計」「不明件数」「未完了」を区別し、欠測を含む平均は下限参考値として表示します。
+
+参考料金は usage_report.price_scenarios に設定します。推論時の予算設定とは独立しており、
+料金シナリオを変えてもノート生成や再課金は発生しません。下記は架空の単価です。
+
+~~~yaml
+schema_version: "8.1.0"
+report_path: ~/.tkn/codex_chat_note_pipeline/reports
+usage_report:
+  utc_offset_minutes: 540
+  price_scenarios:
+    comparison-model:
+      currency: USD
+      pricing_date: "2026-09-19"
+      input_per_million: 1.0
+      output_per_million: 5.0
+      cache_policy: no-cache
+~~~
+
+no-cache は全入力を通常入力単価で試算します。observed は実測キャッシュ内訳を使い、
+cached_input_per_million を必須とします。cache_write_per_million も指定した場合は
+書込数が判明している試行だけ計算します。内訳不明はゼロと推定せず算出不可にします。
+
+費用は「同じトークン数を使った場合」の参考値です。別モデルでは分割方式・推論量・回答長が
+変わるため、切り替え後の費用の予測ではありません。サブスクリプションの実請求額、
+ツール料金・税・為替換算も含みません。キャッシュ読込・書込が通常入力と別料金の場合、
+その内訳を入力合計から引いて各単価を適用します。推論を出力合計へ再加算しません。
+単価未設定ならトークン量のみ確認できます。外部価格を自動取得する処理はありません。
 
 ## 6. 保存構造
 

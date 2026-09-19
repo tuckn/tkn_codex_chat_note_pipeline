@@ -17,7 +17,7 @@ from .api_inference import ApiBudgetExceeded, ApiClient
 from .catalog import CATALOG_SCHEMA_VERSION, Discovery, capture_sources, discover
 from .config import AppConfig
 from .frontmatter import parse_simple_frontmatter
-from .generation_usage import estimate_totals, usage_totals
+from .generation_usage import estimate_totals, metric_records, usage_totals
 from .provenance import ProvenanceStore, json_bytes
 from .raw_capture import RawCaptureError
 from .session_notes import (
@@ -36,6 +36,7 @@ from .session_notes import (
     write_candidate_note,
 )
 from .storage import legacy_storage_pending, pipeline_storage, read_json
+from .usage_records import UsageJournal
 
 LEDGER_SCHEMA_VERSION = 1
 Progress = Callable[[dict[str, Any]], None]
@@ -109,6 +110,7 @@ def _notes(
     provenance: ProvenanceStore,
     *,
     run_id: str,
+    mode: str,
     deadline: datetime,
     generate: bool,
     force: bool,
@@ -176,6 +178,7 @@ def _notes(
         prior = ledger["threads"].get(key, {})
         candidate = replace(candidate, artifact_id=prior.get("noteId"))
         generation_started = False
+        journal: UsageJournal | None = None
         try:
             note_state = note_states[key]
             if isinstance(note_state, Exception):
@@ -239,6 +242,7 @@ def _notes(
                 continue
             attempted += 1
             started = now_iso()
+            entry["generationStartedAt"] = started
             thread_started = time.monotonic()
             ledger["threads"][key] = {**prior, "status": "running", "attemptedAt": started}
             _save_ledger(config, ledger, False)
@@ -246,6 +250,12 @@ def _notes(
                 summarizer = ProviderSummarizer(pipeline_config, observer=progress)
             if isinstance(summarizer, ProviderSummarizer):
                 summarizer.last_metrics = {"modelCalls": 0}
+                journal = UsageJournal(config.source_state_root / "usage" / run_id, {
+                    "runId": run_id, "command": mode, "threadId": entry["threadId"],
+                    "sourceId": config.source_id, "generationProfile": config.generation.active_profile,
+                    "noteStatus": "unfinished",
+                }, progress)
+                summarizer.observer = journal
             generation_started = True
             if hasattr(summarizer, "set_deadline"):
                 summarizer.set_deadline(deadline + timedelta(minutes=9))
@@ -340,6 +350,8 @@ def _notes(
                     }
                 )
         finally:
+            if journal is not None:
+                journal.finish("generated" if entry.get("generated") else entry["status"])
             if ledger["threads"].get(key, {}) != prior:
                 _save_ledger(config, ledger, provenance.dry_run)
     return attempted
@@ -420,6 +432,7 @@ def _run_source_pipeline(
             ledger,
             provenance,
             run_id=run_id,
+            mode=mode,
             deadline=deadline,
             generate=mode in {"clone", "pull", "session-notes"},
             force=force and mode in {"clone", "pull", "session-notes"},
@@ -436,7 +449,7 @@ def _run_source_pipeline(
             [entry["generationEstimate"] for entry in discovery.entries if "generationEstimate" in entry])
         report["usageTotals"] = usage_totals(
             [request for entry in discovery.entries
-             for request in entry.get("generationMetrics", {}).get("apiRequests", [])])
+             for request in metric_records(entry.get("generationMetrics", {}))])
         report["threadCounts"] = dict(Counter(entry["status"] for entry in discovery.entries))
         report["generatedSessionNoteCount"] = sum(bool(entry.get("generated")) for entry in discovery.entries)
         failures = [entry for entry in discovery.entries if entry["status"] in {"failed", "blocked"}]
@@ -636,7 +649,7 @@ def run_pipeline(
              if "generationEstimate" in entry]),
         "usageTotals": usage_totals(
             [request for report in reports for entry in report.get("threads", [])
-             for request in entry.get("generationMetrics", {}).get("apiRequests", [])]),
+             for request in metric_records(entry.get("generationMetrics", {}))]),
         "threadCounts": dict(counts),
         "generatedSessionNoteCount": sum(report["generatedSessionNoteCount"] for report in reports),
         "attemptedSessionNoteCount": sum(report["attemptedSessionNoteCount"] for report in reports),

@@ -1,6 +1,6 @@
 # Data contract: chat evidence and Session Notes
 
-CLI 0.21.1 · config 8.0.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
+CLI 0.24.0 · config 8.1.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
 
 This is the file-based interface specification for tools that consume this CLI's
 output, including context curation and insight. It defines stable identities,
@@ -412,3 +412,42 @@ estimate or invoke the model. Capture and report finalization can continue.
 Exit code 2 means incomplete; independent failures still produce failure status.
 Checkpoint format, generation fingerprint, configured caps and reservation accounting
 are unchanged. Same-setting pull can reuse validated chunks with a fresh command budget.
+
+## Generation usage (CLI 0.24.0)
+
+This is usage of the pipeline's inference, separate from tokens in the captured source conversations.
+Each source owns state/usage/<runId>/<usageId>.json (schemaVersion 1). The usage ID identifies one
+attempt, is created before inference, and is reused when the record is atomically updated on completion.
+Records contain execution timestamps, run/source/thread IDs, command/profile/provider, requested model,
+response model when supplied, reasoning effort, stage, status, duration, and noteStatus.
+
+inputTokens/outputTokens are measured totals. cachedInputTokens and reasoningTokens are subsets;
+cacheWriteTokens is optional. Missing values are null. A partial Codex stream can retain
+knownInputTokens/knownOutputTokens while the corresponding full totals remain null.
+usageSource names the provider evidence; usageScope distinguishes invocation-turns from api-request.
+A hard stop can leave a started or unfinished record. Never infer zero usage from that state.
+
+Run reports add generationMetrics.usageRecords. For APIs, apiRequests is a compatibility view of the
+same attempts; readers must prefer usageRecords and must not add both arrays. usageTotals preserves
+missing values and known subtotals. Neither usage capture nor its addition to reports changes
+Session Note identity, content schema, generation fingerprints, or provenance links.
+
+build-report reads the journal and historical source run reports, never last-run.json.
+The source ID + usage ID deduplicates journal/report entries. Older API entries without usage IDs
+use source ID + run ID + thread ID + array position. Historical CLI modelCalls become unknown-usage
+attempts; unrecorded counts cannot be reconstructed. The reporting date uses the inference start
+timestamp, with usage_report.utc_offset_minutes (UTC by default).
+
+report_path owns index.html, usage.json, and usage.csv. usage.json schemaVersion 1 includes normalized
+records, unique successful note-generation identities, complete/known usage totals, configured price
+scenarios, source-file hashes, warnings, a snapshot ID, and a build timestamp. It does not contain
+prompt/answer bodies. CSV has one attempt per row and blank cells for missing usage; formula-like
+string cells have a leading apostrophe for spreadsheet safety. The HTML embeds its own snapshot
+and performs filtering locally. Its JSON/CSV links refer to the full exported snapshot.
+
+Reference costs use the same measured counts at user-configured rates and retain the currency and
+pricing date. They are not actual invoices or forecasts of another model's behavior. Unknown required
+counts produce null costs. No-cache scenarios price all input normally; observed-cache scenarios use
+known cache reads and optional writes without adding those subsets twice. No online lookup, model
+invocation, currency conversion, tax, or tool-fee calculation occurs. Config 8.0 remains readable
+through compatible in-memory normalization to 8.1; stored user configuration is not rewritten.
