@@ -110,7 +110,7 @@ Codex を使う場合は、端末で `codex --version` と `codex login status` 
 
 ### 2.2. インストールと設定ファイルの作成
 
-```console
+```shell
 cd "C:\path\to\tkn_codex_chat_note_pipeline"
 uv tool install .
 tkn-codex-chat-note --help
@@ -158,7 +158,7 @@ generation:
 `sources` のキー（この例では `my-windows-pc`）が `source_id` です。保存先フォルダを省略すると `~/.tkn/codex_chat_note_pipeline/<領域>/codex/<source_id>` に保存されます。
 指定できる項目は [5. 設定](#configuration)、同梱の記入例は [config.example.yaml](src/tkn_codex_chat_note/resources/config.example.yaml) を参照してください。
 
-```console
+```shell
 tkn-codex-chat-note config show
 ```
 
@@ -170,7 +170,7 @@ tkn-codex-chat-note config show
 
 ### 3.1. 最初の1回：clone
 
-```console
+```shell
 tkn-codex-chat-note clone --dry-run
 tkn-codex-chat-note clone
 ```
@@ -187,7 +187,7 @@ tkn-codex-chat-note clone
 
 ### 3.2. 日常の更新：pull
 
-```console
+```shell
 tkn-codex-chat-note pull
 tkn-codex-chat-note status
 tkn-codex-chat-note provenance validate
@@ -301,7 +301,7 @@ Raw の取得と正規化はこの期限では中断されません。
 設定スキーマは `8.1.0` です。キーは snake_case、バージョンは引用符付きの SemVer 文字列で書きます。
 未知のキーや、未対応の新しいバージョンはエラーになります。
 
-```console
+```shell
 tkn-codex-chat-note --config "C:\path\to\config.yaml" clone
 tkn-codex-chat-note --idle-minutes 0 --runtime-minutes 60 pull --limit 20
 ```
@@ -363,7 +363,7 @@ WSL の例は設定方法を示したもので、実動作確認は未実施で�
 - catalog・provenance・checkpoint・実行レポートは取得元ごとに保持し、書き込み前に全保存領域を検証します。
 - ある取得元の失敗は全体の失敗結果に含めますが、他の取得元は続行できます。
 
-```console
+```shell
 tkn-codex-chat-note --source my-windows-pc pull
 tkn-codex-chat-note --source my-windows-pc session-notes build --thread-id <thread-id>
 ```
@@ -432,7 +432,7 @@ Antigravity は Bridge の `antigravity-default` などを `bridge_profile` で�
 実行ファイル（既定 `agy`）・モデル・推論設定は共有プロファイルで指定します。
 CLI実行ファイルの指定はBridgeの `cli.executable` に置き、Windowsではネイティブ実行ファイルを指定します（`.cmd` / `.bat` / `.ps1` は非対応）。
 
-```console
+```shell
 tkn-codex-chat-note --profile local-gemma pull --dry-run
 ```
 
@@ -536,7 +536,7 @@ tokenizer に依存しない UTF-8 バイト数の上限を使うため、分割
 
 #### 5.5.3. 事前見積もり（dry-run）
 
-```console
+```shell
 tkn-codex-chat-note pull --dry-run --limit 1
 ```
 
@@ -586,7 +586,7 @@ token数はこのCLIが推定し、その値と適用される出力上限をBri
 
 再開は、同じプロファイル・同じ設定のまま、`--force` を付けずに実行します。
 
-```console
+```shell
 tkn-codex-chat-note --profile azure-high pull --limit 1
 ```
 
@@ -640,7 +640,7 @@ stateは使用量分析の正本を含むため、削除可能なキャッシュ
 
 次のコマンドは保存済み履歴だけを読み、生成AI・外部価格取得・元チャットの走査を行いません。
 
-```console
+```shell
 tkn-codex-chat-note build-report --dry-run
 tkn-codex-chat-note build-report
 tkn-codex-chat-note build-report --no-open
@@ -831,7 +831,7 @@ Raw・Session Note・正規化データ・来歴・再開状態をコピーし�
 2. 同じ取得元 ID を持つ設定を別ファイルに用意し、`raw_root`・`data_root`・`state_root` を移動元と重ならない新しい最終保存先にします。複数の取得元が有効なら `--source` で1つ選びます。
 3. コピー中は移動元への書き込みを停止し、次の順に確認・実行します。
 
-```console
+```shell
 tkn-codex-chat-note --config "C:\path\to\destination.yaml" config show
 tkn-codex-chat-note --config "C:\path\to\destination.yaml" --source my-windows-pc storage migrate --from-config "C:\path\to\source.yaml" --dry-run
 tkn-codex-chat-note --config "C:\path\to\destination.yaml" --source my-windows-pc storage migrate --from-config "C:\path\to\source.yaml"
@@ -847,7 +847,7 @@ tkn-codex-chat-note --config "C:\path\to\destination.yaml" --source my-windows-p
 
 新しい設定ファイルを作り、空の `raw_root`・`data_root`・`state_root` を指定して、[3. 実行する](#3-実行する) の手順を行います。
 
-```console
+```shell
 tkn-codex-chat-note --config "C:\path\to\rebuild.yaml" config init
 ```
 

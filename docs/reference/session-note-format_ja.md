@@ -82,7 +82,7 @@ Python側は本文の繰り返し項目、改行・字下げ、時刻・主体�
 新しい出力フォルダに比較元・元ログのスナップショット・生成結果・検証レポートを保存し、
 本番ノートや処理チェックポイントは更新しません。設定済みの生成AIを使用します。
 
-```console
+```shell
 uv run python scripts/review_session_note.py --source-log <rollout.jsonl> --baseline-note <session-note.md> --output-dir <new-review-directory>
 ```
 

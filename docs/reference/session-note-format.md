@@ -92,7 +92,7 @@ baseline, a source-log snapshot, generated output, and validation report in a ne
 output directory. It uses the configured generation provider without updating live
 notes or pipeline checkpoints.
 
-```console
+```shell
 uv run python scripts/review_session_note.py --source-log <rollout.jsonl> --baseline-note <session-note.md> --output-dir <new-review-directory>
 ```
 
