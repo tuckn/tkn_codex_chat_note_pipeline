@@ -8,7 +8,6 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import tkn_codex_chat_note.chat_logs as chat_logs
@@ -789,31 +788,31 @@ class SessionNotePipelineTests(unittest.TestCase):
         self.assertFalse(self.project.session_notes_path.exists())
         self.assertFalse(self.project.state_path.exists())
 
-    def test_codex_runner_uses_ephemeral_fixed_model_and_schema(self) -> None:
+    def test_codex_runner_passes_model_prompt_and_schema_to_bridge(self) -> None:
+        from bridge_fixtures import wire_note
+        from tkn_genai_bridge import Runtime
+        from tkn_genai_bridge.providers.base import ProviderResponse
+
         path = self.sessions / "chat.jsonl"
         write_chat(path, thread_id="thread-1", cwd=self.repo)
         candidate = scan_candidates(self.config, [self.project])[0][0]
-        captured: list[str] = []
-        prompts: list[str] = []
+        captured = []
 
-        def fake_run(command, **kwargs):
-            captured.extend(command)
-            prompts.append(kwargs["input"])
-            output = Path(command[command.index("--output-last-message") + 1])
-            output.write_text(json.dumps(note_data(candidate)), encoding="utf-8")
-            return SimpleNamespace(returncode=0, stderr="", stdout="")
+        class Backend:
+            def generate(self, profile, request):
+                captured.append((profile, request))
+                return ProviderResponse(data=wire_note(note_data(candidate)))
 
         runner = CodexSummarizer(self.config, sleeper=lambda _seconds: None)
-        with patch("tkn_codex_chat_note.inference.subprocess.run", side_effect=fake_run):
+        with patch("tkn_codex_chat_note.inference.Runtime",
+                   side_effect=lambda profile, **kw: Runtime(profile, backend=Backend(), **kw)):
             result = runner.generate(candidate)
-
         self.assertEqual("Automated Session Note", result["title"])
-        self.assertIn("--ephemeral", captured)
-        self.assertIn("--ignore-user-config", captured)
-        self.assertEqual("gpt-5.6-sol", captured[captured.index("--model") + 1])
-        self.assertIn('model_reasoning_effort="high"', captured)
-        self.assertIn("natural Japanese", prompts[0])
-        self.assertIn("fileSlug", prompts[0])
+        profile, request = captured[0]
+        self.assertEqual("gpt-5.6-sol", profile.model)
+        self.assertEqual("high", profile.reasoning_effort)
+        self.assertIn("natural Japanese", request.prompt)
+        self.assertIn("fileSlug", request.output_schema["properties"])
 
     def test_rebuild_success_replaces_legacy_notes_and_is_idempotent(self) -> None:
         for thread in ("thread-1", "thread-2"):

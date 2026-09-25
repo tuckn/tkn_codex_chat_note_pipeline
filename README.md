@@ -1,26 +1,25 @@
 # Tkn Codex Chat Note Pipeline
 
-日本語: [README_ja.md](README_ja.md)
+> 初めて読む場合は、1〜3章（これは何か／セットアップ／実行する）だけで動かせます。
+> 4章以降は、必要になったときに引く参照情報です。
 
-> If you are new to this tool, sections 1–3 (What it does / Setup / Running the CLI) are enough to get started.
-> Sections 4 onward provide reference information to consult as needed.
+## 1. これは何か
 
-## 1. What it does
+Codex CLI がローカルに残す会話ログを保全し、会話スレッド1件につき1枚の Markdown ノート（以後、**Session Note**、または、ノート）を生成するローカル CLI です。
 
-This local CLI preserves the conversation logs that Codex CLI stores locally and generates one Markdown note per conversation thread, referred to below as a **Session Note** or simply a note.
+やることは3つです。
 
-It performs three tasks.
+1. **保全**：Codex の JSONL ログを、手を加えない Raw としてコピーします。
+2. **構造化**：Raw を解析し、発言・時刻・原文の行参照を持つ Canonical Events（正規化イベント）にします。
+3. **生成**：生成AIに Canonical Events を渡し、Session Note を作ります。
 
-1. **Preserve**: Copy Codex JSONL logs as Raw without modifying their contents.
-2. **Structure**: Parse Raw into Canonical Events containing messages, timestamps, and line references to the original logs.
-3. **Generate**: Pass Canonical Events to a generative AI model to create a Session Note.
+生成される Session Note は、短い要約ではありません。後から別の観点で会話を考え直すための、時系列順の事実の記録です。
 
-A Session Note preserves requests, corrections, failed attempts, unresolved questions, a timeline with evidence IDs, and the last confirmed state.
-It is a record for revisiting a conversation from different perspectives, rather than a brief summary.
+具体的には、依頼、訂正、失敗した試行、未解決の問い、根拠IDつきの時系列、最後に確認できた状態です。
 
-### 1.1. Example of a generated note
+### 1.1. 生成されるノートの例
 
-This is an excerpt from the Timeline section.
+生成される Session Note の Timeline 部分の抜粋です。
 
 ```markdown
 ### 2026-05-17
@@ -28,89 +27,88 @@ This is an excerpt from the Timeline section.
 - **11:27:35 - 11:27:47**
   - Actor: AI
   - Type: Action
-  - Text: Investigated the publication scope and whether a listing could be retrieved.
+  - Text: 公開範囲と一覧取得の可否を調べた。
   - EventRange: L000010 -> L000020
   - Sources: L000010, L000012, L000020
 ```
 
-Each entry includes event IDs from the source logs that support it.
-Timestamps and actors are determined programmatically from the cited events, rather than inferred by AI.
-See [Session Note format](docs/reference/session-note-format.md) for the structure of a complete note.
+各項目は、根拠となる元ログのイベントIDを持ちます。
+日時と主体（Actor）は引用されたイベントから機械的に決定されます。AIによる推論生成ではありません。
+ノート全体の構成は [Session Noteの内容](docs/reference/session-note-format_ja.md) を参照してください。
 
-### 1.2. Scope
+### 1.2. 対象範囲
 
-| Item | Details |
-| --- | --- |
-| Conversation sources | Local Codex logs only |
-| AI used for inference | Choose from Codex CLI / Claude Code / GitHub Copilot CLI / Ollama / Azure OpenAI |
-| Output | Session Notes (Markdown), Raw copies, Canonical Events, and provenance |
-| Out of scope | Capturing conversations from apps other than Codex, cloud-only history, Scope classification, Decision extraction, and Working Context generation |
+| 項目         | 内容                                                                                                  |
+| ------------ | ----------------------------------------------------------------------------------------------------- |
+| 会話の取得元 | ローカルの Codex ログのみ                                                                             |
+| 推論に使うAI | Codex CLI / Claude Code / GitHub Copilot CLI / Google Antigravity CLI / Ollama / Azure OpenAI から選択                         |
+| 出力         | Session Note（Markdown）、Raw コピー、Canonical Events、来歴（provenance）                            |
+| 対象外       | Codex以外のアプリの会話取得、クラウドにのみ存在する履歴、Scope分類・Decision抽出・Working Context生成 |
 
-**Conversation capture is exclusive to Codex.**
-You can choose the AI used for inference independently.
-Claude Code, Copilot, and Ollama are options for generating notes; the tool does not capture their conversations.
+**会話の取得元は Codex 専用です。**
+推論に使うAIはそれとは独立に選べます。Claude Code・Copilot・Ollama は「生成に使うAI」であって、それらの会話を取り込む機能ではありません。
 
-This CLI's processing ends with Session Note generation.
-Session Note classification and Working Context are handled by [tkn_genai_context_curation_pipeline](https://github.com/tuckn/tkn_genai_context_curation_pipeline), and Decision extraction by [tkn_genai_insight_pipeline](https://github.com/tuckn/tkn_genai_insight_pipeline).
-Each CLI can be installed independently and exchanges data through versioned files.
+このCLIの処理は Session Note の生成までです。
 
-### 1.3. Terminology
+生成された事実（Session Note）から、洞察を得るためのツールは別リポジトリとして構築します。
 
-| Term | Meaning |
-| --- | --- |
-| session | A continuous chronological conversation. One session corresponds to one Session Note. |
-| conversation / thread | One conversation in Codex, identified by `threadKey`. |
-| Raw | A byte-for-byte copy of the source logs. Its contents are not modified. |
-| Canonical Events | Normalized events parsed from Raw, with messages, timestamps, and line references to the original logs. |
-| source | A local Codex folder to read, identified by `source_id`. |
-| inference provider / provider | The execution method used by AI to generate Session Notes: `codex`, `claude-code`, `github-copilot`, `ollama`, or `azure-openai`. |
-| generation profile / profile | A named collection of settings such as provider, model, and limits. Select it with `--profile`. |
-| provenance | Records of input hashes, IDs, and generation conditions, used to trace how an output was created. |
-| generation conditions | The combination of input events, model, profile, prompt, chunking settings, and limits. Changes make affected notes eligible for regeneration. |
-| intermediate results / cache | Temporary storage of validated chunk summaries and merged results. Reused when generation conditions match. |
-| reviewed | A note marked as checked by a person. It is protected from overwriting. |
+### 1.3. 用語
 
-### 1.4. Overview
+| 用語                        | 意味                                                                                                           |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| session（セッション）       | 時系列で連続した一連の会話。1 session = 1 Session Note                                                         |
+| 会話 / thread               | Codex 側の1会話。`threadKey` で識別する                                                                      |
+| Raw                         | 取得元ログのバイト列をそのまま保存したコピー。内容は改変しない                                                 |
+| Canonical Events            | Raw を解析した正規化イベント。発言・時刻・原文の行参照を持つ                                                   |
+| 取得元 / source             | 読み取り対象のローカル Codex フォルダ。`source_id` で識別する                                                |
+| 推論プロバイダー / provider | Session Note 生成に使うAIの実行方式。`codex` `claude-code` `github-copilot` `antigravity` `ollama` `azure-openai` |
+| 生成プロファイル / profile  | provider・model・上限などをまとめた設定の名前。`--profile` で切り替える                                      |
+| 来歴 / provenance           | 入力の hash・ID・生成条件の記録。出力が何から作られたかを追跡する                                              |
+| 生成条件                    | 入力イベント・モデル・プロファイル・prompt・分割条件・上限値の組み合わせ。ここが変わると再生成の対象になる     |
+| 途中結果 / cache            | 検証済みの分割要約や統合結果の一時保存。生成条件が同じなら再利用する                                           |
+| レビュー済み                | ノートに人手で確認済みの印が付いた状態。上書き保護の対象になる                                                 |
+
+### 1.4. 全体像
 
 ```mermaid
 flowchart LR
-    L["Local Codex logs"] --> R["Raw copies and manifest"]
+    L["ローカルCodexログ"] --> R["Rawコピーとmanifest"]
     R --> E["Canonical Events"]
     E --> T["Session Note"]
-    M["Observed Project membership"] --> C["Conversation catalog"]
+    M["観測したProject所属"] --> C["会話catalog"]
     T --> C
-    C --> U["Context classification CLI<br/>(separate repository)"]
-    T --> I["Insight CLI<br/>(separate repository)"]
-    R --> P["Versioned evidence"]
+    C --> U["Context分類CLI<br/>（別リポジトリ）"]
+    T --> I["洞察CLI<br/>（別リポジトリ）"]
+    R --> P["バージョン付き根拠"]
     E --> P
     T --> P
 ```
 
-### 1.5. Four storage areas
+### 1.5. データの保存先は4領域に分かれる
 
-| Area | Configuration key | Contents | Impact of losing it |
-| --- | --- | --- | --- |
-| Raw | `raw_root` | Copies of source logs and a manifest | Cannot be restored if the original logs have disappeared from the source |
-| data | `data_root` | Canonical Events, Session Notes, catalog, and provenance | Outputs and published evidence are lost |
-| state | `state_root` | Initialization information, per-conversation checkpoints, and run reports | Processing cannot resume; generation must be repeated |
-| cache | `cache_root` | Intermediate generation results | Can be recreated, but regeneration takes time and may incur costs |
+| 領域  | 設定キー       | 保存する内容                                        | 失ったときの影響                               |
+| ----- | -------------- | --------------------------------------------------- | ---------------------------------------------- |
+| Raw   | `raw_root`   | 元ログのコピーと manifest                           | 取得元から元ログが消えると復元できない         |
+| data  | `data_root`  | Canonical Events、Session Note、catalog、provenance | 成果物と公開する証跡を失う                     |
+| state | `state_root` | 初期化情報、会話ごとの checkpoint、実行レポート     | 再開できず、生成をやり直すことになる           |
+| cache | `cache_root` | 生成の途中結果                                      | 再作成できる。ただし再生成の時間と費用はかかる |
 
-You can set `raw_root`, `data_root`, and `state_root` separately for each source.
-`cache_root` is shared by all sources and cannot be configured per source.
+`raw_root`・`data_root`・`state_root` は取得元ごとに個別に指定できます。
+`cache_root` は全取得元で共通のフォルダで、取得元ごとには設定できません。
 
-## 2. Setup
+## 2. セットアップ
 
-### 2.1. Requirements
+### 2.1. 前提
 
-- Python 3.11 or later
-- uv
-- Readable local Codex JSONL logs (default location: `~/.codex`)
-- One inference provider for generation; Codex CLI is the default
+- Python 3.11 以上
+- uv と Git（公開された Bridge の固定コミットを依存として取得します）
+- 読み取り可能なローカルの Codex JSONL ログ（既定の場所は `~/.codex`）
+- 生成に使う推論プロバイダー1つ。既定は Codex CLI
 
-When using Codex, verify that `codex --version` and `codex login status` succeed in your terminal.
-The ChatGPT desktop app (formerly Codex App) alone does not replace the CLI.
+Codex を使う場合は、端末で `codex --version` と `codex login status` が通ることを確認します。
+デスクトップアプリの ChatGPT（旧名: Codex App） だけでは CLI の代わりになりません。
 
-### 2.2. Install and create the configuration file
+### 2.2. インストールと設定ファイルの作成
 
 ```console
 cd "C:\path\to\tkn_codex_chat_note_pipeline"
@@ -119,16 +117,31 @@ tkn-codex-chat-note --help
 tkn-codex-chat-note config init
 ```
 
-`config init` creates `~/.tkn/codex_chat_note_pipeline/config.yaml` and displays its path.
-An edited configuration file is protected; it is backed up and replaced only when you specify `--force`.
+`config init` は `~/.tkn/codex_chat_note_pipeline/config.yaml` を作成し、そのパスを表示します。
+編集済みの設定ファイルは保護され、`--force` を付けたときだけバックアップしてから置き換えられます。
 
-### 2.3. Edit the configuration file
+### 2.3. 設定ファイルを編集する
 
-Open `config.yaml` at the displayed path and specify the source and the model to use for generation.
-The following is a minimal configuration.
+接続先・モデル・認証は [tkn_genai_bridge](https://github.com/tuckn/tkn_genai_bridge) の `~/.tkn/genai_bridge/config.yaml` で管理します。
+共通設定がなければ、次の内容をこのパスへ保存し、`<model-name>` を利用するモデル名へ置き換えます。
+既存の共通設定がある場合は、使用するプロファイルを選ぶか追加してください。
 
 ```yaml
-schema_version: "8.1.0"
+schema_version: "1.0.0"
+default_profile: codex-default
+profiles:
+  codex-default:
+    provider: codex
+    model: <model-name>
+    reasoning_effort: high
+    timeout_seconds: 1800
+```
+
+次に、このCLIの `config init` が表示した `config.yaml` を開き、取得元と共有プロファイルの参照を指定します。
+最小構成は次のとおりです。
+
+```yaml
+schema_version: "8.3.0"
 sources:
   my-windows-pc:
     enabled: true
@@ -139,42 +152,40 @@ generation:
   active_profile: codex
   profiles:
     codex:
-      provider: codex
-      model: <model-name>
-      reasoning_effort: high
+      bridge_profile: codex-default
 ```
 
-The key under `sources` (`my-windows-pc` in this example) is the `source_id`.
-When storage directories are omitted, data is stored under `~/.tkn/codex_chat_note_pipeline/<area>/codex/<source_id>`.
-See [5. Configuration](#configuration) for available settings and [config.example.yaml](src/tkn_codex_chat_note/resources/config.example.yaml) for the bundled example.
+`sources` のキー（この例では `my-windows-pc`）が `source_id` です。保存先フォルダを省略すると `~/.tkn/codex_chat_note_pipeline/<領域>/codex/<source_id>` に保存されます。
+指定できる項目は [5. 設定](#configuration)、同梱の記入例は [config.example.yaml](src/tkn_codex_chat_note/resources/config.example.yaml) を参照してください。
 
 ```console
 tkn-codex-chat-note config show
 ```
 
-`config show` displays the effective settings, the configuration layer each value came from, resolved storage paths, and the selected summary profile and its hash.
-It does not write any files.
+`config show` は、有効な設定値・設定層・保存先・要約プロファイルを表示します。
+`generationResolved` で共有設定から解決したモデルと実行条件も確認できます。
+ファイルへの書き込みは行いません。
 
-## 3. Running the CLI
+## 3. 実行する
 
-### 3.1. First run: clone
+### 3.1. 最初の1回：clone
 
 ```console
 tkn-codex-chat-note clone --dry-run
 tkn-codex-chat-note clone
 ```
 
-`--dry-run` reads local input and validates the execution conditions and plan.
-It performs no inference or network access and creates no directories, locks, cache, or reports.
+`--dry-run` は、ローカル入力を読んで実行条件と予定を検証します。
+推論もネットワークアクセスも行わず、ディレクトリ・ロック・cache・レポートも作りません。
 
-`clone` initializes storage that has not yet been created, preserves and normalizes all available history, and generates the target Session Notes.
-Depending on the amount of history, **this can consume a substantial amount of inference time and tokens**.
+`clone` は、未作成の管理領域を初期化し、取得できる全履歴を保存・正規化して、対象の Session Note を生成します。
+履歴量によっては、**非常に多くの推論時間とトークンを消費します**。
 
-When execution ends, a result summary and the run report's location are printed to standard error.
-Open that report first to check the results.
-Add `--full-output` if you need detailed JSON.
+実行が終わると、結果の集計と実行レポートの保存先が標準エラーに表示されます。
+まずそのレポートを開いて結果を確認します。
+詳細な JSON が必要な場合は `--full-output` を付けます。
 
-### 3.2. Daily updates: pull
+### 3.2. 日常の更新：pull
 
 ```console
 tkn-codex-chat-note pull
@@ -182,127 +193,126 @@ tkn-codex-chat-note status
 tkn-codex-chat-note provenance validate
 ```
 
-`pull` ingests new and changed logs, updates the affected notes, and resumes unfinished generation.
-It does not call the model again for successfully generated notes whose input conditions have not changed.
-Use an option such as `--limit 20` to limit how many notes the CLI attempts to generate in one run.
-`status` displays records from the previous run (scope, status, and report path); it does not rescan the current input.
-`provenance validate` checks the hashes, IDs, and provenance relationships in stored data without modifying it.
+`pull` は、追加・変更されたログを取り込み、対象ノートを更新し、未完了の生成を再開します。
+成功済みで入力条件が変わらないノートについては、モデルを再呼び出ししません。
+`--limit 20` のように、1回の実行で生成を試みるノート数を制限できます。
+`status` は前回実行時の記録（対象範囲・状態・レポートのパス）を表示し、現在の入力は再走査しません。
+`provenance validate` は、保存済みデータの hash・ID・来歴の関係を読み取り専用で検証します。
 
-A conversation is considered active until `idle_minutes` (30 minutes by default) have elapsed since its last event, and summarization is deferred until a later run.
-Its Raw data is saved first, even when summarization is deferred.
+最後のイベントから `idle_minutes`（既定30分）が経過していない会話は「活動中」とみなし、要約を次回へ延期します。
+延期する場合でも、その会話の Raw は先に保存します。
 
-Completion is determined solely by Session Notes; it does not wait for downstream CLIs to generate Scope, Decision, or Working Context outputs.
+完了判定は Session Note だけで行い、下流CLIが担当する Scope・Decision・Working Context の生成は待ちません。
 
-### 3.3. Interrupting and resuming
+### 3.3. 中断と再開
 
-You can interrupt `clone` and `pull` with `Ctrl+C`.
+`clone` と `pull` は `Ctrl+C` で中断できます。
 
-- Saved Raw data and completed notes remain intact.
-- Validated chunk summaries and merged results are saved to the cache as processing progresses. Rerunning with the same generation conditions reuses saved results and restarts the part that was being generated at interruption.
-- Cached results are not reused if generation conditions change or `--force` is specified. Corrupted intermediate results and parts whose cache has been deleted are regenerated.
+- 保存済みの Raw と、生成が完了したノートは残ります。
+- 検証済みの分割要約と統合結果は cache へ途中保存されます。同じ生成条件で再実行すると保存済みの部分を再利用し、中断時に生成中だった部分からやり直します。
+- 生成条件が変わった場合と `--force` を付けた場合は再利用しません。破損した途中結果と、cache を削除した部分は再生成になります。
 
-An interruption displays `KeyboardInterrupt`, and the run report may not be marked complete.
+中断時は `KeyboardInterrupt` が表示され、実行レポートが完了状態にならないことがあります。
 
-### 3.4. Weekly runs with Windows Task Scheduler
+### 3.4. Windows タスクスケジューラで週次実行する
 
-After the initial `clone`, schedule a weekly `pull` under the same Windows user account you normally use to log in to the CLI.
+初回の `clone` を済ませたあと、普段 CLI にログインしているのと同じ Windows ユーザーで週1回の `pull` を登録します。
 
-| Setting | Value |
-| --- | --- |
-| Program/script | Absolute path to the installed `tkn-codex-chat-note.exe` |
-| Arguments | `--config "C:\path\to\config.yaml" pull` |
-| Start in | Choose a working directory that produces the same effective configuration as a normal run; a `.tkn/config.yaml` in that directory participates in configuration layering |
+| 設定項目     | 値                                                                                          |
+| ------------ | ------------------------------------------------------------------------------------------- |
+| プログラム   | インストール済み`tkn-codex-chat-note.exe` の絶対パス                                      |
+| 引数         | `--config "C:\path\to\config.yaml" pull`                                                  |
+| 開始フォルダ | そこに`.tkn/config.yaml` があると設定階層に加わるため、通常実行と同じ設定になる場所にする |
 
-Place configuration options before `pull`.
-If a WSL source is enabled, that user must be able to read the configured UNC path.
+設定オプションは `pull` より前に置きます。
+WSL の取得元を有効にしている場合は、そのユーザーから設定した UNC パスを読める必要があります。
 
-`runtime_minutes` (230 minutes by default) sets the deadline for starting new generation work.
-Generation already running at that deadline has a grace period of up to 9 minutes.
-Raw ingestion and normalization are not interrupted by this deadline.
-Allow additional time in Task Scheduler's stop settings.
+`runtime_minutes`（既定230分）は、新しい生成を開始してよい期限です。
+期限到達時に実行中だった生成には最大9分の猶予があります。
+Raw の取得と正規化はこの期限では中断されません。
+タスクスケジューラ側の停止時間は、これらより余裕を持たせてください。
 
-Interpret exit codes as follows.
+終了コードの読み方は次のとおりです。
 
-| Exit code | Meaning | Action |
-| --- | --- | --- |
-| `0` | Success. Successful `--dry-run` plan validation also returns `0`. | None |
-| `1` | Failure | Check the failure reason in the run report |
-| `2` | Incomplete, for example because of `--limit`, active-conversation deferral, a runtime limit, or a budget stop | Resume with the next `pull` |
+| 終了コード | 意味                                                                     | 対応                             |
+| ---------- | ------------------------------------------------------------------------ | -------------------------------- |
+| `0`      | 成功。`--dry-run` の計画検証が通った場合も `0`                       | なし                             |
+| `1`      | 失敗                                                                     | 実行レポートの失敗理由を確認する |
+| `2`      | 未完了。`--limit` 指定、活動中の会話の延期、実行時間上限、予算停止など | 次の`pull` で再開する          |
 
-## 4. Commands
+## 4. コマンド一覧
 
-Place common options such as `--config`, `--profile`, and `--source` **before the command**.
+`--config`・`--profile`・`--source` などの共通オプションは、**コマンドの前**に置きます。
 
-| Command | Behavior |
-| --- | --- |
-| `config init` | Creates the bundled configuration. Protects edited settings; with `--force`, backs them up before replacement. |
-| `config show` | Displays effective settings, their sources across the five configuration layers, and the summary profile hash. |
-| `clone` | Initializes storage, captures all Raw data, and generates Session Notes. Can be rerun to resume. |
-| `pull` | Applies changes to initialized storage and generates only the Session Notes still needed. |
-| `raw ingest` | Ingests Raw data only; does not generate Session Notes. |
-| `session-notes build` | Updates Session Notes. Use `--thread-id` to select a specific conversation. |
-| `session-notes validate <artifact>` | Validates an existing note without modifying it. |
-| `status` | Displays the previous run's scope, status, and report path. |
-| `build-report [--dry-run] [--no-open]` | Build HTML/JSON/CSV from saved usage; open HTML by default. |
-| `provenance validate` | Validates hashes, IDs, and provenance relationships without modifying data. |
-| `storage migrate` | Copies data from the source specified by `--from-config` to new storage directories. |
+| コマンド                                 | 動作                                                                               |
+| ---------------------------------------- | ---------------------------------------------------------------------------------- |
+| `config init`                          | 同梱設定を作成する。編集済み設定は保護し、`--force` 時はバックアップ後に置換する |
+| `config show`                          | 有効な設定、5段階の設定元、要約プロファイルの hash を表示する                      |
+| `clone`                                | 初期化とRawの全保存・ Session Note 生成を行う。再実行で再開できる                 |
+| `pull`                                 | 初期化済みの保存先へ差分を反映し、不足している Session Note のみ生成する          |
+| `raw ingest`                           | Raw 取り込みのみ。Session Note は生成しない                                        |
+| `session-notes build`                  | Session Note を更新する。`--thread-id` で得意の会話を1件選べる                  |
+| `session-notes validate <artifact>`    | 既存ノートを読み取り専用で検証する                                                 |
+| `status`                               | 前回の対象範囲・状態・レポートのパスを表示する                                     |
+| `build-report [--dry-run] [--no-open]` | 保存済み使用量からHTML・JSON・CSVを生成します。通常はHTMLを開きます。              |
+| `provenance validate`                  | hash・ID・来歴の関係を読み取り専用で検証する                                       |
+| `storage migrate`                      | `--from-config` で指定した取得元を新しい保存先へコピーする                       |
 
-The following options are available for commands that perform generation.
+生成を伴うコマンドでは、次のオプションを使えます。
 
-| Option | Behavior |
-| --- | --- |
-| `--dry-run` | Validates execution conditions and the plan without inference or file writes. |
-| `--force` | Re-evaluates even unchanged input. Does not remove protection from reviewed files. |
-| `--allow-edited` | Explicitly permits replacement of manually edited, unreviewed notes. |
-| `--limit N` | Limits the number of notes for which generation is attempted in one run. It is not an API call or cost limit. |
-| `--full-output` | Prints a detailed JSON report to standard output. By default, only the summary and report paths are displayed. |
+| オプション         | 動作                                                                       |
+| ------------------ | -------------------------------------------------------------------------- |
+| `--dry-run`      | 推論もファイル書き込みもせず、実行条件と予定を検証する                     |
+| `--force`        | 入力が同じでも再評価する。レビュー済みファイルの保護は解除しない           |
+| `--allow-edited` | 手編集された未レビューのノートの置換を明示的に許可する                     |
+| `--limit N`      | 1回の実行で生成を試みるノート数の上限。API呼び出し回数や金額の上限ではない |
+| `--full-output`  | 詳細な JSON レポートを標準出力に表示する（既定は集計とレポート保存先のみ） |
 
-`raw ingest` supports `--dry-run` and `--full-output`.
+`raw ingest` は `--dry-run` と `--full-output` に対応します。
 
-Generation and Raw ingestion commands print progress, result summaries, and run report paths to standard error.
-Detailed JSON is printed to standard output only with `--full-output` (read-only commands such as `config show` continue to print JSON to standard output).
-`-q` suppresses progress, and `-v` adds diagnostics.
-Even when `session-notes build` targets one note, the run report includes processing status for all notes.
+生成・Raw取得コマンドは、進捗と結果の集計、実行レポートの保存先を標準エラーへ表示します。
+詳細な JSON を標準出力へ出すのは `--full-output` を付けたときだけです（`config show` などの参照コマンドは従来どおり JSON を標準出力へ出します）。
+`-q` は進捗を抑制し、`-v` は診断を追加します。
+1件だけを対象にした `session-notes build` でも、実行レポートにはノート全体の処理状況が含まれます。
 
-Before generation, each source reports `Session Notes up to date (no regeneration needed): 12/359`:
-12 notes are current under the selected generation settings, out of 359 candidate sessions (including deferred sessions).
-The count increases only after successful generation; failures, dry-run plans, and protected or deferred notes are not
-counted as newly current. Already-current and newly generated counts are shown separately. Generation messages such as
-`Starting thread (attempt 1 this run, limit 3)` count attempts in this source's run, not all candidate sessions.
-The limit shown is the allowance remaining for this source; `--limit` is shared across sources.
+生成前に、ソースごとに `Session Notes up to date (no regeneration needed): 12/359` と表示します。
+これは、保留分も含む対象セッション359件のうち、現在の生成設定で作成済み・再生成不要と確認できたものが12件あるという意味です。
+生成に成功するたびに件数が増えます。失敗、dry-runの計画、保護や保留により生成しなかったものは、新たな作成済み件数には加えません。
+開始時点の作成済み件数と今回の生成成功件数も別々に表示します。
+`Starting thread (attempt 1 this run, limit 3)` は、そのソースで今回生成を試みる1件目を表し、対象全体の通し番号ではありません。
+表示される上限はそのソースで使える残り件数です。`--limit` 自体はソース全体で共有します。
 
 <a id="configuration"></a>
 
-## 5. Configuration
+## 5. 設定
 
-### 5.1. Configuration precedence
+### 5.1. 設定の優先順位
 
-Later layers override earlier ones; higher numbers below take precedence.
+後のものが前のものを上書きします（以下の数字が大きい設定が優先）。
 
-1. Built-in defaults
-2. User configuration (`~/.tkn/codex_chat_note_pipeline/config.yaml`)
-3. `.tkn/config.yaml` in the current working directory
-4. The file explicitly specified with `--config`
-5. CLI options
+1. 組み込み既定値
+2. ユーザー設定（`~/.tkn/codex_chat_note_pipeline/config.yaml`）
+3. 現在のフォルダの `.tkn/config.yaml`
+4. `--config` で明示したファイル
+5. CLI オプション
 
-Each configuration file is validated separately before merging.
-Relative paths are resolved from the directory of the configuration file that declares the value.
-The configuration schema version is `8.1.0`.
-Keys use snake_case, and the version is written as a quoted SemVer string.
-Unknown keys and unsupported newer versions produce errors.
+各設定ファイルは、統合する前に個別に検証します。
+相対パスは、その値を宣言した設定ファイルの場所から解決します。
+設定スキーマは `8.1.0` です。キーは snake_case、バージョンは引用符付きの SemVer 文字列で書きます。
+未知のキーや、未対応の新しいバージョンはエラーになります。
 
 ```console
 tkn-codex-chat-note --config "C:\path\to\config.yaml" clone
 tkn-codex-chat-note --idle-minutes 0 --runtime-minutes 60 pull --limit 20
 ```
 
-Across configuration layers, `sources` and `generation.profiles` are merged by map key, overriding only the specified fields of matching keys.
-Explicitly defining a map in a layer replaces its built-in default entries, so adding your own `source_id` does not leave an extra default `windows` source enabled.
-Use `sources: {}` to clear the entire source map or `enabled: false` to disable an inherited source (duplicate YAML keys are rejected).
+設定の階層間では、`sources` と `generation.profiles` をマップのキーごとに統合し、同じキーの指定フィールドだけを上書きします。
+ある層でマップを明示すると組み込みの既定エントリはそのマップに置き換わるため、独自の `source_id` を追加しても既定の `windows` が余分に有効になることはありません。
+`sources: {}` で取得元マップ全体を空にでき、`enabled: false` で継承した取得元を無効にできます（YAML キーの重複は拒否します）。
 
-### 5.2. Sources (sources)
+### 5.2. 取得元（sources）
 
-`sources` lists the local Codex folders to read.
+`sources` は、読み取り対象のローカル Codex フォルダの一覧です。
 
 ```yaml
 sources:
@@ -316,476 +326,510 @@ sources:
     include_archived: true
 ```
 
-| Key | Default | Meaning |
-| --- | --- | --- |
-| Map key | None | The `source_id`. Do not repeat `source_id` inside the value. |
-| `enabled` | `true` | Disabled sources are not scanned, and their input folders do not need to exist. |
-| `source_root` | `~/.codex` | Points to the parent `.codex` folder, not `sessions/`. Reads sessions, archives, and auxiliary app information. |
-| `include_archived` | `true` | Includes archived conversations. |
-| `raw_root` / `data_root` / `state_root` | Optional | Final storage directories. Defaults to `~/.tkn/codex_chat_note_pipeline/<area>/codex/<source_id>` when omitted. |
+| キー                                          | 既定値       | 意味                                                                                     |
+| --------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------- |
+| （マップのキー）                              | なし         | `source_id`。値の中に `source_id` を重ねて書かない                                   |
+| `enabled`                                   | `true`     | 無効な取得元は走査せず、その入力フォルダは存在しなくてよい                               |
+| `source_root`                               | `~/.codex` | `sessions/` ではなく親の `.codex` を指す。sessions・archives・アプリの補助情報を読む |
+| `include_archived`                          | `true`     | アーカイブ済みの会話も対象にする                                                         |
+| `raw_root` / `data_root` / `state_root` | 省略可       | 最終保存先。省略時は`~/.tkn/codex_chat_note_pipeline/<領域>/codex/<source_id>`         |
 
-A `source_id` identifies an input folder that you continue to ingest over time.
-**Lowercase ASCII kebab-case is recommended**, for example `laptop-windows` or `laptop-wsl-ubuntu`.
-It is used as a configuration key, folder name, and provenance identifier, rather than a Python variable name.
+`source_id` は、継続して取得する入力フォルダを識別する名前です。
+`laptop-windows`、`laptop-wsl-ubuntu` のような、**半角英小文字の kebab-case を推奨**します。
+Python の変数名ではなく、設定キー・フォルダ名・来歴の識別子として使われます。
 
-- Allowed characters are ASCII letters (including uppercase), digits, `.`, `_`, and `-`; the first character must be alphanumeric.
-- Spaces, Japanese or full-width characters, leading or trailing whitespace, and trailing dots are not allowed.
-- Windows reserved names such as `CON`, `nul.txt`, and `COM1` are not allowed.
-- IDs that differ only in letter case are rejected as duplicates. No automatic normalization is performed.
-- Quote YAML keys that consist only of digits.
+- 使える文字は半角英字（大文字も可）・数字・`.`・`_`・`-` で、先頭は英数字にします。
+- 空白、日本語・全角文字、前後の空白、末尾のドットは使えません。
+- `CON`・`nul.txt`・`COM1` など Windows の予約名は使えません。
+- 大文字・小文字だけが異なる ID も重複として拒否します。自動変換はしません。
+- 数字だけの YAML キーは引用符で囲みます。
 
-Published data is identified by `(codex, source_id)`.
-Keep this identity fixed once ingestion begins to maintain compatibility with downstream tools.
-Changing the key does not rename or migrate existing data.
-Paths for `source_root` and storage directories can contain spaces and Japanese characters.
-Do not register the same input folder under multiple IDs.
+公開データの識別単位は `(codex, source_id)` です。
+下流ツールとの互換性のため、取り込みを開始したあとは変更しないでください。
+キーを変更しても、既存データの改名や移行は行われません。
+`source_root` や保存先フォルダのパスには、空白や日本語を使えます。
+同じ入力フォルダを複数の ID で登録しないでください。
 
-Use separate IDs for Windows and WSL input folders.
-From Windows, you can use the UNC path shown above when the distribution is accessible.
-When running this CLI inside WSL, configure Linux paths and the generation executable available there (`~` follows the OS running the CLI).
-The WSL example illustrates configuration only; actual WSL operation has not been verified.
-Per-account filtering is not implemented.
+Windows と WSL の入力フォルダには別の ID を付けます。
+Windows 側からは、ディストリビューションへアクセスできる状態で上記の UNC パスを利用できます。
+WSL 内でこの CLI を実行する場合は、Linux 側のパスと生成用の実行ファイルを設定します（`~` は CLI を実行している OS に従います）。
+WSL の例は設定方法を示したもので、実動作確認は未実施です。アカウント別のフィルタは実装していません。
 
-#### 5.2.1. Using multiple sources
+#### 5.2.1. 複数の取得元を使うとき
 
-Enabled sources are processed in their order in the map.
+有効な取得元を、マップに書かれた順に処理します。
 
-- `--limit` (generation attempts across the run) and `runtime_minutes` (the generation deadline) are shared across all sources.
-- Catalogs, provenance, checkpoints, and run reports are kept per source, and all storage areas are validated before writing.
-- A failure in one source contributes to the overall failure result, but other sources can continue.
+- `--limit`（実行全体の生成試行数）と `runtime_minutes`（生成期限）は、全取得元で共有します。
+- catalog・provenance・checkpoint・実行レポートは取得元ごとに保持し、書き込み前に全保存領域を検証します。
+- ある取得元の失敗は全体の失敗結果に含めますが、他の取得元は続行できます。
 
 ```console
 tkn-codex-chat-note --source my-windows-pc pull
 tkn-codex-chat-note --source my-windows-pc session-notes build --thread-id <thread-id>
 ```
 
-Place `--source` before the command to select one source for processing, `status`, `provenance validate`, or `storage migrate`.
-When omitted, processing, `status`, and `provenance validate` target all enabled sources.
-If multiple sources are enabled, select one with `--source` when using `--thread-id` or `storage migrate`.
-Specifying an unknown ID or a disabled source produces an error.
-`config show` always displays configuration and resolved storage paths for all sources.
+`--source` はコマンドの前に置き、処理・`status`・`provenance validate`・`storage migrate` の対象を1つ選びます。
+省略した場合、処理・`status`・`provenance validate` は有効な全取得元が対象です。
+複数が有効な場合、`--thread-id` と `storage migrate` では `--source` で1つ選んでください。
+不明な ID や無効な取得元を指定するとエラーになります。
+`config show` は常に全取得元の設定と解決済み保存先を表示します。
 
-If no sources are enabled, execution stops before writing (`config show` remains available).
+有効な取得元が1つもない場合は、書き込み前に実行を止めます（`config show` は使用できます）。
 
-### 5.3. Session Note language
+### 5.3. Session Note の言語
 
-Use `generation.session_note_profile` to select `default-jp` (Japanese, the default) or `default-en` (English).
+`generation.session_note_profile` で `default-jp`（日本語・既定）か `default-en`（英語）を選びます。
 
 ```yaml
 generation:
   session_note_profile: default-jp
 ```
 
-For a single run, use an override such as `tkn-codex-chat-note --session-note-profile default-en pull`.
+1回だけ切り替える場合は `tkn-codex-chat-note --session-note-profile default-en pull` のように指定します。
 
-Both profiles share the same schema, headings, timeline, citations, and state evaluation.
-Only the body language and explanatory text change; timestamps remain in `Asia/Tokyo`.
-Bundled resources are located in `profiles/default-jp/` and `profiles/default-en/`; custom profile names, folders, and prompts are not supported.
+両プロファイルで、スキーマ・見出し・時系列・引用・状態判定は共通です。
+切り替わるのは本文の言語と説明文だけで、時刻は `Asia/Tokyo` のままです。
+組み込みリソースは `profiles/default-jp/` と `profiles/default-en/` にあり、カスタムのプロファイル名・フォルダ・prompt の指定には対応していません。
 
-Changing the language makes existing notes eligible for regeneration on the next `build` / `pull`.
-Notes in different languages do not coexist: each conversation retains one note and one ID.
+言語を変えると次の `build` / `pull` で既存ノートが再生成の対象になり、言語別のノートが併存することはありません（1会話につきノート1枚・ID 1つを維持します）。
 
 <a id="inference-configuration"></a>
 
-### 5.4. Inference providers (generation.profiles)
+### 5.4. 生成プロファイルと共有設定
 
-Keys under `generation.profiles` are arbitrary configuration names.
-Each configuration explicitly specifies its execution method with `provider`.
-The method is never inferred from the name, executable, or URL.
-
-| `provider` | Connection setting | Execution method |
-| --- | --- | --- |
-| `codex` | `executable: codex` | An independent `codex exec` invocation |
-| `claude-code` | `executable: claude` | Non-interactive Claude Code |
-| `github-copilot` | `executable: copilot` | Non-interactive Copilot CLI |
-| `ollama` | `endpoint: http://127.0.0.1:11434` | Local chat endpoint; loopback only |
-| `azure-openai` | `endpoint: https://<resource>.openai.azure.com/openai/v1/` | v1 Chat Completions |
-
-`executable` is the CLI executable name or path, and `endpoint` is the HTTP connection URL.
-Place Azure's `authentication`, `pricing`, and `limits` at the same level as `model`.
-
-Here is an example using a local model.
+このCLIの `generation.profiles` には、利用目的ごとの名前と `bridge_profile` を設定します。
+`bridge_profile` は共通設定の `profiles` にある名前です。
+モデル・接続先・認証・外部CLI実行・JSON構造検証・単価と料金計算をBridgeへ委譲し、プロンプト、出典検証、分割・統合、保存、コマンド全体の予算はこのCLIで管理します。
 
 ```yaml
 generation:
   active_profile: local-gemma
   profiles:
     local-gemma:
-      provider: ollama
-      model: <installed-local-model>
-      reasoning_effort: high
-      endpoint: http://127.0.0.1:11434
+      bridge_profile: local-notes
 ```
 
-You can define multiple configurations for the same provider, such as `azure-high` and `azure-low`.
+この参照先を、`~/.tkn/genai_bridge/config.yaml` の `profiles` に追加します。
+次は共有設定の一部分です。
+
+```yaml
+profiles:
+  local-notes:
+    provider: ollama
+    model: <installed-local-model>
+    local_only: true
+    max_output_tokens: 8192
+    ollama:
+      base_url: http://127.0.0.1:11434
+      think: false
+      context_tokens: 32768
+```
+
+`ollama.think` はモデルに合わせて明示します。
+`local_only: true` はループバック接続に加えてローカルモデルであることをBridgeで確認し、失敗時にクラウドへ切り替えません。
+CLI方式は `provider: codex` / `claude-code` / `github-copilot` / `antigravity`、API方式は `ollama` / `azure-openai` です。
+Antigravity は Bridge の `antigravity-default` などを `bridge_profile` で参照し、`--profile` で選択します。
+実行ファイル（既定 `agy`）・モデル・推論設定は共有プロファイルで指定します。
+CLI実行ファイルの指定はBridgeの `cli.executable` に置き、Windowsではネイティブ実行ファイルを指定します（`.cmd` / `.bat` / `.ps1` は非対応）。
 
 ```console
-tkn-codex-chat-note --profile azure-high pull --dry-run
+tkn-codex-chat-note --profile local-gemma pull --dry-run
 ```
 
-- `--profile` changes only `generation.active_profile`. It does not change the source.
-- `--model` and `--reasoning-effort` override the selected profile for that run only.
-- `--profile` (generation profile) and `--session-note-profile` (note body language) are separate settings.
-- Even when a profile name matches a provider name, the execution method is not inferred from the name.
-- Run reports and provenance record `generationProfile` separately from provider and model.
+- `--profile` はこのCLIの `generation.active_profile` を切り替えます。取得元は変わりません。
+- `bridge_profile` は共有設定の参照名です。共有側の `default_profile` を変えても、この参照名は変わりません。このCLIの既定参照先は `codex-default` です。
+- `--model`・`--reasoning-effort` は選択した共有プロファイルへの、その実行だけの上書きです。共有ファイルは変更しません。
+- `--session-note-profile` は本文の言語設定で、接続先の選択とは別です。
+- 必要な上書きはアプリ側プロファイルの `overrides` にも指定できます。設定項目と検証はBridgeの `Profile` に従います。
+- Bridgeのライブラリは共有設定を読みます。このCLIの作業フォルダにある `.tkn/config.yaml` をBridgeの設定として読みません。
+- 共通設定でモデル・推論設定を省略するとBridge/providerの既定値を使い、このCLIでは `provider-default` と表示します。再現性が必要なら明示してください。
 
-For CLI-based providers, the selected generation input is sent to the service configured in that CLI.
-Choose a destination appropriate for your conversation data (Ollama endpoints are restricted to loopback).
-Available models and authentication are managed by each service.
+`tkn-codex-chat-note config show` の `generationResolved` で、実際に使われるモデル・接続条件・単価を確認できます。
+会話データは選択したプロバイダーへ送信されます。
+送信先と認証方式の詳細は [Bridgeの設定仕様](https://github.com/tuckn/tkn_genai_bridge/blob/main/docs/reference/configuration.md) を確認してください。
+旧来の `provider`・`model`・`endpoint` をこのCLIに直接書く設定も互換読み込みしますが、実行はBridgeを経由します。
 
-### 5.5. Input size and cost controls (Azure OpenAI / Ollama)
+### 5.5. 入力量と費用の制御（Azure OpenAI / Ollama）
 
-Azure OpenAI and Ollama configured with `limits` support estimates before submission, actual usage tracking during execution, and stopping at limits.
-Input size, including instructions and schemas, is checked before every chunk, merge, and repair request; chunks are adjusted automatically until they fit.
-If a repair would exceed the input limit, the oversized request is not submitted. Instead, the tool regenerates from the complete original chunk or merge input without the invalid draft. It includes validation feedback when it fits, shortening or omitting only that feedback if necessary. The result must pass the same validation, within the existing maximum of three generation attempts per stage and the command's call/cost limits. Validated checkpoints remain reusable.
-An original merge input that exceeds the limit still stops that thread while retaining saved chunks; adjust the limits or merge method before resuming.
+Azure OpenAI と、共有プロファイルまたは旧設定の `limits` を使う Ollama では、送信前の見積もり・実行中の実測・上限到達時の停止を行います。
+分割・統合・修正のすべてで、指示文とスキーマを含む入力量を送信前に確認し、分割は枠に収まるまで自動調整します。
+修正入力が上限を超える場合、そのリクエストは送信せず、不正な下書きを除いた元の分割・統合入力から再生成します。元の入力はすべて保持し、検証理由は枠に収まれば追加します。必要な場合に短縮・省略するのは検証理由だけです。再生成後も同じ検証を行い、各段階で初回を含め最大3回、コマンド全体の回数・費用上限も維持します。検証済みキャッシュは引き続き再利用できます。
+統合の元入力自体が上限を超える場合は、そのSessionの処理を停止し、保存済みの分割を保持します。上限または統合方式を調整してから再開してください。
 
-The Japanese profile asks the model to write natural Japanese. English phrases such as `supplied events` or `actual execution` alone do not trigger warnings, repair calls, or generation failures. Output structure, source citations, timeline coverage, and state consistency are still validated. Actual validation failures are recorded in `generationMetrics.validationFailures`; `repairFallbacks` records regeneration caused by an oversized repair request.
-Warnings appear in yellow on supported terminals. Redirected output and terminals with `NO_COLOR` remain plain text.
+日本語プロファイルは、自然な日本語で書くようモデルに指示します。ただし、`supplied events` や `actual execution` などの英語表現が含まれることだけを理由に、WARNING・修正API呼び出し・生成失敗にはしません。出力構造、根拠の参照、時系列の網羅性、状態の整合性は引き続き検証します。実際の検証エラーは `generationMetrics.validationFailures` に記録し、修正入力の上限超過から再生成した場合は `repairFallbacks` に回数を残します。
+対応端末ではWARNINGを黄色で表示します。リダイレクト時や `NO_COLOR` 指定時は色を付けません。
 
-#### 5.5.1. Azure configuration
+#### 5.5.1. Azure の設定
+
+共通設定の `profiles` に接続先を追加します。
+`model` はAzureのデプロイ名です。
+
+```yaml
+profiles:
+  azure-notes:
+    provider: azure-openai
+    model: <deployment-name>
+    reasoning_effort: high
+    timeout_seconds: 1800
+    azure:
+      endpoint: https://<resource>.openai.azure.com/openai/v1
+      auth: interactive_browser
+      # 必要なら tenant_id を指定します。
+    # 金額の見積もりと上限が必要な場合のみ設定します。値は架空です。
+    pricing:
+      <deployment-name>:
+        currency: JPY
+        pricing_date: "2026-01-01"
+        input_per_million: 100.0
+        output_per_million: 500.0
+        cache_policy: no-cache
+```
+
+単価はBridgeの共有設定へ置き、このCLIでは参照名と用途ごとの予算を設定します。
+Bridge側の設定スキーマは `schema_version: "1.1.0"` を使います。
 
 ```yaml
 generation:
   active_profile: azure-high
   profiles:
     azure-high:
-      provider: azure-openai
-      model: <deployment-name>
-      reasoning_effort: high
-      endpoint: https://<resource>.openai.azure.com/openai/v1/
-      # Optional settings below
-      # authentication:
-      #   tenant_id: <tenant-guid>
-      # pricing:
-      #   <deployment-name>:
-      #     input_jpy_per_million: 100.0   # Placeholder rates; replace with verified rates
-      #     output_jpy_per_million: 500.0
-      #     pricing_date: YYYY-MM-DD
+      bridge_profile: azure-notes
+      limits:
+        max_calls: 30
+        max_cost_jpy: 100
 ```
 
-Set `model` to the **deployment name** to call.
-The actual model name and version are recorded from API responses, so you do not need to specify them in configuration.
-A note's `generatorModel` identifies the model that actually responded, while `generatorDeployment` identifies the requested deployment (provenance records them separately as well).
+共有プロファイルにデプロイ名が一致する `pricing` がなければ料金は不明とし、**JPY上限は適用しません**。
+入力・出力・回数の上限は適用します。
+このCLIのAPI予算はJPYです。一致する単価がUSDなど別通貨の場合は送信前にエラーとし、自動換算しません。
+単価は利用者が確認した値であり、請求情報を取得する機能ではありません。
+単価からの金額計算はBridgeが担当し、適用した単価・通貨・基準日を実績と一緒に記録します。
+単価だけの更新ではSession Noteを再生成しません。既存履歴の適用単価も書き換えません。
+デプロイ変更時に別デプロイの単価を流用しません。
+実モデルは応答から記録し、ノートの `generatorModel` と要求した `generatorDeployment` を区別します。
 
-Configure `pricing` only if you want monetary amounts displayed.
-If no matching rates are available, only token estimates and actual usage are shown; the cost is reported as unknown and **the JPY limit is not enforced** (input, output, and call limits still apply).
-Costs are estimates based on user-configured rates, not billing information retrieved automatically from Azure.
-Changing the deployment with `--model` or another setting does not reuse another deployment's rates.
+認証はBridgeが担当します。
+`interactive_browser` はブラウザ認証を行い、コマンド内の連続生成で認証オブジェクトを再利用します。
+認証状態の再利用はコマンド内のため、別コマンドでは再認証が必要になる場合があります。
+Bridgeの `api_key` / `default_credential` も選択できます。APIキーそのものはYAMLに書かず、環境変数名を指定します。
+`--dry-run` は認証・通信・ブラウザ起動を行いません。
 
-Azure CLI is not required for authentication.
-The SDK uses browser authentication and a persistent cache, first attempting to obtain a token with saved authentication and opening a browser only when interaction is required.
+#### 5.5.2. 上限（limits）
 
-- Account records are stored in `~/.tkn/codex_chat_note_pipeline/authentication/`, and tokens are stored in the SDK's encrypted cache (there is no fallback to plaintext storage).
-- Cache names are isolated by this app, endpoint, and tenant. Authentication belonging to other apps or Azure CLI is not copied or modified.
-- To select a different account, stop execution and delete only this app's corresponding account record.
-- `--dry-run` does not authenticate or open a browser. Authentication cancellation or timeout stops execution before inference is submitted (`pull` may already have ingested history).
+`limits` は省略できます。既定値は次のとおりで、すべての deployment の対応能力を表す値ではありません。
 
-#### 5.5.2. Limits (limits)
+| キー                 | 既定値  | 意味                                                      |
+| -------------------- | ------- | --------------------------------------------------------- |
+| `input_tokens`     | 60,000  | 1回の呼び出しの入力上限                                   |
+| `output_tokens`    | 16,000  | 1回の回答の出力上限（推論分を含む）                       |
+| `context_tokens`   | 100,000 | context の上限                                            |
+| `chunk_characters` | 120,000 | 分割の文字数                                              |
+| `max_calls`        | 30      | 1コマンドあたりの呼び出し回数上限                         |
+| `max_cost_jpy`     | 100     | 1コマンドあたりの確保額上限（単価設定がある場合のみ適用） |
 
-`limits` is optional.
-The defaults below do not describe the capabilities of every deployment.
+Ollama では `limits` と、固定した `model_digest` を設定できます。
+`context_tokens` と `output_tokens` は `num_ctx` と `num_predict` へ渡します。
+tokenizer に依存しない UTF-8 バイト数の上限を使うため、分割数が多くなる場合があります。
+共有プロファイルでは `limits` を省略しても既定の上限が適用されます。
+旧Ollama設定で `limits` を省略した場合だけ、従来の上限なしの互換動作を維持します。
+共有側の出力・コンテキスト・タイムアウトがより小さい場合、その上限を超えて拡大しません。
 
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `input_tokens` | 60,000 | Input limit per call |
-| `output_tokens` | 16,000 | Output limit per response, including reasoning |
-| `context_tokens` | 100,000 | Context limit |
-| `chunk_characters` | 120,000 | Chunk size in characters |
-| `max_calls` | 30 | Call limit per command |
-| `max_cost_jpy` | 100 | Reserved cost limit per command; applies only when rates are configured |
-
-For Ollama, you can configure `limits` and a pinned `model_digest`.
-`context_tokens` and `output_tokens` are passed as `num_ctx` and `num_predict`.
-A tokenizer-independent UTF-8 byte upper bound is used, which can produce more chunks.
-When `limits` is omitted, execution is unbounded.
-
-#### 5.5.3. Estimates before execution (dry-run)
+#### 5.5.3. 事前見積もり（dry-run）
 
 ```console
 tkn-codex-chat-note pull --dry-run --limit 1
 ```
 
-- Only notes requiring generation are estimated. Up-to-date, reviewed, edit-protected, and deferred notes are excluded, as are reusable validated chunk-cache results.
-- Because the final merge input size cannot be determined in advance, the estimate reserves one merge call.
-- No files are created, and no authentication or communication takes place. `--full-output` also displays `generationEstimate` for each conversation.
-- A dry run does not save a report. To retain its plan, save the standard output produced with `--full-output` to a file.
-- For command-based providers such as Codex, token counts and costs are unknown because the CLI's internally added context and schema are not visible. Azure also displays estimated total input tokens, the output token ceiling, and the estimated cost ceiling in JPY.
-- Azure token estimates use a validated local `o200k_base` cache with a margin. If unavailable, a UTF-8 byte upper bound is used and recorded as `utf8-byte-upper-bound`.
+- 生成が必要なノートだけを見積もります。最新・レビュー済み・編集保護対象・延期したノートは含めず、検証済みの分割 cache の再利用分も除外します。
+- 最終統合の入力量は事前に確定しないため、統合1回分を確保して計算します。
+- ファイル作成・認証・通信は行いません。`--full-output` で会話ごとの `generationEstimate` も表示します。
+- dry-run はレポートを保存しないため、計画を残す場合は `--full-output` の標準出力をファイルへ保存します。
+- Codex などのコマンド方式は、CLI 内部で追加される文脈・スキーマを把握できないため token 数と金額を不明とします。Azure では入力合計 token 見積もり・出力 token 上限・概算費用上限（JPY）まで表示します。
+- Azure の token 見積もりは、検証済みのローカル `o200k_base` cache と余裕分で行います。利用できない場合は UTF-8 バイト数の上限を使い、`utf8-byte-upper-bound` と記録します。
 
-#### 5.5.4. Reading progress output
+token数はこのCLIが推定し、その値と適用される出力上限をBridgeへ渡して参考料金を計算します。
+`cache_policy: observed` では通常入力・キャッシュ読込・書込の各条件を試算し、最大額を確保します。
+この見積もりは送信内容を完全に再現した計数ではなく、実際のtoken数や請求額の厳密な上限ではありません。
 
-During execution, standard error shows each call's input estimate and reserved cost, actual response token counts and estimated JPY cost, and per-conversation and overall summaries.
-Unknown usage or local execution costs are never displayed as 0.
-For a conversation split into 12 chunks, interpret the output as follows.
+#### 5.5.4. 実行中の表示の読み方
 
-| Display | Meaning |
-| --- | --- |
-| `13 base calls` | 12 chunk summaries + 1 merge |
-| `output ceiling 208,000 tokens` | 13 calls × a 16,000-token output limit |
-| `base cost ceiling JPY 53.64 (repairs/retries extra)` | A conservative ceiling estimate based on estimated input and maximum output for the base processing. Content repairs and communication retries are additional. |
-| `16 model calls, 3 semantic retries, ... estimated JPY 28.69` | 12 chunks + 1 merge + 3 content repairs = 16 submitted calls. Tokens come from API responses; JPY is calculated using configured rates. |
-| `command reserve` | Reserved cost for the entire command, including earlier notes and other sources |
-| `no request submitted` | This call was not submitted and incurred no charge; usage and costs from earlier submissions remain |
+実行中は標準エラーに、各呼び出しの入力見積もりと確保額、応答の実 token 数と概算 JPY 費用、会話・全体の集計を表示します。
+途中失敗などで利用量の一部だけ判明した場合、総量と費用は不明のまま、判明済みの小計を利用記録とレポートに保持します。
+未知の使用量やローカル実行の費用を 0 として表示することはありません。
+12分割の会話を例にすると、次のように読みます。
 
-Reserved cost accumulates the cost of estimated input plus maximum output; a short response does not release the reservation.
-As a result, processing can stop at the default JPY 100 reservation limit even when the estimate based on actual usage is below JPY 100.
-None of these JPY amounts is a confirmed Azure bill.
+| 表示                                                            | 読み方                                                                                      |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `13 base calls`                                               | 分割要約12回＋統合1回                                                                       |
+| `output ceiling 208,000 tokens`                               | 13回 × 出力上限16,000 token                                                                |
+| `base cost ceiling JPY 53.64 (repairs/retries extra)`         | 基本処理の推定入力と最大出力で計算した上限寄りの概算。検証失敗による修正・再生成分は含まない |
+| `16 model calls, 3 semantic retries, ... estimated JPY 28.69` | 分割12回＋統合1回＋内容修正3回＝16回の送信分。token はAPI応答の実績、円額は設定単価での計算 |
+| `command reserve`                                             | 以前のノートや他の取得元も含めた、このコマンド全体の確保額                                  |
+| `no request submitted`                                        | その呼び出しは未送信で課金なし（それ以前に送信した分の使用量・費用は残る）                  |
 
-Run reports are saved under `<state_root>/reports/` with run IDs.
-They retain estimates before generation (`generationEstimate`), per-call actual usage, reserved cost, and responding models (`generationMetrics.apiRequests[]`, including failed attempts), and per-conversation and overall totals (`usageTotals`).
-If any call's usage is unavailable, the total is `null`, with a separate subtotal for known usage.
-For analysis that includes runs resumed after failure, aggregate the reports for each run (also adding `last-run.json` or copies of standard output would double-count usage).
+確保額は「推定入力＋最大出力」の費用を積み上げた値で、回答が短くても戻りません。
+そのため、実績ベースの概算が100円未満でも、既定の確保額上限100円で停止することがあります。
+円額はいずれも Azure の確定請求額ではありません。
 
-#### 5.5.5. Budget stops and resuming
+実行レポートは `<state_root>/reports/` に run ID 付きで保存され、生成前の見積もり（`generationEstimate`）、呼び出しごとの実使用量・確保額・応答モデル（`generationMetrics.apiRequests[]`、失敗した試行を含む）、会話別と全体の合計（`usageTotals`）を残します。
+使用量を取得できない呼び出しがある場合、合計は `null` とし、既知分の小計を別に残します。
+失敗後の再開も含めて分析する場合は各 run のレポートを合算してください（`last-run.json` や標準出力の複製も足すと二重計上になります）。
 
-At the first rejection caused by a cost or call limit, further generation stops and unfinished work is marked `deferred`.
+#### 5.5.5. 予算上限に達したときの動作と再開
 
-- One warning is displayed, and no further estimation or generation is performed. The stop applies across all selected sources.
-- Up-to-date notes and review protection are preserved as usual; source ingestion and final report saving may continue.
-- The report's `generationStop` records the reason, reserved cost, call count, and limits. The deferral reason is `api-cost-budget` or `api-call-budget`; if there are no other failures, the exit code is `2`.
-- The budget applies to one command. A separate command or process receives a new allowance. Azure cost notifications do not stop charges.
+費用・回数の上限で最初の拒否が起きた時点で、以後の生成を停止し、未完了分を `deferred`（保留）にします。
 
-To resume, keep the same profile and settings and run without `--force`.
+- 警告は1回だけ表示し、後続の見積もり・生成は行いません。停止は選択した全取得元で共有します。
+- 既に最新のノートやレビュー保護は通常どおり維持され、取得元の取り込みと最終レポートの保存は続く場合があります。
+- レポートの `generationStop` に理由・確保額・回数・上限を記録します。保留理由は `api-cost-budget` または `api-call-budget`、他に失敗がなければ終了コードは `2` です。
+- 予算は1つのコマンドに適用され、別コマンド・別プロセスでは新しい枠になります。Azure 側の費用通知は課金を停止しません。
+
+再開は、同じプロファイル・同じ設定のまま、`--force` を付けずに実行します。
 
 ```console
 tkn-codex-chat-note --profile azure-high pull --limit 1
 ```
 
-Completed, unchanged notes are skipped, and validated chunks are reused.
-Each new command receives a new budget allowance, so even a large conversation with 36 chunks plus a merge can progress across multiple commands under a 30-call limit (additional submissions incur additional costs).
+完了済みで変更のないノートはスキップし、検証済みの分割は再利用します。
+新しいコマンドには新しい予算枠が適用されるため、36分割＋統合のような大きな会話も、30回の呼び出し上限の中で複数コマンドに分けて進められます（追加送信には追加費用が発生します）。
 
-Reconsider `limits.max_cost_jpy` and `limits.max_calls` only if even one required call cannot fit within a fresh allowance (raising only the cost limit does not remove the call limit).
-Limits are part of the generation conditions, so changing them can make existing intermediate results ineligible for reuse and completed, unreviewed notes eligible for regeneration.
-The application never increases configured limits automatically.
+必要な1回の呼び出しすら新しい枠に収まらない場合だけ、`limits.max_cost_jpy`・`limits.max_calls` を見直します（費用上限だけ増やしても回数上限は残ります）。
+ただし上限値も生成条件の一部のため、変更すると既存の途中結果が再利用対象から外れ、完了済みの未レビューノートも再生成対象になり得ます。
+アプリケーションが設定上限を自動で増額することはありません。
 
-#### 5.5.6. Submitted content and retries
+#### 5.5.6. 送信内容と再試行
 
-- To reduce input size, identical duplicate content is replaced with references to its original events, and source IDs are converted to short, reversible aliases before submission. Raw, Canonical Events, and all event IDs are preserved; responses are restored to the original IDs before validation.
-- Refusals, truncated responses, and 401/403 errors fail without retries. A 429 or transient error allows up to 3 attempts, respecting `Retry-After` (if the requested wait exceeds 60 seconds, processing stops and advises resuming after that interval).
-- Intermediate results retain the responding model's identifier. If a later response differs, processing stops without mixing results (regenerate with `--force`).
+- 入力量を減らすため、本文が一致する重複部分は元イベントへの参照に置き換え、出典IDは短い可逆な別名に変換して送信します。Raw・Canonical Events・全イベントIDは保持し、返答を元のIDへ戻してから検証します。
+- APIの拒否・打ち切り・認証・HTTP・通信エラーは停止します。HTTP状態コードと `Retry-After` の秒数は利用記録へ保存しますが、自動再試行は行いません。失敗内容を確認してから再実行してください。
+- APIのJSON・スキーマ検証失敗は、初回を含め最大3回、予算内で生成します。Bridgeは不正な下書きを返さないため、この場合は元の入力から生成し直します。出典・内容の検証失敗は、このCLIの修正・再生成処理が扱います。
+- 途中結果には応答モデルの識別子を保存し、後の応答と異なる場合は結果を混ぜずに停止します（`--force` で再生成）。
 
-### 5.6. How configuration changes affect regeneration
+### 5.6. 設定変更と再生成の関係
 
-| Changed setting | Effect |
-| --- | --- |
-| `session_note_profile` (language) | Existing notes become eligible for regeneration. Intermediate results from a different profile are not reused. |
-| `provider` / `model` / `reasoning_effort` | Generation conditions change, making notes eligible for regeneration. |
-| `endpoint` / `deployment` / `limits` / `model_digest` | Generation conditions change; previous intermediate results are not reused. |
-| Profile name only | Does not invalidate intermediate results. |
-| Switching `active_profile` | Does not change storage locations. |
-| `raw_root` / `data_root` / `state_root` | Only storage locations change; no regeneration occurs (use `storage migrate` for migration). |
+| 変更した設定                                              | 影響                                                                     |
+| --------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `session_note_profile`（言語）                          | 既存ノートが再生成対象になる。異なるプロファイルの途中結果は再利用しない |
+| `provider` / `model` / `reasoning_effort`           | 生成条件が変わり、再生成対象になる                                       |
+| 共有設定の接続先・生成条件 /`limits` / `model_digest` | 生成条件が変わり、以前の途中結果を再利用しない                           |
+| プロファイル名だけの変更                                  | 途中結果は無効化しない                                                   |
+| 単価だけの変更                                            | ノートは再生成せず、既存の使用量履歴・適用単価も書き換えない             |
+| Bridgeのバージョン更新                                    | 生成条件が変わり、未レビューのノートと途中結果が再生成対象になる         |
+| `active_profile` の切り替え                             | 保存先は変わらない                                                       |
+| `raw_root` / `data_root` / `state_root`             | 保存先が変わるだけで、再生成はしない（移行は`storage migrate`）        |
 
-Protection for reviewed and manually edited notes remains in effect in all cases.
+いずれの場合も、レビュー済み・手編集ノートの保護は維持されます。
 
-### 5.7. Token usage history and HTML reports
+### 5.7. 使用トークンの記録とHTMLレポート
 
-Starting with 0.24.0, Codex inference records actual token usage for clone, pull, and
-session-notes build. This measures this pipeline's generation, not the usage of the original chats.
+このCLIの clone / pull / session-notes build が行った生成の利用量を、Bridgeの実行記録から保存します。
+要約対象の元チャットの使用量とは別です。
 
-- Codex reads turn.completed.usage from codex exec --json: input, output, cached input, reasoning, and cache-write counts when supplied.
-- Azure OpenAI and Ollama configured with limits also write the common usage history.
-- Claude Code, GitHub Copilot, and Ollama without limits currently record attempt time/status with unknown token counts.
-- Failed attempts and retries are included. Missing values remain null, never zero or a preflight estimate.
-- Codex records invocation-wide turn totals; API records are per request. Attempt counts are not the same granularity across transports.
-- Cached input is part of total input; reasoning is part of total output. Do not add either subset again.
+- 5種類のプロバイダーについて、Bridgeが返した入力・出力・キャッシュ読込・書込・推論トークンを保存します。
+- 失敗した生成でも取得済みの値を残し、取得できない値は `null` にします。キャッシュ書込数も、プロバイダーから取得できた場合に記録します。
+- Bridgeの版、共有プロファイル名、生成条件・プロンプト・スキーマのハッシュも記録します。
+- CodexはCLI呼び出し内の使用量、APIはリクエスト単位です。元の提供単位が異なるため、試行数だけで消費量を比較しません。
+- 入力合計にはキャッシュ読込・書込、出力合計には推論を含みます。これらをさらに足すと二重計上になります。Claudeのように入力とキャッシュが別々に返る場合は合算し、内訳が欠けると総量は `null`、判明分は既知小計として保持します。
 
-History lives at <state_root>/usage/<runId>/<usageId>.json. A started record is saved before
-inference and updated after each attempt, followed by the note's outcome. A hard interruption can
-leave a started record with unknown consumption. Prompts, answers, and credentials are not stored
-in usage history. Run reports also contain generationMetrics.usageRecords and usageTotals.
-The API-only apiRequests compatibility view remains; do not sum it with usageRecords.
-Back up state: usage history is durable application data, not disposable cache.
+使用量履歴は `<state_root>/usage/<runId>/<usageId>.json` に保存します。
+呼び出し前に開始状態、終了時に取得済み使用量を保存し、ノート生成の成否も追記します。
+強制停止時には開始状態が残ることがあります。応答未取得分の消費量は不明です。
+使用量履歴にプロンプト・回答本文・認証情報は保存しません。
+既存の実行レポートには generationMetrics.usageRecords と usageTotals も記録します。
+API専用の apiRequests は既存の読み取り側向けに維持しますが、同時に合計しないでください。
+stateは使用量分析の正本を含むため、削除可能なキャッシュとして扱わずバックアップしてください。
 
-These commands use saved records only, without inference, price lookup, or scanning original chats:
+次のコマンドは保存済み履歴だけを読み、生成AI・外部価格取得・元チャットの走査を行いません。
 
-~~~console
+```console
 tkn-codex-chat-note build-report --dry-run
 tkn-codex-chat-note build-report
 tkn-codex-chat-note build-report --no-open
-~~~
+```
 
-Normal execution writes HTML/JSON/CSV and opens the HTML. --no-open suppresses opening only;
---dry-run validates and aggregates without writing or opening. All history from all enabled sources
-is included by default. Put --source <source_id> before the command to replace the report with that source alone.
+通常実行はHTML・JSON・CSVを更新してHTMLを開きます。--no-open は生成のみ、
+--dry-run は検証・集計のみで、保存とブラウザ起動を行いません。
+既定では全有効ソースの全履歴を集計します。--source <source_id> をコマンドの前に置くと、
+そのソースだけのレポートへ更新します。
 
-The default destination is ~/.tkn/codex_chat_note_pipeline/reports, configurable with report_path.
+既定の保存先は ~/.tkn/codex_chat_note_pipeline/reports で、report_path で変更できます。
 
-| Output | Contents |
-| --- | --- |
-| index.html | Offline HTML with execution date, model, provider, command, source, generation-profile, and thread filters |
-| usage.json | Normalized records, source-file SHA-256 hashes, aggregation settings, price scenarios, and missing-data information |
-| diagnostics.csv | Saved warnings, errors, validation failures, retry summaries, and deferred/blocked outcomes with task and run context |
-| usage.csv | One row per attempt; empty token cells mean unknown. Formula-like strings are protected for spreadsheet readers |
+| 出力            | 内容                                                                                                           |
+| --------------- | -------------------------------------------------------------------------------------------------------------- |
+| index.html      | 外部通信なしで開けるHTML。期間・モデル・プロバイダー・コマンド・ソース・生成プロファイル・対象タスクで絞り込み |
+| usage.json      | 正規化した使用量、元ファイルのSHA-256、集計設定・単価シナリオ、欠測情報                                        |
+| diagnostics.csv | 保存済みの警告・エラー・検証失敗・再試行概要・見送り理由。対象タスクと実行情報を含む                           |
+| usage.csv       | 1試行1行の使用量。空欄は不明。表計算ソフト向けに数式となる文字列の先頭を保護                                   |
 
-HTML embeds its own data and works alone. Keep all four files together to use its JSON/CSV links.
-Exports contain the full snapshot, not the current UI selection. Rebuilds replace these files;
-input history is untouched. Each file is replaced atomically and HTML is published last.
-Do not read exports during a build; rerun after an interruption. HTML always uses its embedded snapshot.
+HTML内に表示データを埋め込み、HTMLだけでも閲覧できます。JSON・CSVへのリンクを使う場合は
+4ファイルを同じフォルダに置いてください。JSON・CSVは画面フィルターを反映しない全件です。
+再生成では同名ファイルを置換します。入力の使用量履歴は変更しません。
+各ファイルは個別に置換し、HTMLを最後に公開します。書き込み中は外部ツールで読み取らず、
+中断した場合は再実行してください。HTMLはその中に埋め込まれた世代のデータで表示されます。
 
-From 0.25.0, the timeline switches between input/output, model, and model × input/output.
-Legend buttons hide/show chart series; page filters apply to every section. A numeric table accompanies the chart.
-Task rows show the current note Frontmatter title and filename, falling back to the saved task title or ID.
-Search by title, filename, or task ID. Only bounded Frontmatter is read from referenced notes inside data_root;
-missing, moved, or malformed notes do not prevent the report from building. Titles describe the current note,
-not its historical contents. Note bodies are never included. Source hashes distinguish full evidence files
-from the decoded Frontmatter content (UTF-8, LF newlines, excluding delimiter lines).
+0.25.0以降、推移グラフは「入力・出力」「モデル」「モデル × 入力・出力」を切り替えられます。
+凡例ボタンはグラフの系列を表示・非表示にし、ページ上部の条件は各セクションを絞り込みます。
+グラフには数値表もあります。対象タスクには現在のノートのFrontmatter titleとファイル名を表示し、
+取得できない場合は保存済みのタイトルやタスクIDを使います。title・ファイル名・IDで検索できます。
+data_root内の参照先から長さを制限したFrontmatterだけを読み、ノート本文は取り込みません。
+移動・削除・不正なFrontmatterがあってもレポートを生成します。titleは現在のノートの名前であり、
+過去の内容を再現するものではありません。検証用ハッシュは根拠ファイル全体とFrontmatter部分
+（区切り行を除き、改行をLFに揃えたUTF-8文字列）を区別します。
 
-The warning/error section shows saved messages, stages, task/run identities, and final note outcomes,
-including runs without token records. Filter by severity, category, or message. INFO includes budget/time
-or protection-related deferrals; an explicit budget stop is a WARNING. Validation warnings can remain after
-successful repair. Models on run-level diagnostics indicate the models observed in that run, not attribution
-of the cause; unknown identifies diagnostics without observed models. Terminal-only warnings and unsaved
-failure details cannot be recovered. Diagnostic counts count records, not unique failed tasks.
+警告・エラーには保存済みのメッセージ、工程、対象タスク・実行ID、最終的なノート結果を表示します。
+使用量がない実行も含み、重要度・分類・内容で絞り込めます。予算・時間上限や保護による見送りはINFO、
+明示的な予算停止はWARNINGです。検証のWARNINGは修復成功後にも残ります。
+実行全体の診断に表示するモデルはその実行で観測されたモデルで、原因の特定ではありません。
+モデルを記録していない診断はunknownです。端末だけのWARNINGや未保存の失敗理由は復元できません。
+件数は診断記録の数であり、失敗したタスク数ではありません。
 
-Use the top-ten task ranking, stage totals, per-model repair tokens/shares, and repeated successful-generation
-counts to find expensive tasks to inspect. Repair usage includes repair/regenerate stages and is distinct from
-transport retries. These are operational signals, not quality scores or controlled model comparisons.
-Read the actual notes and source evidence before deciding whether their summaries meet your needs.
+使用量上位10件のランキング、工程別使用量、モデル別の修復トークン・割合、タスクの生成成功回数から、
+費用がかかる処理や繰り返し生成を確認できます。修復使用量はrepair / regenerate工程で、通信再試行とは
+区別します。これらは見直す対象を探す指標であり、品質スコアや同条件のモデル比較ではありません。
+要約品質は対象ノートと元の会話を確認して判断してください。
 
-Daily/weekly/monthly views use generation start dates, in UTC by default; set 540 minutes for Japan.
-Historical API run reports are imported and deduplicated against the journal. Earlier ephemeral Codex
-usage cannot be reconstructed if it was not recorded. Known sums, missing attempts, and unfinished
-attempts are distinct. Per-note averages with missing usage are lower-bound references.
+日・週・月は生成の実行開始日で集計し、既定はUTCです。日本時間には540分を設定します。
+旧実行レポートのAPI使用量も取り込み、履歴との重複を除きます。
+旧Codexは --ephemeral 実行だったため、記録されていない過去使用量を復元できません。
+「取得済み合計」「不明件数」「未完了」を区別し、欠測を含む平均は下限参考値として表示します。
 
-Reference prices live in usage_report.price_scenarios, independently of inference budgets.
-Changing scenarios never regenerates notes or invokes models. These are fictional example prices:
+参考料金は usage_report.price_scenarios からBridgeの共有単価を参照します。
+推論時の予算設定とは独立しており、料金シナリオを変えてもノート生成や再課金は発生しません。
+参照先の共有プロファイルに、指定モデルのpricingを先に設定してください。
 
-~~~yaml
-schema_version: "8.1.0"
+```yaml
+schema_version: "8.3.0"
 report_path: ~/.tkn/codex_chat_note_pipeline/reports
 usage_report:
   utc_offset_minutes: 540
   price_scenarios:
     comparison-model:
-      currency: USD
-      pricing_date: "2026-09-19"
-      input_per_million: 1.0
-      output_per_million: 5.0
-      cache_policy: no-cache
-~~~
+      bridge_profile: azure-notes
+      model: <deployment-name>
+```
 
-no-cache prices all input at the ordinary input rate. observed uses measured cache counts and requires
-cached_input_per_million. If cache_write_per_million is supplied, cache-write counts must also be known.
-Missing required counts make the scenario unavailable for that attempt, not zero cost.
+Bridgeの `cache_policy: no-cache` は全入力を通常入力単価で試算します。observed は実測キャッシュ内訳を使い、
+cached_input_per_million を必須とします。cache_write_per_million も指定した場合は
+書込数が判明している試行だけ計算します。内訳不明はゼロと推定せず算出不可にします。
 
-Costs answer “what would the same token counts cost at these rates?” They are not invoices or predictions
-of another model's tokenization, reasoning, answer length, or retries. Subscription fees, tool fees, taxes,
-and currency conversion are excluded. Separately priced cache reads/writes are subtracted from ordinary
-input before applying their rates. Reasoning is never added again to total output.
-With no configured prices, the report still shows usage. No prices are fetched automatically.
+費用は「同じトークン数を使った場合」の参考値です。別モデルでは分割方式・推論量・回答長が
+変わるため、切り替え後の費用の予測ではありません。サブスクリプションの実請求額、
+ツール料金・税・為替換算も含みません。キャッシュ読込・書込が通常入力と別料金の場合、
+その内訳を入力合計から引いて各単価を適用します。推論を出力合計へ再加算しません。
+単価未設定ならトークン量のみ確認できます。外部価格を自動取得する処理はありません。
+レポートの比較計算もBridgeを使用します。JSONには適用単価と算出不能の理由を保存します。
+旧形式のシナリオ単価の直接指定は互換対応として読み込めます。
 
-## 6. Storage layout
+## 6. 保存構造
 
-Default storage paths follow this order: area role → source application → source environment → data type.
-When a root such as `raw_root` is specified explicitly, data types are placed directly beneath that root.
+省略時の保存先は「領域の役割 → 取得元アプリ → 取得環境 → データの種類」の順です。
+`raw_root` などを明示した場合は、その直下からデータの種類を配置します。
 
-In the following table, `P` is the capture provider (always `codex`), `I` is the `source_id`, `T` is the `threadKey`, and `H` is the content hash.
+以下の表で、`P` は取得プロバイダー（`codex` 固定）、`I` は `source_id`、`T` は `threadKey`、`H` は内容 hash を表します。
 
-| Storage path | Contents |
-| --- | --- |
-| `<raw_root>/sessions/...` | Latest copies preserving the relative structure and bytes of the original Codex logs |
-| `<raw_root>/archived_sessions/...` | Latest copies preserving Codex's archive structure |
-| `<raw_root>/manifest.jsonl` | Raw manifest recording sources, references, and hashes |
-| `<raw_root>/metadata/H.json` | Observed app Project information |
-| `<data_root>/source-aligned/T/H.json` | Canonical Events with references to positions in the original logs |
-| `<data_root>/session-notes/YYYY/MM/...md` | Current Session Notes organized by the conversation's start year and month |
-| `<data_root>/catalog/threads.json` | Catalog of this source's conversations, memberships, states, and note references |
-| `<data_root>/provenance/...` | Immutable snapshots, entities, activities, and a published index for this source |
-| `<state_root>/pipeline.json` | Per-source initialization information and storage version |
-| `<state_root>/threads/T/...` | Internal checkpoints per conversation |
-| `<state_root>/ledger.json`, `reports/`, `last-run.json`, `normalization/` | Per-source execution and normalization state |
-| `<cache_root>/P/I/...` | Reusable intermediate generation cache per source |
+| 保存パス                                                                          | 内容                                                       |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `<raw_root>/sessions/...`                                                       | Codex 元ログの相対構造とバイト列を保持した最新コピー       |
+| `<raw_root>/archived_sessions/...`                                              | Codex 側のアーカイブ構造を保持した最新コピー               |
+| `<raw_root>/manifest.jsonl`                                                     | 取得元・参照・hash を記録する Raw manifest                 |
+| `<raw_root>/metadata/H.json`                                                    | 観測したアプリの Project 情報                              |
+| `<data_root>/source-aligned/T/H.json`                                           | 元ログの参照位置を持つ Canonical Events                    |
+| `<data_root>/session-notes/YYYY/MM/...md`                                       | 会話開始年月で分けた現在の Session Note                    |
+| `<data_root>/catalog/threads.json`                                              | この取得元の会話・所属・状態・ノート参照をまとめた catalog |
+| `<data_root>/provenance/...`                                                    | この取得元の不変 snapshot・entity・activity・公開 index    |
+| `<state_root>/pipeline.json`                                                    | 取得元ごとの初期化情報・storage バージョン                 |
+| `<state_root>/threads/T/...`                                                    | 会話単位の内部 checkpoint                                  |
+| `<state_root>/ledger.json`・`reports/`・`last-run.json`・`normalization/` | 取得元ごとの実行・正規化状態                               |
+| `<cache_root>/P/I/...`                                                          | 取得元ごとの再利用可能な生成作業 cache                     |
 
-For example, with `source_id` set to `my-windows-pc` and storage directories omitted, Raw is stored under `~/.tkn/codex_chat_note_pipeline/raw/codex/my-windows-pc/sessions/...`, and notes under `~/.tkn/codex_chat_note_pipeline/data/codex/my-windows-pc/session-notes/YYYY/MM/...md`.
-The `codex` path segment is retained for compatibility.
-Use `config show` to inspect each source's final storage directories under `storage.sourceRoots.<source_id>`.
+例えば `source_id` が `my-windows-pc` で保存先を省略した場合、Raw は `~/.tkn/codex_chat_note_pipeline/raw/codex/my-windows-pc/sessions/...`、ノートは `~/.tkn/codex_chat_note_pipeline/data/codex/my-windows-pc/session-notes/YYYY/MM/...md` になります。
+パス中の `codex` という区分は、互換性のため維持します。
+各取得元の最終保存先は `config show` の `storage.sourceRoots.<source_id>` で確認できます。
 
-When choosing storage locations:
+保存先を決めるときの注意です。
 
-- Keep all roots separate from one another and from the source's `source_root` and configuration files.
-- Placing `raw/`, `data/`, and `state/` under a common parent makes it easier to back them up or move them together.
-- State is persistent data for resuming processing and maintaining checkpoints; manage it together with data.
-- Published evidence is retained in provenance under data.
-- Cache can be recreated and is not copied during migration.
+- 各 root は互いに分離し、取得元の `source_root` や設定ファイルとも重ならない場所にします。
+- 共通の親の下に `raw/`・`data/`・`state/` を並べると、まとめてバックアップ・移動できます。
+- state は再開・checkpoint のための永続データなので、data とセットで管理します。
+- 公開する証跡は data 内の provenance に保持します。
+- cache は再作成できるため、移行時にはコピーしません。
 
-Each root contains an ownership marker with the source ID and a lock; reuse for a different source is rejected.
-Even when the same conversation `threadKey` exists in another environment, note IDs, checkpoints, catalogs, and provenance remain independent per source.
-See the [output data and CLI integration contract](docs/reference/data-contract.md) for how references in output files (`data:/` and `raw:/codex/<source_id>/`) are resolved.
+各 root には取得元 ID を含む所有権 marker とロックを置き、異なる取得元への流用を拒否します。
+同じ会話の `threadKey` が別の環境にもあっても、ノートID・checkpoint・catalog・provenance は取得元ごとに独立します。
+出力ファイル内の参照（`data:/`・`raw:/codex/<source_id>/`）の解決方法は [出力データと他CLIとの連携仕様](docs/reference/data-contract.md) を参照してください。
 
 <a id="processing-flow"></a>
 
-### 6.1. How session-notes build works
+### 6.1. session-notes build の処理
 
-`session-notes build` preserves and normalizes conversation logs as Raw, then generates Markdown Session Notes for the target conversations.
-Use `--thread-id` to select one conversation.
-This command does not generate Decisions or Working Context.
-The AI receives event contents, event IDs, generation instructions, and an output schema.
+`session-notes build` は、会話ログを Raw として保存・正規化し、対象会話の Session Note を Markdown で生成します。
+`--thread-id` で会話を1件選べます。
+Decision と Working Context は、このコマンドでは生成しません。
+AI には、イベント内容・イベントID・生成指示・出力スキーマを渡します。
 
-The following table defines the abbreviations used in the diagram.
+次の図の略記は、この表のとおりです。
 
-| Diagram label | Configuration setting | Default storage path |
-| --- | --- | --- |
-| `C` | `sources.<source_id>.source_root` | `~/.codex` |
-| `R` | `sources.<source_id>.raw_root` | `~/.tkn/codex_chat_note_pipeline/raw/codex/<source_id>` |
-| `D` | `sources.<source_id>.data_root` | `~/.tkn/codex_chat_note_pipeline/data/codex/<source_id>` |
-| `S` | `sources.<source_id>.state_root` | `~/.tkn/codex_chat_note_pipeline/state/codex/<source_id>` |
+| 図中の表記 | 設定項目                            | 既定の保存先                                                |
+| ---------- | ----------------------------------- | ----------------------------------------------------------- |
+| `C`      | `sources.<source_id>.source_root` | `~/.codex`                                                |
+| `R`      | `sources.<source_id>.raw_root`    | `~/.tkn/codex_chat_note_pipeline/raw/codex/<source_id>`   |
+| `D`      | `sources.<source_id>.data_root`   | `~/.tkn/codex_chat_note_pipeline/data/codex/<source_id>`  |
+| `S`      | `sources.<source_id>.state_root`  | `~/.tkn/codex_chat_note_pipeline/state/codex/<source_id>` |
 
-`T` is the conversation's `threadKey`, and `H` is the content hash.
+`T` は会話の `threadKey`、`H` は内容の hash です。
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor U as User / scheduled run
-    participant P as Pipeline CLI
-    participant C as Codex storage
-    participant F as Storage R / D / S
-    participant AI as Generative AI
+    actor U as 利用者・定期実行
+    participant P as パイプラインCLI
+    participant C as Codex保存領域
+    participant F as 保存先 R・D・S
+    participant AI as 生成AI
 
     U->>P: session-notes build
-    P->>P: Read config.yaml<br/>Storage paths, source ID, model
-    P->>F: Read S/ledger.json and related files<br/>Check previous processing state
+    P->>P: config.yamlを読み込む<br/>保存先・取得元ID・モデル
+    P->>F: S/ledger.jsonなどを読み込む<br/>前回の処理状態を確認
 
     P->>C: C/sessions/**/*.jsonl<br/>C/archived_sessions/**/*.jsonl
-    C-->>P: Original conversation log bytes
-    P->>F: R/sessions/YYYY/MM/DD/rollout-*.jsonl<br/>Save without changing the original contents
-    P->>F: R/manifest.jsonl<br/>Record sources, timestamps, and hashes
+    C-->>P: 会話ログの元のバイト列
+    P->>F: R/sessions/YYYY/MM/DD/rollout-*.jsonl<br/>元の内容を変更せず保存
+    P->>F: R/manifest.jsonl<br/>取得元・日時・ハッシュを記録
 
-    opt Project membership information is available
+    opt Project所属情報を取得できる場合
         P->>C: C/.codex-global-state.json
-        C-->>P: Project information and conversation membership
-        P->>F: R/metadata/H.json<br/>Snapshot of membership information
+        C-->>P: Project情報・会話の所属
+        P->>F: R/metadata/H.json<br/>所属情報のスナップショット
     end
 
-    P->>P: Parse Raw and normalize events<br/>Conversation IDs, messages, timestamps, original line references
-    P->>F: D/source-aligned/T/H.json<br/>Save Canonical Events
+    P->>P: Rawを解析・イベントを正規化<br/>会話ID・発言・時刻・原文の行参照
+    P->>F: D/source-aligned/T/H.json<br/>Canonical Eventsを保存
 
-    loop New, changed, or unfinished target conversations
-        P->>P: Prepare events for summarization<br/>Split long conversations into chunks
-        P->>AI: Conversation ID, event contents, event IDs<br/>Generation instructions and output schema
-        AI-->>P: Partial records as JSON<br/>Timeline text, summary, and evidence IDs
-        opt Conversation was split into chunks
-            P->>AI: Merge summaries and final states from partial records
-            AI-->>P: Summary and final state as JSON
+    loop 新規・変更・未完了の対象会話
+        P->>P: 要約対象のイベントを準備<br/>長い会話は分割
+        P->>AI: 会話ID＋イベント内容＋イベントID<br/>生成指示＋出力スキーマ
+        AI-->>P: 部分記録のJSON<br/>時系列本文＋概要＋根拠ID
+        opt 分割した場合
+            P->>AI: 部分記録から概要・終了状態を統合
+            AI-->>P: 概要・終了状態のJSON
         end
-        P->>P: Join timelines while retaining partial records<br/>Validate timestamps, actors, and evidence; render Markdown
-        P->>F: D/session-notes/YYYY/MM/*.md<br/>Save Session Note
-        P->>F: Record provenance and processing checkpoints
+        P->>P: 時系列は部分記録を保持して結合<br/>日時・主体・根拠を検証してMarkdownへ
+        P->>F: D/session-notes/YYYY/MM/*.md<br/>Session Noteを保存
+        P->>F: 来歴と処理チェックポイントを記録
     end
 ```
 
-The stored Canonical Events and the events used for summarization come from the same parsing results (events are passed in memory without rereading the saved JSON).
-At this stage, the unit of summarization is a conversation, independent of consolidation by work scope.
+保存する Canonical Events と、要約処理が使うイベントは同じ解析結果に基づきます（保存した JSON を再読込せず、メモリー上のイベントを渡します）。
+この段階の要約単位は会話であり、作業 scope による統合とは独立しています。
 
-### 6.2. Moving storage to another folder
+### 6.2. 保存先を別のフォルダへ移す
 
-Use `storage migrate` to move a store in the current format to another folder.
-It copies Raw, Session Notes, normalized data, provenance, and resume state while preserving note IDs, contents, and review status.
-No inference is performed, so changing storage locations alone does not regenerate notes.
+現行形式の保存領域を別フォルダへ移す場合は `storage migrate` を使います。
+Raw・Session Note・正規化データ・来歴・再開状態をコピーし、ノートの ID・内容・レビュー状態を保持します。
+推論は行わないため、保存先の変更だけでは再生成されません。
 
-1. Prepare a source configuration file that independently resolves the source's final storage paths and source ID. Configuration from other layers is not merged into the `--from-config` file.
-2. Prepare a separate destination configuration with the same source ID, setting `raw_root`, `data_root`, and `state_root` to new final storage directories that do not overlap the source. If multiple sources are enabled, select one with `--source`.
-3. Stop writes to the source during copying, then check and execute in the following order.
+1. 移動元の最終保存先と取得元 ID を単独で解決できる設定ファイルを用意します。`--from-config` の設定には、他の設定階層の値は統合されません。
+2. 同じ取得元 ID を持つ設定を別ファイルに用意し、`raw_root`・`data_root`・`state_root` を移動元と重ならない新しい最終保存先にします。複数の取得元が有効なら `--source` で1つ選びます。
+3. コピー中は移動元への書き込みを停止し、次の順に確認・実行します。
 
 ```console
 tkn-codex-chat-note --config "C:\path\to\destination.yaml" config show
@@ -794,81 +838,90 @@ tkn-codex-chat-note --config "C:\path\to\destination.yaml" --source my-windows-p
 tkn-codex-chat-note --config "C:\path\to\destination.yaml" --source my-windows-pc provenance validate
 ```
 
-Source data and configuration are not modified or deleted.
-Cache is not copied; it is recreated at the destination.
-A conflict at the destination stops the operation, and an interrupted copy can be resumed with the same settings (rerunning a completed copy performs no writes).
-Use the destination configuration for subsequent runs, and update downstream CLIs' `notes_roots` paths while keeping input names unchanged.
-See the [output data and CLI integration contract](docs/reference/data-contract.md#storage-layout-5) for copy guarantees.
+移動元のデータと設定は変更・削除しません。cache はコピーせず、移動先で再作成されます。
+コピー先で競合があれば停止し、中断後は同じ設定で再開できます（完了済みの再実行では書き込みません）。
+移動後の通常実行には移動先の設定を使い、下流CLIの `notes_roots` は入力名を保ってパスを更新してください。
+コピー時の保証は [出力データと他CLIとの連携仕様](docs/reference/data-contract.md#storage-layout-5) を参照してください。
 
-### 6.3. Rebuilding without retaining existing data
+### 6.3. 既存データを引き継がずに作り直す
 
-Create a new configuration file, specify empty `raw_root`, `data_root`, and `state_root` directories, and follow [3. Running the CLI](#3-running-the-cli).
+新しい設定ファイルを作り、空の `raw_root`・`data_root`・`state_root` を指定して、[3. 実行する](#3-実行する) の手順を行います。
 
 ```console
 tkn-codex-chat-note --config "C:\path\to\rebuild.yaml" config init
 ```
 
-Edit the created configuration, and use the same `--config` for subsequent `config show` and `clone` commands.
-Only conversation logs still present in the source can be rebuilt.
-Because this creates a separate store, it does not retain old note IDs, manual edits, or review status.
-Specifying `--config` does not bypass validation of lower configuration layers, so any user configuration or `.tkn/config.yaml` that is loaded must also use a valid schema.
+作成した設定を編集し、その後の `config show`・`clone` にも同じ `--config` を指定します。
+再構築できる範囲は、取得元に残っている会話ログだけです。
+別の保存領域に作り直すため、旧ノートの ID・手編集・レビュー状態は引き継ぎません。
+なお `--config` を指定しても下位の設定層の検証は省略されないため、読み込まれるユーザー設定や `.tkn/config.yaml` も有効なスキーマである必要があります。
 
-## 7. Coverage and limitations
+## 7. 対応範囲と制限
 
-### 7.1. Capture scope
+### 7.1. 取得対象
 
-- Local `sessions` and, by default, `archived_sessions` are included.
-- Conversations without a Project, with an unknown assignment, or with ambiguous membership are also included. Conversations can be preserved without the app's Project information.
-- Cloud-only ChatGPT / Work history is not captured.
-- Internal processing and approval-review conversations, and logs without ordinary user messages, are preserved and normalized but excluded from summarization.
-- Older log formats are included. When an event has no timestamp, the note marks the time as unknown.
-- `inter_agent_communication_metadata` (such as `trigger_turn`) is retained in Raw as known control information and is not used as evidence for summarization.
-- Unsupported records and invalid JSONL are recorded in the run report. Unicode separator characters are not mistaken for JSONL line breaks.
+- ローカルの `sessions` と、既定では `archived_sessions` を対象にします。
+- Project 未所属・対応先不明・所属が曖昧な会話も対象です。アプリの Project 情報がなくても会話を保存できます。
+- クラウドだけにある ChatGPT / Work の履歴は取得しません。
+- 内部処理や承認レビューの会話、通常のユーザー発言を持たないログは、保存・正規化はしますが要約からは除外します。
+- 旧形式のログも対象にし、イベント日時がない場合はノート上で「時刻不明」と表示します。
+- `inter_agent_communication_metadata`（`trigger_turn` など）は既知の制御情報として Raw に保持し、要約の根拠には含めません。
+- 未対応のレコードや不正な JSONL は実行レポートに残します。Unicode の区切り文字を JSONL の改行と誤認することはありません。
 
-### 7.2. Images and long text
+### 7.2. 画像と長文
 
-Embedded image payloads are preserved in Raw and normalized data.
-Text inference receives the image format, byte count, and hash instead of the base64 payload, and the note explicitly states that visual content has not been verified.
-Ordinary long text is preserved and split according to input size.
+埋め込み画像の本体は Raw と正規化データに保持します。
+テキスト推論には base64 の符号列を渡さず、画像の形式・バイト数・ハッシュを示し、視覚的内容が未確認であることをノートに明記します。
+通常の長文は保持し、入力サイズに応じて分割します。
 
-### 7.3. Multiple files for the same conversation
+### 7.3. 同じ会話に複数ファイルがある場合
 
-Exact matches and byte-level append relationships are consolidated as duplicates.
-Other histories and branches are preserved, with timelines and sources shown by History ID within one Session Note (the tool does not infer which branch was adopted or whether another history superseded it).
-All files are saved in Raw, and each input remains in normalization and note-generation provenance.
-`history_base` is recorded as source metadata.
-A branch change regenerates the same note ID; an unchanged `pull` does not regenerate it.
+完全一致とバイト列の追記関係は、重複としてまとめます。
+それ以外は各履歴・分岐を保持し、1つの Session Note 内で History ID ごとに時系列と出典を表示します（採用された分岐や、別履歴による取り消しは推定しません）。
+全ファイルを Raw に保存し、正規化・ノート生成の来歴にも各入力を残します。`history_base` は取得元のメタデータとして記録します。
+分岐が変わった場合は同じノートIDを維持して再生成し、変更のない `pull` では再生成しません。
 
-### 7.4. Nature of generated results
+### 7.4. 生成結果の性質
 
-- A Session Note is a derived record and does not replace the original evidence.
-- Unresolved or unverified items from each chunk remain in the final note unless later events in the same history show that they were resolved. Completing the latest request does not automatically clear earlier unverified items.
-- Each pending item carries its own source citations in internal `pendingStateItems`, indexed by kind and position in the partial's pending list. The overall final-state citations are not reused as every item's origin. Missing, duplicate, or unknown item citations require repair.
-- The merge generates item reviews before the final state. Resolution requires later evidence in every relevant history; that evidence remains in the final state's citations. Retained unresolved requests prevent `done`; retained unverified checks alone do not. Contradictions are reported for repair without silently dropping requests or guessing a replacement status.
-- Run reports record the item text and origins in `generationMetrics.stateItems` and successful reviews in `stateItemReviews`. Internal item evidence stays in generation checkpoints and does not change the published Session Note schema. The updated generation contract invalidates older generation fingerprints/checkpoints on the next build; reviewed and edited notes retain their existing protection. This adds no separate inference stage, but item citations increase the generated payload.
-- The model judges whether a source actually shows resolution, so factual verification remains necessary.
-- Changing Project membership does not change the conversation ID. This CLI retains observed membership, while downstream CLIs handle semantic Scope classification and approved relationships.
+- Session Note は派生した記録であり、元の根拠を置き換えるものではありません。
+- 各分割の未解決・未確認事項は、同じ履歴の後続イベントが解決を示さない限り最終ノートに残します。最新の依頼が完了しても、以前の未確認事項が自動的に空になることはありません。
+- 未解決・未確認事項は、内部の `pendingStateItems` に種類・配列内の位置・項目ごとの根拠IDを持ちます。最終状態全体の根拠を各項目へ使い回しません。項目の根拠が欠ける、重複する、存在しない記録を指す場合は修正対象です。
+- 統合では各項目を残すか解消するかを先に出力し、その後に最終状態を生成します。解消には関係する各履歴で後続の根拠が必要で、その根拠も最終状態の参照に残します。未解決の依頼を残して `done` にすることはできませんが、未検証事項だけなら `done` と両立できます。矛盾は修正対象とし、依頼を黙って消したり状態を推測で置き換えたりしません。
+- 実行レポートの `generationMetrics.stateItems` に項目の本文と根拠を、統合成功時の `stateItemReviews` に判定を残します。内部の項目別根拠は生成キャッシュに保存し、公開するSession Noteのスキーマは変えません。生成仕様の更新により次回buildでは旧仕様の生成結果・キャッシュが再生成対象になりますが、レビュー済み・手編集済みノートの保護は維持します。独立したAPI呼び出し段階は追加しませんが、根拠情報の分だけ生成データ量は増えます。
+- 出典が本当に解決を示すかはモデルの判断によるため、事実確認が不要になるわけではありません。
+- Project への所属が変わっても、会話のIDは変わりません。所属の観測はこのCLIに残し、意味に基づく Scope や承認済みの関連は下流CLIで扱います。
 
-### 7.5. Execution environment
+### 7.5. 実行環境
 
-If Windows temporarily refuses a file replacement, the CLI briefly retries while preserving the original file.
-Persistent errors are recorded as failures in the run report.
+Windows でファイルの置換が一時的に拒否された場合は、元のファイルを保ったまま短時間再試行します。
+恒常的なエラーは実行レポートに失敗として残します。
 
-The minimum supported version is Python 3.11, but the recorded execution environment is Windows / Python 3.12.10.
-Other Python versions and non-Windows environments, including WSL, have not been verified.
+最低対応は Python 3.11 ですが、記録済みの実行環境は Windows / Python 3.12.10 です。
+他の Python バージョンや、WSL を含む非 Windows 環境での実行は未検証です。
 
-## 8. Reinstalling after updates
+## 8. 更新後の再インストール
 
-Reinstall after updating code or resources.
+コードやリソースを更新したあとは、更新済みリポジトリで再インストールし、バージョンを確認します。
+開発用の `.venv` を有効化している場合は、先に `deactivate` で解除してください。
 
-```console
+```powershell
 cd "C:\path\to\tkn_codex_chat_note_pipeline"
 uv tool install . --reinstall
+tkn-codex-chat-note --version
 ```
 
-## 9. Development and verification
+このCLIの0.28.0は、Bridge 0.7.0をPythonの依存パッケージとして実行環境へインストールします。
+取得元の公開Git URLとコミットは `pyproject.toml` に固定しており、Bridgeのmainブランチが更新されても自動では切り替わりません。
+Bridgeを更新するときは、`pyproject.toml` の固定コミットを変更して `uv lock` で `uv.lock` を更新し、次節の検証後に再インストールします。
+Bridgeのリポジトリを編集したり、Bridgeの補助CLIだけを再インストールしたりしても、このCLIの依存パッケージは更新されません。
+共有設定の編集は次のコマンド実行から反映されるため、設定だけの変更で再インストールは不要です。
 
-```console
+## 9. 開発と検証
+
+開発環境の作成と確認は次の手順です。
+
+```powershell
+cd "C:\path\to\tkn_codex_chat_note_pipeline"
 uv sync --locked
 uv run python -m pytest
 uv run python -m ruff check .
@@ -876,21 +929,29 @@ uv run python -m mypy src
 uv build
 ```
 
-Automated tests use anonymous conversation data and inference test doubles to check configuration, storage, resuming, edit protection, and generated-output validation.
-They do not guarantee authentication with real services or summary quality from real models.
-Use temporary directories managed by the test framework or OS for temporary data.
+> **VS Code で開発する場合**：ターミナルで `.venv` が自動有効化されることがありますが、`uv run` の利用に有効化は不要です。
+> 有効化中は開発用 CLI が優先されるため、`uv tool install . --reinstall` で更新した CLI の動作確認は、`deactivate` で解除してから行ってください。
 
-When changing distribution artifacts, install the built wheel into a temporary environment and check `--version`, `--help`, `config init`, `config show`, and bundled language profiles from outside the checkout.
-When changing the integration contract, use anonymous outputs to verify IDs, hashes, and input references in downstream CLIs.
+`uv sync --locked` が用意する開発用の `.venv` と、`uv tool install .` が用意する通常利用の環境は別です。
+開発用のソース変更は `uv run tkn-codex-chat-note --help` などで確認し、通常利用の CLI へ反映するときは再インストールします。
 
-To compare note quality separately from live data storage, run `scripts/evaluate_session_notes.py` against a dedicated evaluation directory (specify `--manifest`, `--config`, `--output`, and `--thread`; `--dry-run` validates the plan only).
+ソースは `src/tkn_codex_chat_note/`、テストは `tests/` にあります。設定例とレポート用リソースは `src/tkn_codex_chat_note/resources/`、要約の指示文・スキーマ・テンプレートは `src/tkn_codex_chat_note/profiles/` にあります。
 
-## 10. Related documentation
+自動テストは匿名の会話データと推論の代替実装を使い、設定・保存・再開・編集保護・生成結果の検証を確認します。
+実サービスの認証や、実モデルによる要約品質を保証するものではありません。
+一時データには、テストフレームワークまたは OS の一時フォルダを使います。
 
-| Document | When to read it |
-| --- | --- |
-| [Output data and CLI integration contract](docs/reference/data-contract.md) | Implement a tool that consumes the output: IDs, schemas, hashes, provenance, and consistency checks |
-| [Session Note format](docs/reference/session-note-format.md) | Understand the structure of generated notes and the meaning of each field |
-| [Azure structured outputs](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs) | Understand the structured output specification for Azure requests |
-| [Browser authentication](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.interactivebrowsercredential) | Understand Azure interactive authentication |
-| [Ollama chat API](https://docs.ollama.com/api/chat) | Understand the Ollama endpoint specification |
+配布物を変更したときは、一時的な環境へビルドした wheel をインストールし、チェックアウト外から `--version`・`--help`・`config init`・`config show` と同梱の言語プロファイルを確認します。
+連携仕様を変更したときは、匿名の出力を使い、下流CLIで ID・hash・入力参照を検証してください。
+
+実データの保存領域と分けてノートの品質を比較する場合は、`scripts/evaluate_session_notes.py` を評価専用のディレクトリに対して実行します（`--manifest` / `--config` / `--output` / `--thread` を指定。`--dry-run` は計画の検証のみ）。
+
+## 10. 関連ドキュメント
+
+| 文書                                                                                                                   | 読む目的                                                                 |
+| ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| [出力データと他CLIとの連携仕様](docs/reference/data-contract.md)                                                        | 出力を読み取るツールの実装。ID・schema・hash・来歴・整合性確認の取り決め |
+| [Session Noteの内容](docs/reference/session-note-format_ja.md)                                                          | 生成ノートの構成と各項目の意味                                           |
+| [Azure構造化出力](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs)                     | Azure 送信時の構造化出力の仕様                                           |
+| [ブラウザ認証](https://learn.microsoft.com/en-us/python/api/azure-identity/azure.identity.interactivebrowsercredential) | Azure の対話認証の仕様                                                   |
+| [Ollama chat API](https://docs.ollama.com/api/chat)                                                                     | Ollama 接続先の仕様                                                      |

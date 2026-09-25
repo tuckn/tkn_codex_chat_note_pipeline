@@ -42,7 +42,7 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     selection.add_argument("--profile", help="Named generation profile (generation.active_profile)")
     selection.add_argument(
         "--provider",
-        choices=("codex", "claude-code", "github-copilot", "ollama", "azure-openai"),
+        choices=("codex", "claude-code", "github-copilot", "antigravity", "ollama", "azure-openai"),
         help="Compatibility selector: requires a unique profile for this provider; prefer --profile",
     )
     parser.add_argument("--source", help="Select one enabled source_id from sources")
@@ -421,6 +421,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {
                     "command": "config show",
                     "config": config_document(resolved),
+                    "generationResolved": {
+                        "profile": resolved.generation.active_profile,
+                        "provider": resolved.provider,
+                        "model": resolved.model,
+                        "reasoningEffort": resolved.reasoning_effort,
+                        "inferenceOptions": resolved.active_provider_config.inference_options(),
+                    },
                     "storage": {
                         "layoutVersion": 5,
                         "sourceRoots": {

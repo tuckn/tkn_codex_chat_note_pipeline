@@ -6,80 +6,14 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from azure.identity import AuthenticationRecord, AuthenticationRequiredError
 from test_api_inference import AZURE, SCHEMA, response, settings
 from test_api_inference import fake_http as fake_http
 from test_session_note_pipeline import note_data
 from test_thread_timeline import candidate, config, event
 
-from tkn_codex_chat_note import api_inference, azure_auth
 from tkn_codex_chat_note.api_inference import ApiClient, ApiError
 from tkn_codex_chat_note.config import GenerationConfig, resolve_app_config
 from tkn_codex_chat_note.session_notes import ProviderSummarizer
-
-
-@pytest.fixture(autouse=True)
-def isolated_auth(tmp_path, monkeypatch):
-    azure_auth.token_provider.cache_clear()
-    monkeypatch.setattr(azure_auth, "record_path", lambda *args: tmp_path / "auth" / "account.json")
-    yield
-    azure_auth.token_provider.cache_clear()
-
-
-def test_browser_auth_once_and_account_record_reused_across_instances(tmp_path, monkeypatch):
-    record = AuthenticationRecord("tenant", "client", "authority", "account", "user@example.invalid")
-    creations = []
-    browser = Mock(return_value=record)
-
-    def factory(**kwargs):
-        creations.append(kwargs)
-        ready = kwargs["authentication_record"] is not None
-
-        def authenticate(**_):
-            nonlocal ready
-            ready = True
-            return browser()
-
-        def get_token(*_):
-            if not ready:
-                raise AuthenticationRequiredError([azure_auth.SCOPE])
-            return SimpleNamespace(token="secret-never-in-record")
-
-        return SimpleNamespace(authenticate=authenticate, get_token=get_token)
-
-    monkeypatch.setattr(azure_auth, "InteractiveBrowserCredential", factory)
-    monkeypatch.setenv("PATH", "")  # No az executable can be resolved.
-    for _ in range(2):
-        assert azure_auth.token_provider(AZURE["endpoint"])() == "secret-never-in-record"
-    azure_auth.token_provider.cache_clear()  # Simulate a later process.
-    assert azure_auth.token_provider(AZURE["endpoint"])() == "secret-never-in-record"
-    assert browser.call_count == 1
-    assert creations[0]["authentication_record"] is None
-    assert creations[1]["authentication_record"].home_account_id == "account"
-    assert creations[0]["disable_automatic_authentication"] is True
-    assert creations[0]["cache_persistence_options"].allow_unencrypted_storage is False
-    assert "secret-never-in-record" not in (tmp_path / "auth/account.json").read_text()
-
-
-def test_corrupt_account_record_reselects_without_plaintext_token_fallback(tmp_path, monkeypatch):
-    path = tmp_path / "auth/account.json"
-    path.parent.mkdir()
-    path.write_text("corrupt")
-    factory = Mock()
-    monkeypatch.setattr(azure_auth, "InteractiveBrowserCredential", factory)
-    azure_auth.create_credential(AZURE["endpoint"], None)
-    assert factory.call_args.kwargs["authentication_record"] is None
-    assert not factory.call_args.kwargs["cache_persistence_options"].allow_unencrypted_storage
-
-
-def test_cancelled_authentication_never_submits_http(fake_http, monkeypatch):
-    calls, _ = fake_http
-    monkeypatch.setattr(api_inference, "token_provider", Mock(side_effect=RuntimeError("private account detail")))
-    client = ApiClient(settings())
-    with pytest.raises(ApiError, match="browser authentication failed") as error:
-        client.invoke("hello", SCHEMA, timeout=30)
-    assert not calls and not client.records
-    assert "private account" not in str(error.value)
 
 
 def test_minimal_configuration_and_price_lookup_follow_deployment(fake_http):

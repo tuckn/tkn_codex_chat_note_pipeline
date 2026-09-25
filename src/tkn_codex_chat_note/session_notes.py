@@ -7,7 +7,6 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 import time
 import uuid
 from collections.abc import Callable, Sequence
@@ -18,6 +17,8 @@ from functools import cached_property, lru_cache
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol
+
+from tkn_genai_bridge import __version__ as BRIDGE_VERSION
 
 from .api_inference import ApiBudgetExceeded, ApiClient, ApiError
 from .chat_logs import (
@@ -519,6 +520,7 @@ def update_refresh_state(
         "generatorReasoningEffort": config.reasoning_effort,
         **({"generatorOptions": config.inference_options} if config.inference_options else {}),
         "generatorPromptVersion": GENERATOR_PROMPT_VERSION,
+        "bridgeVersion": BRIDGE_VERSION,
         "inputPreparationVersion": INPUT_PREPARATION_VERSION,
         "summaryPromptId": prompt.prompt_id,
         "summaryPromptVersion": prompt.version,
@@ -1072,6 +1074,10 @@ class ProviderSummarizer:
         self.cache_root = cache_root
         self.reuse_cache = True
 
+    def close(self) -> None:
+        if self.api_client is not None:
+            self.api_client.close()
+
     def set_cache_root(self, root: Path, *, reuse: bool = True) -> None:
         self.cache_root = root
         self.reuse_cache = reuse
@@ -1102,68 +1108,66 @@ class ProviderSummarizer:
         return None
 
     def _invoke(self, prompt: str, *, overview_only: bool = False) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="tkn-session-note-") as directory:
-            temp = Path(directory)
-            last_error = ""
-            for attempt in range(3):
-                timeout = self.config.model_timeout_seconds
-                if self.deadline is not None:
-                    remaining = int((self.deadline - now_local()).total_seconds())
-                    if remaining <= 0:
-                        raise PartialPipelineError("rebuild deadline reached during model generation")
-                    timeout = min(timeout, remaining)
-                self.last_metrics["modelCalls"] = self.last_metrics.get("modelCalls", 0) + 1
-                self.last_metrics["submittedPromptCharacters"] = (
-                    self.last_metrics.get("submittedPromptCharacters", 0) + len(prompt)
+        last_error = ""
+        for attempt in range(3):
+            timeout = self.config.model_timeout_seconds
+            if self.deadline is not None:
+                remaining = int((self.deadline - now_local()).total_seconds())
+                if remaining <= 0:
+                    raise PartialPipelineError("rebuild deadline reached during model generation")
+                timeout = min(timeout, remaining)
+            self.last_metrics["modelCalls"] = self.last_metrics.get("modelCalls", 0) + 1
+            self.last_metrics["submittedPromptCharacters"] = (
+                self.last_metrics.get("submittedPromptCharacters", 0) + len(prompt)
+            )
+            if attempt:
+                self.last_metrics["transportRetries"] = self.last_metrics.get("transportRetries", 0) + 1
+            self._emit(
+                {
+                    "type": "model-attempt",
+                    "attempt": attempt + 1,
+                    "timeoutSeconds": timeout,
+                    "provider": provider_name(self.config.provider),
+                    "promptCharacters": len(prompt),
+                }
+            )
+            try:
+                api = self._api()
+                if api is not None:
+                    try:
+                        return api.invoke(prompt, self.overview_schema if overview_only else self.inference_schema,
+                                          timeout=timeout)
+                    finally:
+                        self.last_metrics["apiRequests"] = deepcopy(api.records[self.api_record_start:])
+                        self.last_metrics["usageRecords"] = deepcopy(api.records[self.api_record_start:])
+                        self.last_metrics["modelCalls"] = len(api.records) - self.api_record_start
+                        self.last_metrics["submittedPromptCharacters"] = sum(
+                            record["promptCharacters"] for record in api.records[self.api_record_start:])
+                        self.last_metrics["commandReservedCostJpy"] = api.reserved_jpy
+                        self.last_metrics["usageTotals"] = usage_totals(api.records[self.api_record_start:])
+                return invoke_structured(
+                    self.config,
+                    prompt,
+                    self.overview_schema if overview_only else self.inference_schema,
+                    cwd=Path.cwd(),
+                    timeout=timeout,
+                    usage_observer=self._usage_event,
                 )
-                if attempt:
-                    self.last_metrics["transportRetries"] = self.last_metrics.get("transportRetries", 0) + 1
-                self._emit(
-                    {
-                        "type": "model-attempt",
-                        "attempt": attempt + 1,
-                        "timeoutSeconds": timeout,
-                        "provider": provider_name(self.config.provider),
-                        "promptCharacters": len(prompt),
-                    }
-                )
-                try:
-                    api = self._api()
-                    if api is not None:
-                        try:
-                            return api.invoke(prompt, self.overview_schema if overview_only else self.inference_schema,
-                                              timeout=timeout)
-                        finally:
-                            self.last_metrics["apiRequests"] = deepcopy(api.records[self.api_record_start:])
-                            self.last_metrics["usageRecords"] = deepcopy(api.records[self.api_record_start:])
-                            self.last_metrics["modelCalls"] = len(api.records) - self.api_record_start
-                            self.last_metrics["submittedPromptCharacters"] = sum(
-                                record["promptCharacters"] for record in api.records[self.api_record_start:])
-                            self.last_metrics["commandReservedCostJpy"] = api.reserved_jpy
-                            self.last_metrics["usageTotals"] = usage_totals(api.records[self.api_record_start:])
-                    return invoke_structured(
-                        self.config,
-                        prompt,
-                        self.overview_schema if overview_only else self.inference_schema,
-                        cwd=temp,
-                        timeout=timeout,
-                        usage_observer=self._usage_event,
-                    )
-                except ApiBudgetExceeded:
-                    raise
-                except InferenceExecutionError as exc:
-                    last_error = str(exc)
-                    if isinstance(exc, ApiError) and not exc.retryable:
-                        raise PipelineError(last_error) from exc
-                    delay = max(2**attempt, exc.retry_after if isinstance(exc, ApiError) else 0)
-                    if attempt < 2:
-                        if delay > 60:
-                            raise PartialPipelineError(
-                                f"API requested a {delay:.0f}-second retry delay; resume after that interval") from exc
-                        if self.deadline and (now_local() + timedelta(seconds=delay)) >= self.deadline:
-                            raise PartialPipelineError("deadline reached before API retry") from exc
-                        self.sleeper(delay)
-            raise PipelineError(last_error or "inference generation failed")
+            except ApiBudgetExceeded:
+                raise
+            except InferenceExecutionError as exc:
+                last_error = str(exc)
+                if isinstance(exc, ApiError) and not exc.retryable:
+                    raise PipelineError(last_error) from exc
+                delay = max(2**attempt, exc.retry_after if isinstance(exc, ApiError) else 0)
+                if attempt < 2:
+                    if delay > 60:
+                        raise PartialPipelineError(
+                            f"API requested a {delay:.0f}-second retry delay; resume after that interval") from exc
+                    if self.deadline and (now_local() + timedelta(seconds=delay)) >= self.deadline:
+                        raise PartialPipelineError("deadline reached before API retry") from exc
+                    self.sleeper(delay)
+        raise PipelineError(last_error or "inference generation failed")
 
     def _validated_invoke(
         self,
@@ -1431,10 +1435,14 @@ class ProviderSummarizer:
         # Future merge text and generated answers do not exist during a dry-run.
         # Reserve a full configured merge input and maximum output for every base call.
         total_tokens = pending_tokens + merge * api.limits.input_tokens if api else None
-        output_ceiling = base_calls * api.limits.output_tokens if api else None
+        output_ceiling = base_calls * (api.profile.max_output_tokens or api.limits.output_tokens) if api else None
         cost = None
-        if api and api.pricing and total_tokens is not None and output_ceiling is not None:
-            cost = api.pricing.cost(total_tokens, output_ceiling)
+        planned_cost = None
+        if api and total_tokens is not None and output_ceiling is not None:
+            from .cost_policy import reservation_cost
+
+            planned_cost = reservation_cost(total_tokens, output_ceiling, api.pricing, model=self.config.model)
+            cost = planned_cost.amount
         return {
             "status": "estimated", "generationProfile": self.config.generation_profile,
             "provider": self.config.provider, "model": self.config.model,
@@ -1450,6 +1458,7 @@ class ProviderSummarizer:
             "chunkInputTokensEstimate": pending_tokens if api else None,
             "inputTokensEstimate": total_tokens, "outputTokensCeiling": output_ceiling,
             "baseCostCeilingJpy": cost, "excludesRetries": True, "mergeUsesInputCeiling": bool(merge and api),
+            "baseCostEstimate": planned_cost.model_dump(mode="json") if planned_cost else None,
             "estimators": sorted(estimators),
             "commandMaxCalls": api.limits.max_calls if api else None,
             "commandMaxCostJpy": api.limits.max_cost_jpy if api and api.pricing else None,
@@ -1597,6 +1606,7 @@ def generator_fingerprint(config: PipelineConfig) -> str:
         "model": config.model,
         "reasoningEffort": config.reasoning_effort,
         "generatorPromptVersion": GENERATOR_PROMPT_VERSION,
+        "bridgeVersion": BRIDGE_VERSION,
         "inputPreparationVersion": INPUT_PREPARATION_VERSION,
         "summaryPromptId": prompt.prompt_id,
         "summaryPromptVersion": prompt.version,
@@ -1610,7 +1620,13 @@ def generator_fingerprint(config: PipelineConfig) -> str:
     if config.provider == "azure-openai":
         value["azureGenerationContract"] = 2
     if config.inference_options:
-        value["inferenceOptions"] = config.inference_options
+        options = dict(config.inference_options)
+        options.pop("bridge_profile", None)  # A profile rename is not a generation change.
+        if "bridge" in options:
+            options.pop("bridge")  # Bridge's content-free settings hash excludes authentication.
+        if "azure" in options:
+            options["azure"] = {key: value for key, value in options["azure"].items() if key != "pricing"}
+        value["inferenceOptions"] = options
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -2404,6 +2420,7 @@ def rebuild_state(
             "generatorReasoningEffort": config.reasoning_effort,
             **({"generatorOptions": config.inference_options} if config.inference_options else {}),
             "generatorPromptVersion": GENERATOR_PROMPT_VERSION,
+        "bridgeVersion": BRIDGE_VERSION,
             "summaryPromptId": prompt.prompt_id,
             "summaryPromptVersion": prompt.version,
             "summaryPromptSha256": prompt.sha256,

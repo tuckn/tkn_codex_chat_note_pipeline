@@ -12,10 +12,13 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from tkn_genai_bridge import TokenPricing, estimate_cost
+
 from .config import AppConfig
+from .cost_policy import record_usage, usage_fields
 from .generation_usage import metric_records, usage_totals
 from .report_evidence import DIAGNOSTIC_FIELDS, LABEL_FIELDS, ReportEvidence
-from .report_settings import PriceScenario
+from .report_settings import BridgePriceScenario
 from .session_notes import PipelineError, atomic_write_text
 from .usage_records import TOKEN_FIELDS, timestamp, token_number
 
@@ -38,8 +41,11 @@ DIMENSIONS = (
     "usageSource",
     "usageScope",
     "usageComplete",
+    "usageCompleteness",
     "durationSeconds",
     "httpStatus",
+    "retryAfterSeconds",
+    "submissionUnknown",
     "error",
     "evidencePath",
     *LABEL_FIELDS,
@@ -59,7 +65,17 @@ def _read(path: Path, inventory: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _normalize(record: dict[str, Any], offset: int) -> dict[str, Any]:
+    record = dict(record)
+    if record.get("bridgeUsage") is not None or (
+        record.get("provider") == "claude-code" and record.get("usageSource") == "tkn-genai-bridge"
+    ):
+        usage = record_usage(record)
+        record.update(usage_fields(usage))
+        record["bridgeUsage"] = usage.model_dump(mode="json")
     value = {key: record.get(key) for key in DIMENSIONS}
+    for key in ("bridgeUsage", "costEstimate", "plannedCostEstimate", "estimatedCostJpy", "reservedCostJpy"):
+        if key in record:
+            value[key] = record[key]
     for key in TOKEN_FIELDS:
         raw = record.get(key)
         if raw is not None and token_number(raw) is None:
@@ -207,33 +223,9 @@ def collect_usage(config: AppConfig) -> dict[str, Any]:
             "warnings": warnings, "diagnostics": diagnostic_rows}
 
 
-def reference_cost(record: dict[str, Any], price: PriceScenario) -> float | None:
+def reference_cost(record: dict[str, Any], price: TokenPricing) -> float | None:
     """A same-count scenario, never an invoice or a prediction of another model's work."""
-    input_count, output_count = record.get("inputTokens"), record.get("outputTokens")
-    if input_count is None or output_count is None:
-        return None
-    cached = writes = 0
-    if price.cache_policy == "observed":
-        cached_value = record.get("cachedInputTokens")
-        if cached_value is None:
-            return None
-        cached = int(cached_value)
-        if price.cache_write_per_million is not None:
-            write_value = record.get("cacheWriteTokens")
-            if write_value is None:
-                return None
-            writes = int(write_value)
-    if cached + writes > input_count:
-        return None
-    return (
-        float(
-            (input_count - cached - writes) * price.input_per_million
-            + cached * (price.cached_input_per_million or 0)
-            + writes * (price.cache_write_per_million or 0)
-            + output_count * price.output_per_million
-        )
-        / 1_000_000
-    )
+    return estimate_cost(record_usage(record), price, basis="scenario").amount
 
 
 def _validate_destination(config: AppConfig) -> Path:
@@ -291,9 +283,13 @@ def _csv_text(records: list[dict[str, Any]], columns: list[str] | None = None) -
 def build_usage_report(config: AppConfig, *, dry_run: bool = False, no_open: bool = False) -> dict[str, Any]:
     root = _validate_destination(config)
     data = collect_usage(config)
-    scenarios = config.usage_report.price_scenarios
+    scenarios = {name: value.pricing if isinstance(value, BridgePriceScenario) else value
+                 for name, value in config.usage_report.price_scenarios.items()}
     for record in data["records"]:
-        record["referenceCosts"] = {name: reference_cost(record, price) for name, price in scenarios.items()}
+        costs = {name: estimate_cost(record_usage(record), price, basis="scenario")
+                 for name, price in scenarios.items()}
+        record["referenceCosts"] = {name: cost.amount for name, cost in costs.items()}
+        record["referenceCostDetails"] = {name: cost.model_dump(mode="json") for name, cost in costs.items()}
     payload = {
         "application": "tkn-codex-chat-note",
         "schemaVersion": 1,

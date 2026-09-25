@@ -9,6 +9,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 from test_thread_timeline import candidate, config, event
+from tkn_genai_bridge.providers import litellm as bridge_backend
 
 from tkn_codex_chat_note import api_inference
 from tkn_codex_chat_note.api_inference import ApiClient, ApiError, strict_schema
@@ -61,11 +62,12 @@ def fake_http(monkeypatch):
         item = replies.pop(0)
         return item if isinstance(item, httpx.Response) else httpx.Response(200, json=item)
 
-    monkeypatch.setattr(
-        api_inference.httpx, "Client", lambda **kw: actual_client(transport=httpx.MockTransport(handle), **kw)
-    )
-    monkeypatch.setattr(ApiClient, "estimate", lambda *args: 1000)
-    monkeypatch.setattr(api_inference, "token_provider", Mock(return_value=lambda: "test-token"))
+    bridge_backend.load_sdk()
+    class FakeClient(actual_client):
+        def __init__(self, **kwargs):
+            super().__init__(**{**kwargs, "transport": httpx.MockTransport(handle)})
+    monkeypatch.setattr(api_inference.httpx, "Client", FakeClient)
+    monkeypatch.setattr(bridge_backend, "azure_headers", Mock(return_value={"Authorization": "Bearer test-token"}))
     return calls, replies
 
 
@@ -86,7 +88,7 @@ def test_azure_payload_and_unknown_usage_preserved(fake_http):
     assert "test-token" not in json.dumps(record)
 
 
-@pytest.mark.parametrize("status,retry", [(400, False), (401, False), (403, False), (429, True), (503, True)])
+@pytest.mark.parametrize("status,retry", [(400, False), (401, False), (403, False), (429, False), (503, False)])
 def test_http_failures_are_bounded_and_usage_unknown(fake_http, status, retry):
     calls, replies = fake_http
     replies.append(httpx.Response(status, headers={"Retry-After": "12"}, text="do not log private response"))
@@ -139,7 +141,7 @@ def test_input_limit_blocks_chunks_merge_and_repair_before_auth(fake_http, monke
     client = ApiClient(settings(input_tokens=1024))
     with pytest.raises(ApiError, match="input estimate"):
         client.invoke("merge", SCHEMA, timeout=30)
-    api_inference.token_provider.assert_not_called()
+    bridge_backend.azure_headers.assert_not_called()
     assert not calls and not client.records
 
 
@@ -201,22 +203,25 @@ def test_auth_failure_not_retried_by_summarizer(tmp_path, fake_http):
     assert len(calls) == 1 and runner.last_metrics["modelCalls"] == 1
 
 
-def test_retry_after_applies_and_all_attempts_count(tmp_path, fake_http):
+def test_server_errors_preserve_retry_after_without_automatic_retry(tmp_path, fake_http):
     calls, replies = fake_http
-    replies.extend([httpx.Response(429, headers={"Retry-After": "9"}), response()])
+    replies.append(httpx.Response(429, headers={"Retry-After": "9"}))
     sleeper = Mock()
     runner = ProviderSummarizer(
-        replace(
-            config(tmp_path),
-            provider="azure-openai",
-            model="example-model",
-            inference_options=settings().inference_options,
-        ),
-        sleeper=sleeper,
-    )
-    assert runner._invoke("hello") == {"ok": "yes"}
-    sleeper.assert_called_once_with(9)
-    assert len(calls) == 2 and runner.last_metrics["modelCalls"] == 2
+        replace(config(tmp_path), provider="azure-openai", model="example-model",
+                inference_options=settings().inference_options), sleeper=sleeper)
+    with pytest.raises(Exception, match="HTTP 429") as error:
+        runner._invoke("hello")
+    assert isinstance(error.value.__cause__, ApiError)
+    assert error.value.__cause__.retry_after == 9 and not error.value.__cause__.retryable
+    sleeper.assert_not_called()
+    assert len(calls) == 1 and runner.last_metrics["modelCalls"] == 1
+    row = runner.last_metrics["apiRequests"][0]
+    assert row["httpStatus"] == 429 and row["retryAfterSeconds"] == 9
+    from tkn_codex_chat_note.usage_report import _normalize
+
+    normalized = _normalize(row, 0)
+    assert normalized["httpStatus"] == 429 and normalized["retryAfterSeconds"] == 9
 
 
 def test_ollama_explicit_context_digest_and_usage(fake_http):
@@ -318,22 +323,9 @@ def test_short_wire_ids_round_trip_without_rewriting_narrative(fake_http):
     replies.append(reply)
     client = ApiClient(settings())
     client.allowed_ids = [identifier]
-    value = client.invoke(prompt, SCHEMA, timeout=30)
+    value = client.invoke(prompt, {"type": "object"}, timeout=30)
     assert value == {"eventIds": [identifier], "text": "E00001"}
     assert client.records[0]["requestEncoding"] == "event-id-aliases-v1"
-
-
-@pytest.mark.parametrize(
-    "headers,expected",
-    [
-        ({"Retry-After": "12"}, 12),
-        ({"retry-after-ms": "1250"}, 1.25),
-        ({"Retry-After": "nan"}, 0),
-        ({"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}, 0),
-    ],
-)
-def test_retry_delay_formats(headers, expected):
-    assert api_inference.retry_delay(httpx.Headers(headers)) == expected
 
 
 def test_schema_property_names_are_not_removed():
@@ -387,7 +379,7 @@ def test_azure_dry_run_never_authenticates_or_writes(tmp_path, monkeypatch):
     )
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     with (patch.object(ApiClient, "invoke", side_effect=AssertionError("API invocation")),
-          patch.object(api_inference, "token_provider", side_effect=AssertionError("authentication"))):
+          patch.object(bridge_backend, "azure_headers", side_effect=AssertionError("authentication"))):
         report = run_pipeline(cfg, mode="clone", dry_run=True)
     assert report["ok"] and report["threadCounts"] == {"planned": 2}
     assert report["generationEstimate"]["baseCostCeilingJpy"] > 0

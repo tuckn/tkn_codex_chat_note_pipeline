@@ -5,6 +5,7 @@ from dataclasses import replace
 from unittest.mock import Mock
 
 import pytest
+from bridge_fixtures import wire_note
 from test_api_inference import settings
 from test_session_note_pipeline import note_data
 from test_thread_timeline import candidate, config, event
@@ -216,7 +217,7 @@ def test_runtime_progress_and_saved_report_have_usage(tmp_path, monkeypatch, cap
         prompt = json.loads(request.content)["messages"][0]["content"]
         payload = json.loads(prompt.split("BEGIN_INPUT_JSON\n")[1].split("\nEND_INPUT_JSON")[0])
         events = tuple(event(e["id"], actor=e["actor"]) for e in payload["events"])
-        value = note_data(candidate(tmp_path, events))
+        value = wire_note(note_data(candidate(tmp_path, events)))
         return httpx.Response(
             200,
             json={
@@ -226,10 +227,13 @@ def test_runtime_progress_and_saved_report_have_usage(tmp_path, monkeypatch, cap
             },
         )
 
-    monkeypatch.setattr(
-        api_inference.httpx, "Client", lambda **kw: actual_client(transport=httpx.MockTransport(handle), **kw)
-    )
-    monkeypatch.setattr(api_inference, "token_provider", lambda *a: lambda: "test-token")
+    from tkn_genai_bridge.providers import litellm as bridge_backend
+    bridge_backend.load_sdk()
+    class FakeClient(actual_client):
+        def __init__(self, **kwargs):
+            super().__init__(**{**kwargs, "transport": httpx.MockTransport(handle)})
+    monkeypatch.setattr(api_inference.httpx, "Client", FakeClient)
+    monkeypatch.setattr(bridge_backend, "azure_headers", lambda *a, **k: {"Authorization": "Bearer test-token"})
     monkeypatch.setattr(ApiClient, "estimate", lambda *a: 1000)
     caplog.set_level("INFO", logger=LOGGER.name)
     report = run_pipeline(cfg, mode="clone", progress=_progress)

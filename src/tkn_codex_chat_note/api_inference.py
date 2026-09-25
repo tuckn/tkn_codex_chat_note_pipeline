@@ -1,20 +1,19 @@
-"""Bounded Azure/OpenAI v1 and local Ollama inference with per-attempt usage."""
+"""Application budgets and event aliases around the shared generation bridge."""
 
 from __future__ import annotations
 
 import json
-import math
 import time
 from copy import deepcopy
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
+from tkn_genai_bridge import GenAIError, GenerationRequest, OutputValidationError, Profile, ProviderError, Runtime
+from tkn_genai_bridge.providers.cli import schema_prompt
 
-from .api_settings import ApiLimits, AzureSettings
-from .azure_auth import token_provider
-from .inference import InferenceConfig, InferenceExecutionError, schema_grounded_prompt, validate_ollama_base_url
+from .api_settings import ApiLimits
+from .cost_policy import reservation_cost
+from .inference import InferenceConfig, InferenceExecutionError, bridge_profile, update_usage
 from .offline_tokens import token_estimate
 from .usage_records import new_record, timestamp
 
@@ -103,25 +102,6 @@ def alias_prompt(prompt: str, mapping: dict[str, str]) -> str:
     return before + "BEGIN_INPUT_JSON\n" + encoded + "\nEND_INPUT_JSON" + after
 
 
-def retry_delay(headers: httpx.Headers) -> float:
-    value = headers.get("retry-after")
-    try:
-        if value is not None:
-            try:
-                seconds = float(value)
-            except ValueError:
-                seconds = (parsedate_to_datetime(value) - datetime.now(UTC)).total_seconds()
-        else:
-            seconds = float(headers.get("retry-after-ms", headers.get("x-ms-retry-after-ms", "0"))) / 1000
-        return max(0.0, seconds) if math.isfinite(seconds) else 0.0
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-
-
-def _number(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
-
-
 class ApiClient:
     """One sequential command's budget; reservations include failed/unknown attempts.
 
@@ -133,7 +113,9 @@ class ApiClient:
         self.config = config
         self.options = getattr(config, "inference_options", {})
         self.limits = ApiLimits.model_validate(self.options.get("limits", {}))
-        self.azure = AzureSettings.model_validate(self.options["azure"]) if config.provider == "azure-openai" else None
+        self.azure = self.options["azure"] if config.provider == "azure-openai" else None
+        self.profile = self._profile()
+        self.runtime = Runtime(self.profile, profile_name=self.options.get("bridge_profile"))
         self.allowed_ids: list[str] = []
         self.stage = "unknown"
         self.records: list[dict[str, Any]] = []
@@ -141,7 +123,10 @@ class ApiClient:
         self.budget_stop: dict[str, Any] | None = None
         self.observer: Any = None
         self.response_model: str | None = None
-        self.pricing = self.azure.pricing.get(config.model) if self.azure else None
+        self.pricing = self.profile.pricing.get(config.model)
+        if self.pricing is not None and self.pricing.currency != "JPY":
+            raise ApiError("max_cost_jpy requires JPY pricing; select a Bridge profile with JPY rates "
+                           "(no FX conversion)")
 
     def observe_model(self, model: Any) -> None:
         if not isinstance(model, str) or not model.strip():
@@ -153,40 +138,67 @@ class ApiClient:
     def aliases(self) -> dict[str, str]:
         return {identifier: f"E{index:05d}" for index, identifier in enumerate(self.allowed_ids, 1)}
 
-    def body(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+    def _profile(self) -> Profile:
+        profile = bridge_profile(self.config)
+        values = profile.model_dump()
+        # Application ceilings never increase a shared limit.
+        values["max_output_tokens"] = min(profile.max_output_tokens or self.limits.output_tokens,
+                                          self.limits.output_tokens)
+        if profile.provider == "ollama":
+            options = dict(values.get("ollama") or {})
+            options["context_tokens"] = min(options.get("context_tokens") or self.limits.context_tokens,
+                                             self.limits.context_tokens)
+            values["ollama"] = options
+            self.limits = ApiLimits.model_validate({
+                **self.limits.model_dump(),
+                "context_tokens": options["context_tokens"],
+                "output_tokens": values["max_output_tokens"],
+                "input_tokens": min(self.limits.input_tokens,
+                                    options["context_tokens"] - values["max_output_tokens"]),
+            })
+        return Profile.model_validate(values)
+
+    def close(self) -> None:
+        self.runtime.close()
+
+    def request(self, prompt: str, schema: dict[str, Any]) -> GenerationRequest:
         mapping = self.aliases()
-        prompt = alias_prompt(prompt, mapping)
-        schema = strict_schema(schema, list(mapping.values()))
-        if self.azure:
-            return {
-                "model": self.config.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {"name": "session_note", "strict": True, "schema": schema},
-                },
-                "max_completion_tokens": self.limits.output_tokens,
-                "reasoning_effort": self.config.reasoning_effort,
-                "store": False,
-                "stream": False,
-            }
+        return GenerationRequest(
+            prompt=alias_prompt(prompt, mapping),
+            output_schema=strict_schema(schema, list(mapping.values())),
+            schema_name="session_note",
+        )
+
+    def body(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+        """Offline estimate envelope, not a provider-specific HTTP payload."""
+        request = self.request(prompt, schema)
         return {
-            "model": self.config.model,
-            "messages": [{"role": "user", "content": schema_grounded_prompt(prompt, schema)}],
-            "format": schema,
-            "stream": False,
-            "think": self.config.reasoning_effort != "low",
-            "options": {
-                "temperature": 0,
-                "num_ctx": self.limits.context_tokens,
-                "num_predict": self.limits.output_tokens,
-            },
+            "messages": [{"role": "user", "content": schema_prompt(request) if not self.azure else request.prompt}],
+            "output_schema": request.output_schema,
+            "profile": self.profile.model_dump(exclude={"azure", "cli", "pricing"}),
         }
 
     def estimate(self, prompt: str, schema: dict[str, Any]) -> int:
-        body = json.dumps(self.body(prompt, schema), ensure_ascii=False)
-        count, self.estimator = token_estimate(body, azure=self.azure is not None)
-        return count
+        count, self.estimator = token_estimate(json.dumps(self.body(prompt, schema), ensure_ascii=False),
+                                               azure=self.azure is not None)
+        # Reserve overhead for Bridge's JSON instruction and provider framing.
+        return count + 256
+
+    def _check_model_digest(self, timeout: int) -> None:
+        if self.config.provider != "ollama" or not self.options.get("model_digest"):
+            return
+        assert self.profile.ollama is not None
+        try:
+            with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+                response = client.get(self.profile.ollama.base_url + "/api/tags")
+                response.raise_for_status()
+                tags = response.json()
+            matched = any(m.get("name") == self.config.model and m.get("digest") == self.options["model_digest"]
+                          for m in tags.get("models", []))
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+            raise ApiError("cannot verify the configured Ollama model digest") from None
+        if not matched:
+            raise ApiError("Ollama model digest differs from configured model_digest")
 
     def _stop_budget(self, reason: str, message: str, reserve: float | None) -> None:
         self.budget_stop = {
@@ -210,122 +222,67 @@ class ApiClient:
         if len(self.records) >= self.limits.max_calls:
             self._stop_budget("api-call-budget",
                               "API command max_calls budget reached; checkpointed work can be resumed", None)
-        reserve = self.pricing.cost(estimated, self.limits.output_tokens) if self.pricing else 0.0
+        planned = reservation_cost(estimated, self.profile.max_output_tokens or self.limits.output_tokens,
+                                   self.pricing, model=self.config.model)
+        if self.pricing is not None and planned.amount is None:
+            raise ApiError(f"cannot reserve configured cost: {planned.unavailable_reason}; no request submitted")
+        reserve = planned.amount or 0.0
         if self.pricing and self.reserved_jpy + reserve > self.limits.max_cost_jpy:
             self._stop_budget("api-cost-budget",
                               "API command estimated cost budget reached; no request submitted", reserve)
-        headers = {"Content-Type": "application/json"}
-        if self.azure:
-            try:
-                headers["Authorization"] = (
-                    "Bearer " + token_provider(self.azure.endpoint, self.azure.tenant_id)()
-                )
-            except ApiError:
-                raise
-            except Exception as exc:
-                raise ApiError(
-                    "Azure browser authentication failed or timed out before submission; complete sign-in and retry"
-                ) from exc
-            endpoint = self.azure.endpoint + "chat/completions"
-        else:
-            endpoint = validate_ollama_base_url(self.config.ollama_base_url) + "/api/chat"
-        with httpx.Client(timeout=httpx.Timeout(timeout, connect=min(timeout, 10)), follow_redirects=False) as client:
-            if not self.azure and self.options.get("model_digest"):
-                tags = client.get(validate_ollama_base_url(self.config.ollama_base_url) + "/api/tags").json()
-                if not any(
-                    m.get("name") == self.config.model and m.get("digest") == self.options["model_digest"]
-                    for m in tags.get("models", [])
-                ):
-                    raise ApiError("Ollama model digest differs from configured model_digest")
-            record: dict[str, Any] = {
-                **new_record(self.config.provider, self.config.model, self.config.reasoning_effort),
-                "provider": self.config.provider,
-                "usageSource": "azure.response.usage" if self.azure else "ollama.response.counts",
-                "usageScope": "api-request",
-                "requestEncoding": "event-id-aliases-v1",
-                "inputJsonFormat": "compact" if any(f"MODE: {mode}\n" in prompt for mode in (
-                    "repair-invalid-draft", "regenerate-invalid-output")) else "default",
-                "requestSequence": len(self.records) + 1,
-                "stage": getattr(self, "stage", "unknown"),
-                "outputTokenLimit": self.limits.output_tokens,
-                **({"requestedDeployment": self.config.model,
-                    "pricing": self.pricing.model_dump() if self.pricing else None,
-                    "costBudgetEnforced": self.pricing is not None} if self.azure else {}),
-                "promptCharacters": len(self.body(prompt, schema)["messages"][0]["content"]),
-                "inputTokenEstimate": estimated,
-                "estimator": getattr(self, "estimator", "test-estimate"),
-                "reservedCostJpy": reserve if self.pricing else None,
-                "inputTokens": None,
-                "outputTokens": None,
-                "reasoningTokens": None,
-                "cachedInputTokens": None,
-                "cacheWriteTokens": None,
-                "estimatedCostJpy": None,
-                "model": None,
-                "status": "started",
-                "durationSeconds": None,
-            }
-            self.records.append(record)
-            self.reserved_jpy += reserve
-            started = time.monotonic()
+        self._check_model_digest(timeout)
+        record: dict[str, Any] = {
+            **new_record(self.config.provider, self.config.model, self.config.reasoning_effort),
+            "requestEncoding": "event-id-aliases-v1",
+            "inputJsonFormat": "compact" if any(f"MODE: {mode}\n" in prompt for mode in (
+                "repair-invalid-draft", "regenerate-invalid-output")) else "default",
+            "requestSequence": len(self.records) + 1,
+            "stage": self.stage,
+            "outputTokenLimit": self.profile.max_output_tokens,
+            **({"requestedDeployment": self.config.model,
+                "pricing": self.pricing.model_dump() if self.pricing else None,
+                "costBudgetEnforced": self.pricing is not None} if self.azure else {}),
+            "promptCharacters": len(self.body(prompt, schema)["messages"][0]["content"]),
+            "inputTokenEstimate": estimated,
+            "estimator": getattr(self, "estimator", "test-estimate"),
+            "reservedCostJpy": reserve if self.pricing else None,
+            "plannedCostEstimate": planned.model_dump(mode="json"),
+            "estimatedCostJpy": None,
+        }
+        self.records.append(record)
+        self.reserved_jpy += reserve
+        started = time.monotonic()
+        if self.observer:
+            self.observer({"type": "api-request-start", **record, "commandReservedCostJpy": self.reserved_jpy})
+        try:
+            # Reuse authentication while respecting a decreasing command deadline.
+            self.runtime.profile = self.profile.model_copy(update={
+                "timeout_seconds": min(self.profile.timeout_seconds, timeout)})
+            result = self.runtime.generate(self.request(prompt, schema))
+            update_usage(record, result.record)
+            if self.azure:
+                self.observe_model(result.record.response_model)
+            elif record["inputTokens"] is not None and record["inputTokens"] > self.limits.input_tokens:
+                raise ApiError("Ollama reported input usage beyond the configured limit")
+            record["status"] = "received"
+            return dict(remap_event_ids(result.data, {v: k for k, v in self.aliases().items()}))
+        except GenAIError as exc:
+            if exc.record is not None:
+                update_usage(record, exc.record)
+            record["status"] = "failed"
+            record["submissionUnknown"] = isinstance(exc, ProviderError) and exc.submission_unknown
+            retry_after = 0.0
+            if isinstance(exc, ProviderError):
+                record.update(httpStatus=exc.http_status, retryAfterSeconds=exc.retry_after_seconds)
+                retry_after = exc.retry_after_seconds or 0.0
+            # Preserve transport diagnostics; retries remain limited to invalid output.
+            raise ApiError(str(exc), retryable=isinstance(exc, OutputValidationError),
+                           retry_after=retry_after) from exc
+        except BaseException:
+            record["status"] = "failed"
+            raise
+        finally:
+            record["finishedAt"] = timestamp()
+            record["durationSeconds"] = round(time.monotonic() - started, 3)
             if self.observer:
-                self.observer({"type": "api-request-start", **record, "commandReservedCostJpy": self.reserved_jpy})
-            try:
-                response = client.post(endpoint, json=self.body(prompt, schema), headers=headers)
-                record["httpStatus"] = response.status_code
-                if response.status_code != 200:
-                    retry_after = retry_delay(response.headers)
-                    raise ApiError(
-                        f"{self.config.provider} returned HTTP {response.status_code}",
-                        retryable=response.status_code in {429, 500, 502, 503, 504},
-                        retry_after=retry_after,
-                    )
-                payload = response.json()
-                record["model"] = payload.get("model")
-                if self.azure:
-                    usage = payload.get("usage") or {}
-                    record.update(
-                        inputTokens=_number(usage.get("prompt_tokens")),
-                        outputTokens=_number(usage.get("completion_tokens")),
-                        reasoningTokens=_number((usage.get("completion_tokens_details") or {}).get("reasoning_tokens")),
-                        cachedInputTokens=_number((usage.get("prompt_tokens_details") or {}).get("cached_tokens")),
-                    )
-                    if self.pricing and record["inputTokens"] is not None and record["outputTokens"] is not None:
-                        record["estimatedCostJpy"] = self.pricing.cost(record["inputTokens"], record["outputTokens"])
-                    self.observe_model(payload.get("model"))
-                    choice = payload["choices"][0]
-                    if choice.get("finish_reason") != "stop" or choice["message"].get("refusal"):
-                        raise ApiError("Azure returned a refusal or incomplete response; no note accepted")
-                    content = choice["message"]["content"]
-                else:
-                    record.update(
-                        inputTokens=_number(payload.get("prompt_eval_count")),
-                        outputTokens=_number(payload.get("eval_count")),
-                    )
-                    if not payload.get("done") or payload.get("done_reason") == "length":
-                        raise ApiError("Ollama returned an incomplete response; no note accepted")
-                    if record["inputTokens"] is not None and record["inputTokens"] > self.limits.input_tokens:
-                        raise ApiError("Ollama reported input usage beyond the configured limit")
-                    content = payload["message"]["content"]
-                result = json.loads(content)
-                if not isinstance(result, dict):
-                    raise ValueError("expected object")
-                record["status"] = "received"
-                return dict(remap_event_ids(result, {v: k for k, v in self.aliases().items()}))
-            except httpx.TransportError as exc:
-                record["status"] = "transport-failed"
-                raise ApiError(
-                    "API transport failed or timed out; billing outcome may be unknown", retryable=True
-                ) from exc
-            except (KeyError, IndexError, TypeError, ValueError) as exc:
-                record["status"] = "invalid-response"
-                raise ApiError("API returned invalid JSON or an unexpected response shape") from exc
-            except ApiError:
-                record["status"] = "rejected"
-                raise
-            finally:
-                record["finishedAt"] = timestamp()
-                record["usageComplete"] = record["inputTokens"] is not None and record["outputTokens"] is not None
-                record["durationSeconds"] = round(time.monotonic() - started, 3)
-                if self.observer:
-                    self.observer({"type": "api-request-complete", **record})
+                self.observer({"type": "api-request-complete", **record})

@@ -277,7 +277,7 @@ def test_config_show_reports_application_owned_summary_profile(
         "effectiveVersion": CONFIG_SCHEMA_VERSION,
         "hasInMemoryMigrations": False,
     }
-    assert output["sources"]["generation.profiles.codex.model"] == "built-in defaults"
+    assert output["sources"]["generation.profiles.codex.bridge_profile"] == "built-in defaults"
     assert [layer["kind"] for layer in output["layers"]] == ["built-in", "global", "project"]
     assert output["layers"][0]["schemaVersion"] == CONFIG_SCHEMA_VERSION
 

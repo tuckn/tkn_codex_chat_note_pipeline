@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,50 +36,6 @@ def new_record(provider: str, model: str, effort: str) -> dict[str, Any]:
 
 def token_number(value: Any) -> int | None:
     return value if type(value) is int and value >= 0 else None
-
-
-def read_codex_usage(output: str | bytes | None, record: dict[str, Any]) -> None:
-    """Only terminal per-turn usage is additive; never sum cumulative token events."""
-    if isinstance(output, bytes):
-        output = output.decode("utf-8", errors="replace")
-    turns: list[dict[str, Any]] = []
-    started = 0
-    failed = False
-    for line in (output or "").splitlines():
-        try:
-            event = json.loads(line.lstrip("\ufeff"))
-        except ValueError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        kind = event.get("type")
-        if kind == "turn.started":
-            started += 1
-        elif kind in {"turn.failed", "error"}:
-            failed = True
-        elif kind == "turn.completed":
-            usage = event.get("usage")
-            turns.append(usage if isinstance(usage, dict) else {})
-    if not turns:
-        return
-    complete = not failed and started <= len(turns)
-    record.update(usageSource="codex.exec.turn.completed", usageScope="invocation-turns", completedTurnCount=len(turns))
-    for target, source in zip(
-        TOKEN_FIELDS,
-        (
-            "input_tokens",
-            "output_tokens",
-            "cached_input_tokens",
-            "reasoning_output_tokens",
-            "cache_write_input_tokens",
-        ),
-        strict=True,
-    ):
-        values = [token_number(turn.get(source)) for turn in turns]
-        known = sum(value for value in values if value is not None)
-        record[target] = known if complete and all(value is not None for value in values) else None
-        record["known" + target[0].upper() + target[1:]] = known
-    record["usageComplete"] = complete and all(record[key] is not None for key in TOKEN_FIELDS[:2])
 
 
 class UsageJournal:

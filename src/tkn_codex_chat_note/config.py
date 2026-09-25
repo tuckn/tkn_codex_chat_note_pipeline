@@ -16,12 +16,12 @@ import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from .api_settings import ApiLimits, AzurePricing, AzureSettings, normalize_azure_generation
+from .bridge_settings import BridgeProfileConfig
 from .config_validation import validate_config_layer
 from .inference import InferenceProvider, validate_ollama_base_url
 from .report_settings import UsageReportSettings
 from .session_notes import (
     DEFAULT_IDLE_MINUTES,
-    DEFAULT_MODEL,
     DEFAULT_MODEL_TIMEOUT_SECONDS,
     DEFAULT_RUNTIME_MINUTES,
     DEFAULT_SOURCE_ID,
@@ -30,8 +30,8 @@ from .session_notes import (
     atomic_write_text,
 )
 
-CONFIG_SCHEMA_VERSION: Literal["8.1.0"] = "8.1.0"
-_CONFIG_SCHEMA_VERSION_PARTS = (8, 1, 0)
+CONFIG_SCHEMA_VERSION: Literal["8.3.0"] = "8.3.0"
+_CONFIG_SCHEMA_VERSION_PARTS = (8, 3, 0)
 _CONFIG_SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 APP_DIRECTORY_NAME = "codex_chat_note_pipeline"
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
@@ -51,6 +51,7 @@ PROVIDER_TRANSPORT_DEFAULTS: dict[InferenceProvider, tuple[str, str]] = {
     "codex": ("executable", "codex"),
     "claude-code": ("executable", "claude"),
     "github-copilot": ("executable", "copilot"),
+    "antigravity": ("executable", "agy"),
     "ollama": ("endpoint", "http://127.0.0.1:11434"),
     "azure-openai": ("endpoint", ""),
 }
@@ -195,6 +196,8 @@ class ProviderConfig(BaseModel):
 
     def inference_options(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
+        if self.provider == "antigravity":
+            result["cli_executable"] = self.executable
         if self.azure is not None:
             result["azure"] = self.azure.model_dump(mode="json")
         if self.limits is not None:
@@ -204,8 +207,8 @@ class ProviderConfig(BaseModel):
         return result
 
 
-def _default_profiles() -> dict[str, ProviderConfig]:
-    return {"codex": ProviderConfig(provider="codex", model=DEFAULT_MODEL)}
+def _default_profiles() -> dict[str, BridgeProfileConfig | ProviderConfig]:
+    return {"codex": BridgeProfileConfig(bridge_profile="codex-default")}
 
 
 class GenerationConfig(BaseModel):
@@ -215,7 +218,7 @@ class GenerationConfig(BaseModel):
 
     session_note_profile: Literal["default-jp", "default-en"] = "default-jp"
     active_profile: str = "codex"
-    profiles: dict[str, ProviderConfig] = Field(default_factory=_default_profiles)
+    profiles: dict[str, BridgeProfileConfig | ProviderConfig] = Field(default_factory=_default_profiles)
 
     @model_validator(mode="before")
     @classmethod
@@ -271,7 +274,7 @@ class AppConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["8.1.0"] = CONFIG_SCHEMA_VERSION
+    schema_version: Literal["8.3.0"] = CONFIG_SCHEMA_VERSION
     installed_at: datetime | None = None
     sources: dict[SourceId, CodexSourceConfig] = Field(default_factory=lambda: {DEFAULT_SOURCE_ID: CodexSourceConfig()})
     cache_root: Path = Field(default_factory=default_user_cache_root)
@@ -420,7 +423,7 @@ class AppConfig(BaseModel):
         return self.active_provider_config.provider
 
     @property
-    def active_provider_config(self) -> ProviderConfig:
+    def active_provider_config(self) -> ProviderConfig | BridgeProfileConfig:
         return self.generation.profiles[self.generation.active_profile]
 
     @property
@@ -428,7 +431,7 @@ class AppConfig(BaseModel):
         return self.active_provider_config.model
 
     @property
-    def reasoning_effort(self) -> ReasoningEffort:
+    def reasoning_effort(self) -> str:
         return self.active_provider_config.reasoning_effort
 
     def _provider_executable(self, provider: InferenceProvider, default: str) -> str:
@@ -542,7 +545,9 @@ def _deep_merge(target: dict[str, Any], update: dict[str, Any]) -> None:
             for name, settings in value.items():
                 previous = current.get(name)
                 if (isinstance(settings, dict) and isinstance(previous, dict)
-                        and "provider" in settings and settings["provider"] != previous.get("provider")):
+                        and (("provider" in settings and settings["provider"] != previous.get("provider"))
+                             or ("bridge_profile" in settings and "bridge_profile" not in previous)
+                             or ("provider" in settings and "bridge_profile" in previous))):
                     current[name] = deepcopy(settings)
                 elif isinstance(settings, dict) and isinstance(previous, dict):
                     _deep_merge(previous, settings)
@@ -569,7 +574,11 @@ def _without_null_provider_settings(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def _default_config_document() -> dict[str, Any]:
-    document = _without_null_provider_settings(AppConfig().model_dump(mode="python", by_alias=True))
+    # Resolve shared references only after application layers have selected them.
+    reference = BridgeProfileConfig.model_construct(bridge_profile="codex-default")
+    defaults = AppConfig(generation=GenerationConfig.model_construct(profiles={"codex": reference}))
+    document = _without_null_provider_settings(defaults.model_dump(mode="python", by_alias=True))
+    document["generation"]["profiles"] = {"codex": {"bridge_profile": "codex-default"}}
     # Defer source defaults until validation: an explicit map must not acquire a
     # hidden built-in source. Later layers merge declared sources by stable ID.
     document.pop("sources")
@@ -778,8 +787,14 @@ def _apply_runtime_overrides(
     if provider is not None:
         if provider not in PROVIDER_TRANSPORT_DEFAULTS:
             raise PipelineError(f"unsupported inference provider: {provider}")
-        matches = [key for key, item in profiles.items()
-                   if isinstance(item, dict) and item.get("provider") == provider]
+        def configured_provider(item: Any) -> str | None:
+            if not isinstance(item, dict):
+                return None
+            if "bridge_profile" in item:
+                return BridgeProfileConfig.model_validate(item).provider
+            return str(item["provider"]) if "provider" in item else None
+
+        matches = [key for key, item in profiles.items() if configured_provider(item) == provider]
         if len(matches) > 1:
             raise PipelineError(f"multiple profiles use {provider!r}: {', '.join(matches)}; select --profile")
         if matches:
@@ -797,6 +812,19 @@ def _apply_runtime_overrides(
     settings = profiles[name]
     if not isinstance(settings, dict):
         raise PipelineError(f"generation.profiles.{name} must be a YAML mapping")
+    if "bridge_profile" in settings:
+        if any(key in generation_options for key in (
+            "codex_executable", "claude_executable", "copilot_executable", "ollama_base_url"
+        )):
+            raise PipelineError("configure transport options in the shared Bridge profile")
+        generation["active_profile"] = name
+        if requested is not None:
+            sources["generation.active_profile"] = "CLI option"
+        for field, value in (("model", model), ("reasoning_effort", effort)):
+            if value is not None:
+                settings.setdefault("overrides", {})[field] = value
+                sources[f"generation.profiles.{name}.overrides.{field}"] = "CLI option"
+        return
     if requested is not None or provider is not None:
         generation["active_profile"] = name
         sources["generation.active_profile"] = "CLI option"

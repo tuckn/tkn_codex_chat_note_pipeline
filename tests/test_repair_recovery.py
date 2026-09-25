@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from bridge_fixtures import wire_note
 from test_api_inference import fake_http as fake_http
 from test_api_inference import response, settings
 from test_session_note_pipeline import note_data
@@ -28,7 +29,7 @@ def azure_runner(tmp_path, *, progress=None, **limits):
 
 
 def reply(data):
-    wire = remap_event_ids(data, {"known": "E00001"})
+    wire = remap_event_ids(wire_note(data), {"known": "E00001"})
     return response(choices=[{"finish_reason": "stop", "message": {"content": json.dumps(wire)}}])
 
 

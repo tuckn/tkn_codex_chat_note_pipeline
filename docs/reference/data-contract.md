@@ -1,6 +1,6 @@
 # Data contract: chat evidence and Session Notes
 
-CLI 0.24.0 · config 8.1.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
+CLI 0.28.0 · config 8.3.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
 
 This is the file-based interface specification for tools that consume this CLI's
 output, including context curation and insight. It defines stable identities,
@@ -450,4 +450,62 @@ pricing date. They are not actual invoices or forecasts of another model's behav
 counts produce null costs. No-cache scenarios price all input normally; observed-cache scenarios use
 known cache reads and optional writes without adding those subsets twice. No online lookup, model
 invocation, currency conversion, tax, or tool-fee calculation occurs. Config 8.0 remains readable
-through compatible in-memory normalization to 8.1; stored user configuration is not rewritten.
+through compatible in-memory normalization to 8.3; stored user configuration is not rewritten.
+
+
+## Shared generation bridge (CLI 0.28)
+
+Application generation profiles use bridge_profile, optional overrides,
+limits and model_digest. Legacy application pricing remains readable as a compatibility
+adapter, but rates now belong to Bridge profiles. Connection/model/authentication/pricing are resolved from
+~/.tkn/genai_bridge/config.yaml. Legacy inline profiles remain readable; all execution
+uses tkn_genai_bridge 0.7.0 pinned in package metadata. No application CWD config is
+implicitly loaded as Bridge config. Runtime plan is offline.
+The application selects bridge_profile explicitly (codex-default when not configured),
+so changing Bridge's default_profile does not switch this application's profile.
+Legacy application and shared rates for the same model must agree; conflicting rates
+are rejected. Resolved generation settings are exposed by config show's generationResolved.
+
+The Bridge version and effective settings participate in generation identity. A shared
+profile rename or price-only change does not invalidate results. A Bridge version or
+generation-setting change invalidates generation checkpoints and makes unreviewed notes
+eligible for regeneration; reviewed and edited note protections remain unchanged.
+Shared API profiles receive default application budgets. Lower shared output/context
+limits are respected. Unknown usage remains null. Bridge record hashes and version
+are mapped to application journal fields without storing prompt/response bodies.
+Bridge 0.7 preserves cache-write usage, usage.completeness and known_subtotal when reported.
+Partial observations remain null in total fields and are mapped to knownInputTokens,
+knownOutputTokens, knownCachedInputTokens, knownReasoningTokens and knownCacheWriteTokens.
+usageCompleteness retains Bridge's complete/partial/unknown distinction; usageComplete additionally
+requires both input and output totals. Partial usage costs remain unknown with usage_incomplete
+when pricing is configured. Missing values are not fabricated. Historical evidence is not rewritten.
+Antigravity is supported through shared profiles (default executable agy) and the provider selector.
+
+Bridge owns browser authentication. One Runtime and command budget are shared across
+selected sources, and owned authentication resources are closed on exit or failure.
+Authentication objects are reused within a command; a new command may require authentication again.
+API transport errors stop without automatic retries. httpStatus, retryAfterSeconds and
+submissionUnknown are retained in journals and reports when available. JSON/schema failures allow bounded regeneration; semantic
+repair, source validation, budgets, persistence and resume remain application-owned.
+
+usage_report.price_scenarios can reference {bridge_profile, model} to select shared
+Bridge rates; legacy inline scenarios remain supported. Bridge TokenPricing validates
+rates and estimate_cost calculates both reference-report scenarios and pre-call reservations.
+GenerationRecord.cost_estimate supplies measured-use reference costs, including failed attempts.
+No application formula multiplies token counts by rates. Token estimation, conservative cache
+assumptions, sequential command reservation totals and stopping remain application-owned.
+
+API budgets require JPY rates. A different configured currency is rejected before submission;
+unconfigured prices remain unknown and only token/call limits apply. Explicit zero prices are known.
+Reservations use the effective shared/application output cap. In observed mode, the most expensive
+of ordinary input, cache reads and configured writes is reserved. Unknown/overflowed configured
+reservations prevent submission. Estimates do not guarantee actual usage or invoice ceilings.
+
+Additive journal fields include bridgeUsage (raw counts, input_tokens_scope, completeness and known_subtotal), costEstimate,
+and plannedCostEstimate. Existing inputTokens means total input including caches; uncached-scope
+provider values are summed only with complete cache counts, otherwise the total is null and the
+known subtotal is retained. Legacy Claude Bridge records without cache-write counts cannot be
+fully repriced. estimatedCostJpy is populated only for a known JPY amount. Cost snapshots preserve
+rates, currency, date, calculation basis and unavailable reason; price changes never rewrite history.
+Report records retain these fields and add referenceCostDetails alongside compatible referenceCosts.
+Reference costs may use other currencies; HTML selects one scenario/currency at a time.

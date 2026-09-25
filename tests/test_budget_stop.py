@@ -6,10 +6,12 @@ from unittest.mock import Mock
 
 import httpx
 import pytest
+from bridge_fixtures import wire_note
 from test_api_inference import AZURE, SCHEMA, settings
 from test_multi_sources import multi_config, source_chats
 from test_session_note_pipeline import note_data, write_chat
 from test_thread_timeline import candidate, config, event
+from tkn_genai_bridge.providers import litellm as bridge_backend
 
 from tkn_codex_chat_note import api_inference
 from tkn_codex_chat_note.api_inference import ApiBudgetExceeded, ApiClient
@@ -29,17 +31,21 @@ def mock_responses(monkeypatch, tmp_path):
         payload = json.loads(prompt.split("BEGIN_INPUT_JSON\n")[1].split("\nEND_INPUT_JSON")[0])
         if "events" in payload:
             events = tuple(event(e["id"], actor=e["actor"]) for e in payload["events"])
-            value = note_data(candidate(tmp_path, events))
+            value = wire_note(note_data(candidate(tmp_path, events)))
         else:
             value = note_data(candidate(tmp_path, (event(payload["partials"][-1]["lastKnownState"]["eventIds"][-1]),)))
             value.pop("timeline")
+        value = wire_note(value)
         return httpx.Response(200, json={"model": "response-model", "usage": {
             "prompt_tokens": 100, "completion_tokens": 20},
             "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(value)}}]})
 
-    monkeypatch.setattr(api_inference.httpx, "Client", lambda **kw: real_client(
-        transport=httpx.MockTransport(handle), **kw))
-    monkeypatch.setattr(api_inference, "token_provider", Mock(return_value=lambda: "test-token"))
+    bridge_backend.load_sdk()
+    class FakeClient(real_client):
+        def __init__(self, **kwargs):
+            super().__init__(**{**kwargs, "transport": httpx.MockTransport(handle)})
+    monkeypatch.setattr(api_inference.httpx, "Client", FakeClient)
+    monkeypatch.setattr(bridge_backend, "azure_headers", Mock(return_value={"Authorization": "Bearer test-token"}))
     monkeypatch.setattr(ApiClient, "estimate", lambda *a: 1000)
     return calls
 
@@ -82,7 +88,7 @@ def test_budget_stop_remains_sticky_even_if_a_cheaper_request_would_fit(monkeypa
     client.reserved_jpy = 0.99
     monkeypatch.setattr(client, "estimate", lambda *a: 1000)
     auth = Mock(side_effect=AssertionError("authentication"))
-    monkeypatch.setattr(api_inference, "token_provider", auth)
+    monkeypatch.setattr(bridge_backend, "azure_headers", auth)
     with pytest.raises(ApiBudgetExceeded):
         client.invoke("first", SCHEMA, timeout=10)
     details = dict(client.budget_stop)

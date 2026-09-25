@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from tkn_genai_bridge import TokenPricing
 
 
 class AzurePricing(BaseModel):
@@ -16,8 +17,11 @@ class AzurePricing(BaseModel):
     output_jpy_per_million: float = Field(gt=0, allow_inf_nan=False)
     pricing_date: str = Field(min_length=1)
 
-    def cost(self, input_tokens: int, output_tokens: int) -> float:
-        return (input_tokens * self.input_jpy_per_million + output_tokens * self.output_jpy_per_million) / 1_000_000
+    def bridge_pricing(self) -> TokenPricing:
+        """Translate old application settings; Bridge owns validation and calculation."""
+        return TokenPricing(currency="JPY", pricing_date=self.pricing_date,
+                            input_per_million=self.input_jpy_per_million,
+                            output_per_million=self.output_jpy_per_million)
 
 
 class AzureSettings(BaseModel):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections import Counter
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import replace
 from datetime import datetime, timedelta
 from hashlib import sha256
@@ -557,114 +558,116 @@ def run_pipeline(
     deadline = started + timedelta(minutes=config.runtime_minutes)
     remaining = limit
     reports: list[dict[str, Any]] = []
-    shared_api: ApiClient | None = None
-    for source in sources:
-        identity = {"sourceProvider": source.source_provider, "sourceId": source.source_id}
-        started_attempts = 0
+    with ExitStack() as runtime_stack:
+        shared_api: ApiClient | None = None
+        for source in sources:
+            identity = {"sourceProvider": source.source_provider, "sourceId": source.source_id}
+            started_attempts = 0
 
-        def source_progress(event: dict[str, Any], identity: dict[str, str] = identity) -> None:
-            nonlocal started_attempts
-            if event.get("type") == "thread-start":
-                started_attempts += 1
-            if progress is not None:
-                progress({**event, **identity})
+            def source_progress(event: dict[str, Any], identity: dict[str, str] = identity) -> None:
+                nonlocal started_attempts
+                if event.get("type") == "thread-start":
+                    started_attempts += 1
+                if progress is not None:
+                    progress({**event, **identity})
 
-        source_progress({"type": "source-start"})
-        source_summarizer = summarizer
-        if (summarizer is None and not dry_run and mode != "raw"
-            and (source.provider == "azure-openai" or (
-                source.provider == "ollama" and source.active_provider_config.limits is not None))):
-            source_config = source.session_note_pipeline_config(allow_missing_watermark=True)
-            source_summarizer = ProviderSummarizer(source_config, observer=source_progress)
-            if shared_api is None:
-                shared_api = ApiClient(source_config)
-            source_summarizer.api_client = shared_api
-        try:
-            report = _run_source_pipeline(
-                source,
-                mode=mode,
-                dry_run=dry_run,
-                force=force,
-                allow_edited=allow_edited,
-                thread_id=thread_id,
-                limit=remaining,
-                config_path=config_path,
-                summarizer=source_summarizer,
-                progress=source_progress,
-                deadline=deadline,
-            )
-        except (PipelineError, RawCaptureError, OSError, ValueError) as exc:
-            if len(sources) == 1:
-                raise
-            report = {
-                "schemaVersion": 2,
-                "runId": str(uuid4()),
-                "mode": mode,
-                "dryRun": dry_run,
-                "startedAt": started.isoformat(),
-                "finishedAt": now_iso(),
-                **identity,
-                "ok": False,
-                "complete": False,
-                "error": str(exc),
-                "failed": [{**identity, "error": str(exc)}],
-                "threadCounts": {},
-                "threads": [],
-                "generatedSessionNoteCount": 0,
-                "attemptedSessionNoteCount": started_attempts,
-                "reportPath": None,
-            }
-            if not dry_run and (source.state_root / "pipeline.json").is_file():
-                try:
-                    with pipeline_storage(source, initialize=False, dry_run=False, config_path=config_path):
-                        report_path = source.reports_root / f"{report['runId']}.json"
-                        report["reportPath"] = str(report_path)
-                        atomic_write_json(report_path, report)
-                        atomic_write_json(source.state_root / "last-run.json", report)
-                except (PipelineError, OSError, ValueError) as save_error:
-                    report["reportPath"] = None
-                    report["warnings"] = [f"Could not persist source failure report: {save_error}"]
-        reports.append(report)
-        if remaining is not None:
-            remaining = max(0, remaining - report["attemptedSessionNoteCount"])
-    if len(reports) == 1:
-        return reports[0]
-    counts: Counter[str] = Counter()
-    for report in reports:
-        counts.update(report["threadCounts"])
-    return {
-        "schemaVersion": 3,
-        "mode": mode,
-        "generationProfile": config.generation.active_profile,
-        "generationProvider": config.provider,
-        "dryRun": dry_run,
-        "startedAt": started.isoformat(),
-        "finishedAt": now_iso(),
-        "ok": all(report["ok"] for report in reports),
-        "complete": all(report["complete"] for report in reports),
-        "sourceResults": reports,
-        **({"generationStop": shared_api.budget_stop} if shared_api and shared_api.budget_stop else {}),
-        "generationEstimate": estimate_totals(
-            [entry["generationEstimate"] for report in reports for entry in report.get("threads", [])
-             if "generationEstimate" in entry]),
-        "usageTotals": usage_totals(
-            [request for report in reports for entry in report.get("threads", [])
-             for request in metric_records(entry.get("generationMetrics", {}))]),
-        "threadCounts": dict(counts),
-        "generatedSessionNoteCount": sum(report["generatedSessionNoteCount"] for report in reports),
-        "attemptedSessionNoteCount": sum(report["attemptedSessionNoteCount"] for report in reports),
-        "failed": [
-            {**failure, "sourceProvider": report["sourceProvider"], "sourceId": report["sourceId"]}
-            for report in reports
-            for failure in report["failed"]
-        ],
-        "warnings": [
-            f"{report['sourceProvider']}/{report['sourceId']}: {warning}"
-            for report in reports
-            for warning in report.get("warnings", [])
-        ],
-        "reportPaths": [report["reportPath"] for report in reports if report.get("reportPath")],
-    }
+            source_progress({"type": "source-start"})
+            source_summarizer = summarizer
+            if (summarizer is None and not dry_run and mode != "raw"
+                and (source.provider == "azure-openai" or (
+                    source.provider == "ollama" and source.active_provider_config.limits is not None))):
+                source_config = source.session_note_pipeline_config(allow_missing_watermark=True)
+                source_summarizer = ProviderSummarizer(source_config, observer=source_progress)
+                if shared_api is None:
+                    shared_api = ApiClient(source_config)
+                    runtime_stack.callback(shared_api.close)
+                source_summarizer.api_client = shared_api
+            try:
+                report = _run_source_pipeline(
+                    source,
+                    mode=mode,
+                    dry_run=dry_run,
+                    force=force,
+                    allow_edited=allow_edited,
+                    thread_id=thread_id,
+                    limit=remaining,
+                    config_path=config_path,
+                    summarizer=source_summarizer,
+                    progress=source_progress,
+                    deadline=deadline,
+                )
+            except (PipelineError, RawCaptureError, OSError, ValueError) as exc:
+                if len(sources) == 1:
+                    raise
+                report = {
+                    "schemaVersion": 2,
+                    "runId": str(uuid4()),
+                    "mode": mode,
+                    "dryRun": dry_run,
+                    "startedAt": started.isoformat(),
+                    "finishedAt": now_iso(),
+                    **identity,
+                    "ok": False,
+                    "complete": False,
+                    "error": str(exc),
+                    "failed": [{**identity, "error": str(exc)}],
+                    "threadCounts": {},
+                    "threads": [],
+                    "generatedSessionNoteCount": 0,
+                    "attemptedSessionNoteCount": started_attempts,
+                    "reportPath": None,
+                }
+                if not dry_run and (source.state_root / "pipeline.json").is_file():
+                    try:
+                        with pipeline_storage(source, initialize=False, dry_run=False, config_path=config_path):
+                            report_path = source.reports_root / f"{report['runId']}.json"
+                            report["reportPath"] = str(report_path)
+                            atomic_write_json(report_path, report)
+                            atomic_write_json(source.state_root / "last-run.json", report)
+                    except (PipelineError, OSError, ValueError) as save_error:
+                        report["reportPath"] = None
+                        report["warnings"] = [f"Could not persist source failure report: {save_error}"]
+            reports.append(report)
+            if remaining is not None:
+                remaining = max(0, remaining - report["attemptedSessionNoteCount"])
+        if len(reports) == 1:
+            return reports[0]
+        counts: Counter[str] = Counter()
+        for report in reports:
+            counts.update(report["threadCounts"])
+        return {
+            "schemaVersion": 3,
+            "mode": mode,
+            "generationProfile": config.generation.active_profile,
+            "generationProvider": config.provider,
+            "dryRun": dry_run,
+            "startedAt": started.isoformat(),
+            "finishedAt": now_iso(),
+            "ok": all(report["ok"] for report in reports),
+            "complete": all(report["complete"] for report in reports),
+            "sourceResults": reports,
+            **({"generationStop": shared_api.budget_stop} if shared_api and shared_api.budget_stop else {}),
+            "generationEstimate": estimate_totals(
+                [entry["generationEstimate"] for report in reports for entry in report.get("threads", [])
+                 if "generationEstimate" in entry]),
+            "usageTotals": usage_totals(
+                [request for report in reports for entry in report.get("threads", [])
+                 for request in metric_records(entry.get("generationMetrics", {}))]),
+            "threadCounts": dict(counts),
+            "generatedSessionNoteCount": sum(report["generatedSessionNoteCount"] for report in reports),
+            "attemptedSessionNoteCount": sum(report["attemptedSessionNoteCount"] for report in reports),
+            "failed": [
+                {**failure, "sourceProvider": report["sourceProvider"], "sourceId": report["sourceId"]}
+                for report in reports
+                for failure in report["failed"]
+            ],
+            "warnings": [
+                f"{report['sourceProvider']}/{report['sourceId']}: {warning}"
+                for report in reports
+                for warning in report.get("warnings", [])
+            ],
+            "reportPaths": [report["reportPath"] for report in reports if report.get("reportPath")],
+        }
 
 
 def pipeline_status(config: AppConfig, *, source_id: str | None = None) -> dict[str, Any]:

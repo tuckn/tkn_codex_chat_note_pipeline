@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from test_inference import SCHEMA, inference_config
+from bridge_fixtures import wire_note
 from test_pipeline_workflow import config_for
 
 from tkn_codex_chat_note import inference
@@ -15,7 +15,7 @@ from tkn_codex_chat_note.config import load_app_config
 from tkn_codex_chat_note.generation_usage import usage_totals
 from tkn_codex_chat_note.report_settings import PriceScenario, UsageReportSettings
 from tkn_codex_chat_note.session_notes import PipelineError, atomic_write_json
-from tkn_codex_chat_note.usage_records import UsageJournal, new_record, read_codex_usage
+from tkn_codex_chat_note.usage_records import UsageJournal, new_record
 from tkn_codex_chat_note.usage_report import build_usage_report, collect_usage, reference_cost
 
 
@@ -69,73 +69,13 @@ def saved(tmp_path, **overrides):
     return cfg, row, path
 
 
-@pytest.mark.parametrize("failure", [None, "exit", "timeout", "invalid-output"])
-def test_codex_usage_survives_transport_and_output_errors(tmp_path, monkeypatch, failure):
-    events = []
-
-    def run(command, **kwargs):
-        assert "--json" in command and "--ephemeral" in command
-        assert events[0]["status"] == "started"
-        output = stream()
-        if failure == "timeout":
-            raise subprocess.TimeoutExpired(command, 1, output=output.encode())
-        destination = Path(command[command.index("--output-last-message") + 1])
-        destination.write_text("invalid" if failure == "invalid-output" else '{"answer":"ok"}', encoding="utf-8")
-        return subprocess.CompletedProcess(command, 1 if failure == "exit" else 0, output, "error" if failure else "")
-
-    monkeypatch.setattr(inference, "resolve_provider_executable", lambda *a, **k: "codex")
-    monkeypatch.setattr(inference.subprocess, "run", run)
-    if failure:
-        with pytest.raises(inference.InferenceExecutionError):
-            inference.invoke_structured(
-                inference_config("codex"),
-                "private-prompt",
-                SCHEMA,
-                cwd=tmp_path,
-                timeout=1,
-                usage_observer=events.append,
-            )
-    else:
-        assert inference.invoke_structured(
-            inference_config("codex"), "private-prompt", SCHEMA, cwd=tmp_path, timeout=1, usage_observer=events.append
-        ) == {"answer": "ok"}
-    final = events[-1]
-    assert final["inputTokens"] == 1000 and final["outputTokens"] == 200
-    assert final["reasoningTokens"] == 150 and final["cachedInputTokens"] == 600
-    assert final["usageScope"] == "invocation-turns"
-    assert final["status"] == ("failed" if failure else "received")
-    assert final["usageId"] == events[0]["usageId"]
-    assert "private-" not in json.dumps(events)
-
-
-def test_codex_partial_turns_preserve_known_counts_without_claiming_total():
-    row = new_record("codex", "model", "high")
-    read_codex_usage(stream() + '\n{"type":"turn.started"}\n{"type":"turn.failed"}', row)
-    assert row["inputTokens"] is None and row["knownInputTokens"] == 1000
-    assert usage_totals([row])["knownOutputTokens"] == 200
-    assert usage_totals([row])["outputTokensMissingRequests"] == 1
-
-
-def test_codex_only_completed_turn_usage_is_counted():
-    row = new_record("codex", "model", "high")
-    read_codex_usage(stream() + '\n{"type":"token_count","usage":{"input_tokens":999999}}\n' + stream(), row)
-    assert row["inputTokens"] == 2000 and row["outputTokens"] == 400
-
-
-@pytest.mark.parametrize("output", ["", "not-json", '{"type":"turn.completed","usage":{"input_tokens":true}}'])
-def test_codex_missing_or_invalid_usage_remains_unknown(output):
-    row = new_record("codex", "model", "high")
-    read_codex_usage(output, row)
-    assert row["inputTokens"] is None and row["outputTokens"] is None
-
-
 def test_journal_persists_started_attempt_before_generation(tmp_path):
     row = new_record("codex", "model", "high")
     journal = UsageJournal(tmp_path, {"runId": "run", "threadId": "thread", "sourceId": "windows"})
     journal({"type": "usage-start", **row})
     persisted = json.loads((tmp_path / (row["usageId"] + ".json")).read_text())
     assert persisted["status"] == "started" and persisted["inputTokens"] is None
-    read_codex_usage(stream(), row)
+    row.update(inputTokens=1000, outputTokens=200, usageComplete=True)
     journal({"type": "usage-complete", **row, "status": "received"})
     journal.finish("failed")  # The response was received but the final note could not be published.
     assert len(list(tmp_path.glob("*.json"))) == 1
@@ -310,15 +250,17 @@ def test_codex_pipeline_records_usage_and_pull_does_not_double_count(tmp_path, m
     cfg = config_for(tmp_path)
     write_chat(cfg.sessions_root / "one.jsonl", thread_id="one", cwd=tmp_path)
 
-    def run(command, **kwargs):
-        payload = json.loads(kwargs["input"].split("BEGIN_INPUT_JSON\n")[1].split("\nEND_INPUT_JSON")[0])
-        events = tuple(event(e["id"], actor=e["actor"]) for e in payload["events"])
-        value = note_data(candidate(tmp_path, events))
-        Path(command[command.index("--output-last-message") + 1]).write_text(json.dumps(value), encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, stream(), "")
+    from tkn_genai_bridge import Runtime, Usage
+    from tkn_genai_bridge.providers.base import ProviderResponse
 
-    monkeypatch.setattr(inference, "resolve_provider_executable", lambda *a, **k: "codex")
-    monkeypatch.setattr(inference.subprocess, "run", run)
+    class Backend:
+        def generate(self, profile, request):
+            payload = json.loads(request.prompt.split("BEGIN_INPUT_JSON\n")[1].split("\nEND_INPUT_JSON")[0])
+            events = tuple(event(e["id"], actor=e["actor"]) for e in payload["events"])
+            value = wire_note(note_data(candidate(tmp_path, events)))
+            return ProviderResponse(data=value, usage=Usage(input_tokens=1000, output_tokens=200))
+
+    monkeypatch.setattr(inference, "Runtime", lambda profile, **kw: Runtime(profile, backend=Backend(), **kw))
     report = run_pipeline(cfg, mode="clone")
     assert report["ok"], report
     assert report["usageTotals"]["inputTokens"] == 1000

@@ -1,4 +1,4 @@
-schema_version: "8.1.0"
+schema_version: "8.3.0"
 # One shared cache base; codex/source_id partitions are automatic.
 cache_root: ~/.cache/codex_chat_note_pipeline
 
@@ -28,49 +28,24 @@ generation:
   # Built-in profiles only: default-jp (Japanese) or default-en (English).
   session_note_profile: default-jp
 
-  # Profile names are arbitrary; provider explicitly selects the implementation.
-  # Select with active_profile or --profile <name> (before the command).
+  # Connection/model/authentication are managed in ~/.tkn/genai_bridge/config.yaml.
+  # Choose a local application profile with --profile <name>.
   active_profile: codex
   profiles:
     codex:
-      provider: codex
-      model: gpt-5.6-sol
-      reasoning_effort: high
-      executable: codex  # Optional executable name/path; defaults to codex.
+      bridge_profile: codex-default
 
-    local-gemma:
-      provider: ollama
-      model: <installed-local-model>
-      reasoning_effort: high
-      endpoint: http://127.0.0.1:11434
-
-    # To use Azure, uncomment and set active_profile: azure-high.
-    # model is the deployment name; actual model identity comes from the response.
-    # Azure CLI is not required. Browser sign-in occurs only when needed.
-    azure-high:
-      provider: azure-openai
-      endpoint: https://<resource>.openai.azure.com/openai/v1/
-      model: <deployment-name>
-      reasoning_effort: high
-
-      # Optional account selection:
-      # authentication:
-      #   tenant_id: <tenant-guid>
-      # Optional deployment-specific rates; omit for token-only estimates.
-      pricing:
-        <deployment-name>:
-          input_jpy_per_million: 100.0  # Placeholder; use your confirmed rate.
-          output_jpy_per_million: 500.0
-          pricing_date: "YYYY-MM-DD"
-      # Optional; defaults shown. Cost limit requires matching pricing.
-      limits:
-        input_tokens: 60000
-        output_tokens: 16000
-        context_tokens: 100000
-        chunk_characters: 120000
-        max_calls: 30
-        max_cost_jpy: 100
-    # The same provider can have multiple profiles, e.g. azure-low.
+    # Define azure-notes in Bridge before enabling this application profile.
+    # azure:
+    #   bridge_profile: azure-notes
+    #   # Set pricing in the shared Bridge profile (currency: JPY).
+    #   limits:
+    #     input_tokens: 60000
+    #     output_tokens: 16000
+    #     context_tokens: 100000
+    #     chunk_characters: 120000
+    #     max_calls: 30
+    #     max_cost_jpy: 100
 idle_minutes: 30
 runtime_minutes: 230
 model_timeout_seconds: 1800
@@ -81,13 +56,8 @@ usage_report:
   utc_offset_minutes: 0  # Use 540 for Japan; execution dates, not original chat dates.
   price_scenarios: {}
   # Reference cost for the same token counts; not an invoice or model prediction.
-  # Replace the empty mapping above with your confirmed rates, for example:
+  # Reference confirmed rates in the shared Bridge profile, for example:
   # price_scenarios:
   #   comparison-model:
-  #     currency: USD
-  #     pricing_date: "2026-09-19"
-  #     input_per_million: 1.0   # Fictional example, not a published price.
-  #     output_per_million: 5.0
-  #     cache_policy: no-cache  # Or observed; requires cached_input_per_million.
-  #     cached_input_per_million: 0.1
-  #     cache_write_per_million: 1.25  # Optional; observed mode requires known counts.
+  #     bridge_profile: azure-notes
+  #     model: <deployment-name>
