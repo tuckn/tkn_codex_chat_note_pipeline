@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tkn-codex-chat-note-pipeline"
-version = "0.28.0"
+version = "0.28.1"
 description = "Preserve local Codex chat evidence and generate reusable Session Notes."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,7 +13,7 @@ authors = [{ name = "Tuckn" }]
 dependencies = [
   "pydantic>=2.10,<3",
   "PyYAML>=6,<7",
-  "tkn-genai-bridge @ git+https://github.com/tuckn/tkn_genai_bridge.git@fe3ca54d3f974117179655a98b2e5fb12b95f5b7",
+  "tkn-genai-bridge @ https://github.com/tuckn/tkn_genai_bridge/archive/fe3ca54d3f974117179655a98b2e5fb12b95f5b7.zip",
   "httpx>=0.28,<1",
   "tiktoken>=0.12,<1",
 ]

@@ -2260,7 +2260,7 @@ wheels = [
 
 [[package]]
 name = "tkn-codex-chat-note-pipeline"
-version = "0.28.0"
+version = "0.28.1"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -2283,7 +2283,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "tiktoken", specifier = ">=0.12,<1" },
-    { name = "tkn-genai-bridge", git = "https://github.com/tuckn/tkn_genai_bridge.git?rev=fe3ca54d3f974117179655a98b2e5fb12b95f5b7" },
+    { name = "tkn-genai-bridge", url = "https://github.com/tuckn/tkn_genai_bridge/archive/fe3ca54d3f974117179655a98b2e5fb12b95f5b7.zip" },
 ]
 
 [package.metadata.requires-dev]
@@ -2296,7 +2296,7 @@ dev = [
 [[package]]
 name = "tkn-genai-bridge"
 version = "0.7.0"
-source = { git = "https://github.com/tuckn/tkn_genai_bridge.git?rev=fe3ca54d3f974117179655a98b2e5fb12b95f5b7#fe3ca54d3f974117179655a98b2e5fb12b95f5b7" }
+source = { url = "https://github.com/tuckn/tkn_genai_bridge/archive/fe3ca54d3f974117179655a98b2e5fb12b95f5b7.zip" }
 dependencies = [
     { name = "azure-identity" },
     { name = "httpx" },
@@ -2306,6 +2306,19 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "referencing" },
+]
+sdist = { hash = "sha256:2394ef539dc89774ecd05d83e06455fec979ef089132555833e00988b0169ff0" }
+
+[package.metadata]
+requires-dist = [
+    { name = "azure-identity", specifier = ">=1.25,<2" },
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "jsonschema", specifier = ">=4.23,<5" },
+    { name = "litellm", specifier = ">=1.102,<1.103" },
+    { name = "openai", specifier = ">=2.54,<3" },
+    { name = "pydantic", specifier = ">=2.10,<3" },
+    { name = "pyyaml", specifier = ">=6,<7" },
+    { name = "referencing", specifier = ">=0.36,<1" },
 ]
 
 [[package]]

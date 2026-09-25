@@ -101,7 +101,7 @@ flowchart LR
 ### 2.1. 前提
 
 - Python 3.11 以上
-- uv と Git（公開された Bridge の固定コミットを依存として取得します）
+- uv（Bridge は固定コミットのZIPから自動取得するため、依存取得にGitは不要です）
 - 読み取り可能なローカルの Codex JSONL ログ（既定の場所は `~/.codex`）
 - 生成に使う推論プロバイダー1つ。既定は Codex CLI
 
@@ -910,9 +910,10 @@ uv tool install . --reinstall
 tkn-codex-chat-note --version
 ```
 
-このCLIの0.28.0は、Bridge 0.7.0をPythonの依存パッケージとして実行環境へインストールします。
-取得元の公開Git URLとコミットは `pyproject.toml` に固定しており、Bridgeのmainブランチが更新されても自動では切り替わりません。
-Bridgeを更新するときは、`pyproject.toml` の固定コミットを変更して `uv lock` で `uv.lock` を更新し、次節の検証後に再インストールします。
+このCLIの0.28.1は、Bridge 0.7.0をPythonの依存パッケージとして実行環境へインストールします。
+取得元はGitHubの固定コミットのZIP URLとして `pyproject.toml` に指定しており、Bridgeのmainブランチが更新されても自動では切り替わりません。
+uvがZIPのダウンロード・展開・ビルド・インストールを自動で行います。PyPIへのBridgeの公開、Git、手動のZIP展開、Bridgeの個別インストールは不要です。
+Bridgeを更新するときは、`pyproject.toml` のZIP URL内の固定コミットを変更して `uv lock` で `uv.lock` を更新し、次節の検証後に再インストールします。
 Bridgeのリポジトリを編集したり、Bridgeの補助CLIだけを再インストールしたりしても、このCLIの依存パッケージは更新されません。
 共有設定の編集は次のコマンド実行から反映されるため、設定だけの変更で再インストールは不要です。
 

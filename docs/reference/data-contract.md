@@ -1,6 +1,6 @@
 # Data contract: chat evidence and Session Notes
 
-CLI 0.28.0 · config 8.3.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
+CLI 0.28.1 · config 8.3.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
 
 This is the file-based interface specification for tools that consume this CLI's
 output, including context curation and insight. It defines stable identities,
@@ -459,7 +459,9 @@ Application generation profiles use bridge_profile, optional overrides,
 limits and model_digest. Legacy application pricing remains readable as a compatibility
 adapter, but rates now belong to Bridge profiles. Connection/model/authentication/pricing are resolved from
 ~/.tkn/genai_bridge/config.yaml. Legacy inline profiles remain readable; all execution
-uses tkn_genai_bridge 0.7.0 pinned in package metadata. No application CWD config is
+uses tkn_genai_bridge 0.7.0 pinned to a GitHub commit archive ZIP URL in package metadata.
+uv downloads, extracts, builds and installs this dependency; no Git executable or PyPI publication
+of Bridge is required. The lockfile records the archive URL and content hash. No application CWD config is
 implicitly loaded as Bridge config. Runtime plan is offline.
 The application selects bridge_profile explicitly (codex-default when not configured),
 so changing Bridge's default_profile does not switch this application's profile.
