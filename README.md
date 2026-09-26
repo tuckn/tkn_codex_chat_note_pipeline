@@ -70,19 +70,42 @@ Codex CLI がローカルに残す会話ログを保全し、会話スレッド1
 
 ### 1.4. 全体像
 
+ログの保全からノート生成までの処理と、その入出力を示します。
+**長方形は処理、円筒形は保存されたデータ**です。矢印は、処理への入力と処理からの出力を表します。円筒形には、データベースだけでなく、ログやMarkdownなどのファイルも含めます。
+
 ```mermaid
 flowchart LR
-    L["ローカルCodexログ"] --> R["Rawコピーとmanifest"]
-    R --> E["Canonical Events"]
-    E --> T["Session Note"]
-    M["観測したProject所属"] --> C["会話catalog"]
-    T --> C
-    C --> U["Context分類CLI<br/>（別リポジトリ）"]
-    T --> I["洞察CLI<br/>（別リポジトリ）"]
-    R --> P["バージョン付き根拠"]
-    E --> P
-    T --> P
+    L[("ローカルCodexログ")]
+    M[("観測したProject所属")]
+
+    subgraph PIPELINE["このCLI"]
+        COPY["ログを保全する"] --> R[("Rawコピーとmanifest")]
+        R --> PARSE["Rawを解析する"]
+        PARSE --> E[("Canonical Events")]
+        E --> GENERATE["生成AIでノートを生成する"]
+        GENERATE --> T[("Session Note")]
+        CATALOG["会話情報をまとめる"] --> C[("会話catalog")]
+        RECORD["根拠をバージョン付きで保存する"] --> P[("バージョン付き根拠")]
+
+        T --> CATALOG
+        R --> RECORD
+        E --> RECORD
+        T --> RECORD
+    end
+
+    subgraph DOWNSTREAM["別リポジトリ"]
+        CLASSIFY["Contextを分類する<br/>（Context分類CLI）"]
+        INSIGHT["洞察を得る<br/>（洞察CLI）"]
+    end
+
+    L --> COPY
+    M --> CATALOG
+    C --> CLASSIFY
+    T --> INSIGHT
 ```
+
+図中の保全・解析・生成・記録は、このCLI内で行う処理です。それぞれを個別に実行する手順ではありません。
+Context分類と洞察の取得は、別リポジトリのCLIによる後続処理で、このCLIから自動実行しません。
 
 ### 1.5. データの保存先は4領域に分かれる
 
