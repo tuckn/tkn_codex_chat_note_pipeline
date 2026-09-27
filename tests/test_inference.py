@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from tkn_genai_bridge import Profile, ProviderError, ResponseMetadata, Runtime, Usage
+from tkn_genai_bridge import __version__ as BRIDGE_VERSION
 from tkn_genai_bridge.providers.base import ProviderResponse
 
 from tkn_codex_chat_note import inference
@@ -39,8 +40,9 @@ def test_all_providers_use_bridge_and_preserve_usage(tmp_path, monkeypatch, prov
     profile, request = calls[0]
     assert isinstance(profile, Profile) and profile.provider == provider and profile.timeout_seconds == 9
     assert request.output_schema == SCHEMA
+    assert not request.images
     assert events[-1]["inputTokens"] == 10 and events[-1]["outputTokens"] is None
-    assert events[-1]["bridgeVersion"] == "0.7.0"
+    assert events[-1]["bridgeVersion"] == BRIDGE_VERSION
     assert events[-1]["usageId"] == events[0]["usageId"]
     assert not list(tmp_path.rglob("*.json"))
 

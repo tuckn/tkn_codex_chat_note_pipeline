@@ -459,7 +459,7 @@ Application generation profiles use bridge_profile, optional overrides,
 limits and model_digest. Legacy application pricing remains readable as a compatibility
 adapter, but rates now belong to Bridge profiles. Connection/model/authentication/pricing are resolved from
 ~/.tkn/genai_bridge/config.yaml. Legacy inline profiles remain readable; all execution
-uses tkn_genai_bridge 0.7.0 pinned to a GitHub commit archive ZIP URL in package metadata.
+uses tkn_genai_bridge 0.10.0 pinned to a GitHub commit archive ZIP URL in package metadata.
 uv downloads, extracts, builds and installs this dependency; no Git executable or PyPI publication
 of Bridge is required. The lockfile records the archive URL and content hash. No application CWD config is
 implicitly loaded as Bridge config. Runtime plan is offline.

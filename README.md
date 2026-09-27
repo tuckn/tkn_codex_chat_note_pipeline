@@ -1,4 +1,4 @@
-# Tkn Codex Chat Note Pipeline
+# tkn-codex-chat-note: Tkn Codex Chat Note Pipeline
 
 > 初めて読む場合は、1〜3章（これは何か／セットアップ／実行する）だけで動かせます。
 > 4章以降は、必要になったときに引く参照情報です。
