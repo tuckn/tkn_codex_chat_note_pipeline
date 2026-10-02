@@ -283,7 +283,7 @@ def test_cli_multi_source_show_status_selection_and_compact_output(
     path = tmp_path / "config.yaml"
     write_config(config, path)
     args = ["--config", str(path)]
-    assert main([*args, "config", "show"]) == 0
+    assert main([*args, "config", "list", "--json"]) == 0
     shown = json.loads(capsys.readouterr().out)
     assert set(shown["storage"]["sourceRoots"]) == set(config.sources)
     assert main([*args, "clone", "--dry-run"]) == 0

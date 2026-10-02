@@ -23,6 +23,7 @@ from tkn_codex_chat_note.console_logging import SUCCESS, ColorFormatter
         ["pull", "--backfill"],
         ["decisions", "build", "--write"],
         ["working-context", "build", "--write"],
+        ["config", "show"],
     ],
 )
 def test_retired_commands_and_compatibility_flags_are_removed(args: list[str]) -> None:
@@ -92,7 +93,7 @@ def test_pipeline_exit_codes_and_summary_output(
 def test_logging_uses_readable_stderr_prefixes(
     capsys: CaptureFixture[str],
 ) -> None:
-    args = build_parser().parse_args(["config", "show"])
+    args = build_parser().parse_args(["config", "list", "--json"])
 
     _configure_logging(args)
     LOGGER.info("Readable progress")
@@ -107,7 +108,7 @@ def test_logging_uses_readable_stderr_prefixes(
 def test_console_suppresses_sdk_details_but_preserves_errors(
     flags: list[str], capsys: CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _configure_logging(build_parser().parse_args([*flags, "config", "show"]))
+    _configure_logging(build_parser().parse_args([*flags, "config", "list", "--json"]))
     for name in ("azure.core.pipeline.policies.http_logging_policy", "azure.identity", "msal", "httpx", "httpcore"):
         logger = logging.getLogger(name)
         monkeypatch.setattr(logger, "level", logging.DEBUG)
@@ -125,11 +126,11 @@ def test_console_suppresses_sdk_details_but_preserves_errors(
 
 
 def test_quiet_and_verbose_logging_levels() -> None:
-    quiet = build_parser().parse_args(["-q", "config", "show"])
+    quiet = build_parser().parse_args(["-q", "config", "list", "--json"])
     _configure_logging(quiet)
     assert logging.getLogger().level == logging.ERROR
 
-    verbose = build_parser().parse_args(["-v", "config", "show"])
+    verbose = build_parser().parse_args(["-v", "config", "list", "--json"])
     _configure_logging(verbose)
     assert logging.getLogger().level == logging.DEBUG
 
@@ -141,14 +142,14 @@ def test_jsonl_parse_warning_uses_configured_logging(
     source = tmp_path / "invalid.jsonl"
     source.write_text("{invalid}\n", encoding="utf-8")
 
-    normal = build_parser().parse_args(["config", "show"])
+    normal = build_parser().parse_args(["config", "list", "--json"])
     _configure_logging(normal)
     read_thread_source(source)
     captured = capsys.readouterr()
     assert captured.out == ""
     assert f"[WARNING] {source}:1:" in captured.err
 
-    quiet = build_parser().parse_args(["--quiet", "config", "show"])
+    quiet = build_parser().parse_args(["--quiet", "config", "list", "--json"])
     _configure_logging(quiet)
     read_thread_source(source)
     captured = capsys.readouterr()
@@ -159,7 +160,7 @@ def test_jsonl_parse_warning_uses_configured_logging(
 def test_progress_events_are_human_readable(
     capsys: CaptureFixture[str],
 ) -> None:
-    args = build_parser().parse_args(["config", "show"])
+    args = build_parser().parse_args(["config", "list", "--json"])
     _configure_logging(args)
 
     _progress(
@@ -220,7 +221,7 @@ def test_console_formatter_keeps_redirected_output_plain(level: int, name: str) 
 
 
 def test_pipeline_progress_separates_current_notes_from_generation_attempts(capsys: CaptureFixture[str]) -> None:
-    _configure_logging(build_parser().parse_args(["config", "show"]))
+    _configure_logging(build_parser().parse_args(["config", "list", "--json"]))
     _progress({"type": "session-note-status", "currentCount": 12, "total": 359,
                "unchangedCount": 12, "generatedCount": 0})
     for kind in ("thread-start", "thread-complete", "thread-failed"):
@@ -241,7 +242,7 @@ def test_pipeline_progress_separates_current_notes_from_generation_attempts(caps
 
 
 def test_repair_fallback_progress_explains_unsent_draft_and_regeneration(capsys: CaptureFixture[str]) -> None:
-    _configure_logging(build_parser().parse_args(["config", "show"]))
+    _configure_logging(build_parser().parse_args(["config", "list", "--json"]))
     _progress({"type": "repair-input-fallback", "threadId": "example-thread",
                "repairInputTokensEstimate": 62386, "inputTokenLimit": 60000,
                "regenerationInputTokensEstimate": 59500, "validationFeedbackIncluded": True})
@@ -251,14 +252,14 @@ def test_repair_fallback_progress_explains_unsent_draft_and_regeneration(capsys:
     assert "without the invalid draft" in captured.err and "feedback included" in captured.err
 
 
-def test_config_show_reports_application_owned_summary_profile(
+def test_config_list_reports_application_owned_summary_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
 
-    assert main(["-q", "config", "show"]) == 0
+    assert main(["-q", "config", "list", "--json"]) == 0
     output = json.loads(capsys.readouterr().out)
 
     profile = output["summaryProfile"]
@@ -324,7 +325,7 @@ def test_user_summary_prompt_commands_and_override_are_not_public() -> None:
     assert prompt_command.value.code == 2
 
     with pytest.raises(SystemExit) as prompt_override:
-        parser.parse_args(["--summary-prompt", "custom.md", "config", "show"])
+        parser.parse_args(["--summary-prompt", "custom.md", "config", "list", "--json"])
     assert prompt_override.value.code == 2
 
 
@@ -335,7 +336,7 @@ def test_invalid_config_returns_machine_readable_error(
     target = tmp_path / "config.yaml"
     target.write_text("unknown_key: true\n", encoding="utf-8")
 
-    result = main(["--config", str(target), "config", "show"])
+    result = main(["--config", str(target), "config", "list", "--json"])
 
     assert result == 1
     output = json.loads(capsys.readouterr().out)
@@ -406,7 +407,7 @@ def test_other_acquisition_providers_are_rejected(
         target,
         {"chat": {"providers": {provider: {"sources": {"windows": {"enabled": True, "source_root": "~/source"}}}}}},
     )
-    assert main(["--config", str(target), "config", "show"]) == 1
+    assert main(["--config", str(target), "config", "list", "--json"]) == 1
     assert "unknown configuration key: chat" in json.loads(capsys.readouterr().out)["error"]
     assert main(["--config", str(target), "raw", "ingest", "--dry-run"]) == 1
     assert "unknown configuration key: chat" in json.loads(capsys.readouterr().out)["error"]

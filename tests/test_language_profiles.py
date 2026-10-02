@@ -73,10 +73,10 @@ def test_profile_configuration_precedence_and_old_default(tmp_path: Path, monkey
     assert overridden.sources["generation.session_note_profile"] == "CLI option"
 
 
-def test_config_show_reports_selected_bundle(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_config_list_reports_selected_bundle(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     explicit = tmp_path / "config.yaml"
     write_yaml(explicit, {"generation": {"session_note_profile": "default-jp"}})
-    assert main(["--config", str(explicit), "--session-note-profile", "default-en", "config", "show"]) == 0
+    assert main(["--config", str(explicit), "--session-note-profile", "default-en", "config", "list", "--json"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["config"]["generation"]["session_note_profile"] == "default-en"
     assert report["summaryProfile"]["name"] == "default-en"

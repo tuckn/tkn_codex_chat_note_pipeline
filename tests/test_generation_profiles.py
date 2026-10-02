@@ -69,7 +69,7 @@ def test_compatibility_provider_rejects_ambiguity_and_preserves_unique_match(con
     with pytest.raises(PipelineError, match="unknown generation profile"):
         load_app_config(explicit_path=config_path, cwd=config_path.parent, overrides={"profile": "missing"})
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["--profile", "azure-high", "--provider", "azure-openai", "config", "show"])
+        build_parser().parse_args(["--profile", "azure-high", "--provider", "azure-openai", "config", "list", "--json"])
 
 
 def test_provider_is_explicit_even_when_profile_name_matches_another_provider():

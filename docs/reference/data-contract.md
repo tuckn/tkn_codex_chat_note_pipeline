@@ -276,8 +276,14 @@ The storage ownership filename .tkn-genai-chat-note-root.json and applicationId
 tkn-genai-chat-note-pipeline are stable storage-5 identifiers retained across the
 rename. Existing immutable provenance and profile hashes remain intact. Newly
 published software metadata uses tkn-codex-chat-note-pipeline and the current version.
-Config show uses config.sources and storage.sourceRoots.<source_id>; the top-level
-sources object in its JSON response still describes configuration value provenance.
+`config list` uses config.sources and storage.sourceRoots.<source_id>; the top-level
+sources object in its `--json` response still describes configuration value provenance.
+The default output is one `key=value` per line: mappings use dots and arrays use
+indexed keys such as `[0]`; empty containers, booleans and null use JSON literals.
+Strings are unquoted, Windows path separators are preserved, and control characters
+are escaped. `config list --json` returns the complete structured report with
+`command: "config list"`. Both forms are read-only and log at INFO on stderr.
+The old `config show` command is removed; JSON consumers must use `config list --json`.
 
 
 ## API generation (0.18.0)
@@ -466,7 +472,7 @@ implicitly loaded as Bridge config. Runtime plan is offline.
 The application selects bridge_profile explicitly (codex-default when not configured),
 so changing Bridge's default_profile does not switch this application's profile.
 Legacy application and shared rates for the same model must agree; conflicting rates
-are rejected. Resolved generation settings are exposed by config show's generationResolved.
+are rejected. Resolved generation settings are exposed by config list's generationResolved.
 
 The Bridge version and effective settings participate in generation identity. A shared
 profile rename or price-only change does not invalidate results. A Bridge version or

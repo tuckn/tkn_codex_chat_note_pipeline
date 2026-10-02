@@ -182,12 +182,32 @@ generation:
 指定できる項目は [5. 設定](#configuration)、同梱の記入例は [config.example.yaml](src/tkn_codex_chat_note/resources/config.example.yaml) を参照してください。
 
 ```shell
-tkn-codex-chat-note config show
+tkn-codex-chat-note config list
 ```
 
-`config show` は、有効な設定値・設定層・保存先・要約プロファイルを表示します。
+`config list` は、有効な設定値・設定元・設定層・保存先・スキーマ・要約プロファイルを、1行1項目の `key=value` 形式で表示します。
 `generationResolved` で共有設定から解決したモデルと実行条件も確認できます。
-ファイルへの書き込みは行いません。
+入れ子は `.`、配列は `[0]` のような添字で表します。空の配列・マッピングは `[]`・`{}`、真偽値は `true` / `false`、未設定値は `null` です。
+文字列を引用符で囲まず、Windows パスの `\` は重ねずに表示します。改行などの制御文字はエスケープします。
+設定・state・cache・レポートへの書き込みや、生成AIの呼び出しは行いません。
+
+表示例（抜粋）：
+
+```text
+command=config list
+config.generation.session_note_profile=default-jp
+config.generation.active_profile=codex
+configSchema.hasInMemoryMigrations=false
+sources.generation.active_profile=built-in defaults
+```
+
+JSON が必要な場合は、次のコマンドを使います。どちらの形式でもログは標準エラーへ出力し、secret の値は表示しません。
+
+```shell
+tkn-codex-chat-note config list --json
+```
+
+旧 `config show` は削除しました。利用していたスクリプトや手順を `config list` へ変更し、JSON を読み取る処理では `--json` を追加してください。
 
 ## 3. 実行する
 
@@ -270,7 +290,7 @@ Raw の取得と正規化はこの期限では中断されません。
 | コマンド                                 | 動作                                                                               |
 | ---------------------------------------- | ---------------------------------------------------------------------------------- |
 | `config init`                          | 同梱設定を作成する。編集済み設定は保護し、`--force` 時はバックアップ後に置換する |
-| `config show`                          | 有効な設定、5段階の設定元、要約プロファイルの hash を表示する                      |
+| `config list [--json]`                 | 有効な設定、5段階の設定元、要約プロファイルの hash を表示する                      |
 | `clone`                                | 初期化とRawの全保存・ Session Note 生成を行う。再実行で再開できる                 |
 | `pull`                                 | 初期化済みの保存先へ差分を反映し、不足している Session Note のみ生成する          |
 | `raw ingest`                           | Raw 取り込みのみ。Session Note は生成しない                                        |
@@ -294,7 +314,7 @@ Raw の取得と正規化はこの期限では中断されません。
 `raw ingest` は `--dry-run` と `--full-output` に対応します。
 
 生成・Raw取得コマンドは、進捗と結果の集計、実行レポートの保存先を標準エラーへ表示します。
-詳細な JSON を標準出力へ出すのは `--full-output` を付けたときだけです（`config show` などの参照コマンドは従来どおり JSON を標準出力へ出します）。
+詳細な JSON を標準出力へ出すのは `--full-output` を付けたときだけです（設定一覧は `config list` で `key=value`、`config list --json` で JSON を標準出力へ出します）。
 `-q` は進捗を抑制し、`-v` は診断を追加します。
 1件だけを対象にした `session-notes build` でも、実行レポートにはノート全体の処理状況が含まれます。
 
@@ -395,9 +415,9 @@ tkn-codex-chat-note --source my-windows-pc session-notes build --thread-id <thre
 省略した場合、処理・`status`・`provenance validate` は有効な全取得元が対象です。
 複数が有効な場合、`--thread-id` と `storage migrate` では `--source` で1つ選んでください。
 不明な ID や無効な取得元を指定するとエラーになります。
-`config show` は常に全取得元の設定と解決済み保存先を表示します。
+`config list` は常に全取得元の設定と解決済み保存先を表示します。
 
-有効な取得元が1つもない場合は、書き込み前に実行を止めます（`config show` は使用できます）。
+有効な取得元が1つもない場合は、書き込み前に実行を止めます（`config list` は使用できます）。
 
 ### 5.3. Session Note の言語
 
@@ -467,7 +487,7 @@ tkn-codex-chat-note --profile local-gemma pull --dry-run
 - Bridgeのライブラリは共有設定を読みます。このCLIの作業フォルダにある `.tkn/config.yaml` をBridgeの設定として読みません。
 - 共通設定でモデル・推論設定を省略するとBridge/providerの既定値を使い、このCLIでは `provider-default` と表示します。再現性が必要なら明示してください。
 
-`tkn-codex-chat-note config show` の `generationResolved` で、実際に使われるモデル・接続条件・単価を確認できます。
+`tkn-codex-chat-note config list` の `generationResolved` で、実際に使われるモデル・接続条件・単価を確認できます。
 会話データは選択したプロバイダーへ送信されます。
 送信先と認証方式の詳細は [Bridgeの設定仕様](https://github.com/tuckn/tkn_genai_bridge/blob/main/docs/reference/configuration.md) を確認してください。
 旧来の `provider`・`model`・`endpoint` をこのCLIに直接書く設定も互換読み込みしますが、実行はBridgeを経由します。
@@ -766,7 +786,7 @@ cached_input_per_million を必須とします。cache_write_per_million も指�
 
 例えば `source_id` が `my-windows-pc` で保存先を省略した場合、Raw は `~/.tkn/codex_chat_note_pipeline/raw/codex/my-windows-pc/sessions/...`、ノートは `~/.tkn/codex_chat_note_pipeline/data/codex/my-windows-pc/session-notes/YYYY/MM/...md` になります。
 パス中の `codex` という区分は、互換性のため維持します。
-各取得元の最終保存先は `config show` の `storage.sourceRoots.<source_id>` で確認できます。
+各取得元の最終保存先は `config list` の `storage.sourceRoots.<source_id>` で確認できます。
 
 保存先を決めるときの注意です。
 
@@ -855,7 +875,7 @@ Raw・Session Note・正規化データ・来歴・再開状態をコピーし�
 3. コピー中は移動元への書き込みを停止し、次の順に確認・実行します。
 
 ```shell
-tkn-codex-chat-note --config "C:\path\to\destination.yaml" config show
+tkn-codex-chat-note --config "C:\path\to\destination.yaml" config list
 tkn-codex-chat-note --config "C:\path\to\destination.yaml" --source my-windows-pc storage migrate --from-config "C:\path\to\source.yaml" --dry-run
 tkn-codex-chat-note --config "C:\path\to\destination.yaml" --source my-windows-pc storage migrate --from-config "C:\path\to\source.yaml"
 tkn-codex-chat-note --config "C:\path\to\destination.yaml" --source my-windows-pc provenance validate
@@ -874,7 +894,7 @@ tkn-codex-chat-note --config "C:\path\to\destination.yaml" --source my-windows-p
 tkn-codex-chat-note --config "C:\path\to\rebuild.yaml" config init
 ```
 
-作成した設定を編集し、その後の `config show`・`clone` にも同じ `--config` を指定します。
+作成した設定を編集し、その後の `config list`・`clone` にも同じ `--config` を指定します。
 再構築できる範囲は、取得元に残っている会話ログだけです。
 別の保存領域に作り直すため、旧ノートの ID・手編集・レビュー状態は引き継ぎません。
 なお `--config` を指定しても下位の設定層の検証は省略されないため、読み込まれるユーザー設定や `.tkn/config.yaml` も有効なスキーマである必要があります。
@@ -965,7 +985,7 @@ uv build
 実サービスの認証や、実モデルによる要約品質を保証するものではありません。
 一時データには、テストフレームワークまたは OS の一時フォルダを使います。
 
-配布物を変更したときは、一時的な環境へビルドした wheel をインストールし、チェックアウト外から `--version`・`--help`・`config init`・`config show` と同梱の言語プロファイルを確認します。
+配布物を変更したときは、一時的な環境へビルドした wheel をインストールし、チェックアウト外から `--version`・`--help`・`config init`・`config list` と同梱の言語プロファイルを確認します。
 連携仕様を変更したときは、匿名の出力を使い、下流CLIで ID・hash・入力参照を検証してください。
 
 実データの保存領域と分けてノートの品質を比較する場合は、`scripts/evaluate_session_notes.py` を評価専用のディレクトリに対して実行します（`--manifest` / `--config` / `--output` / `--thread` を指定。`--dry-run` は計画の検証のみ）。

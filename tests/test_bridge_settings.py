@@ -103,12 +103,12 @@ def test_shared_dry_run_reads_without_generating_or_writing(tmp_path, monkeypatc
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 
 
-def test_config_show_exposes_resolved_shared_identity(tmp_path, capsys):
+def test_config_list_exposes_resolved_shared_identity(tmp_path, capsys):
     import json
 
     shared({"shared-notes": {"provider": "codex", "model": "one"}})
     path = application(tmp_path)
-    assert main(["--config", str(path), "config", "show"]) == 0
+    assert main(["--config", str(path), "config", "list", "--json"]) == 0
     details = json.loads(capsys.readouterr().out)["generationResolved"]
     assert details["model"] == "one"
     assert details["inferenceOptions"]["bridge_profile"] == "shared-notes"
@@ -160,7 +160,7 @@ def test_antigravity_configuration_selector_and_runtime(tmp_path, monkeypatch, c
             "executable": "custom-agy"}
         app.write_text(yaml.safe_dump(value), encoding="utf-8")
     before = app.read_bytes()
-    assert main(["--config", str(app), "--provider", "antigravity", "config", "show"]) == 0
+    assert main(["--config", str(app), "--provider", "antigravity", "config", "list", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["generationResolved"]["provider"] == "antigravity"
     cfg = load_app_config(explicit_path=app, cwd=tmp_path)
     observed = []

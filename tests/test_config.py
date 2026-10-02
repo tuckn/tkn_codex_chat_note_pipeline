@@ -463,7 +463,7 @@ def test_sources_have_fixed_codex_identity(tmp_path: Path) -> None:
     assert config.source_data_root == config.data_root
 
 
-def test_source_roots_keep_declaring_layer_and_config_show_reports_final_paths(tmp_path: Path) -> None:
+def test_source_roots_keep_declaring_layer_and_config_list_reports_final_paths(tmp_path: Path) -> None:
     from tkn_codex_chat_note.config import config_document
 
     work = tmp_path / "work"

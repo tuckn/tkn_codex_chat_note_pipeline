@@ -17,6 +17,7 @@ from .config import (
     load_app_config,
     resolve_app_config,
 )
+from .config_output import config_lines
 from .console_logging import ColorFormatter, ConsoleFilter, log_success, supports_color
 from .raw_capture import RawCaptureError
 from .session_notes import (
@@ -90,7 +91,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = config.add_subparsers(dest="config_command", required=True)
     init = sub.add_parser("init", help="Create config.yaml; protect existing edits")
     init.add_argument("--force", action="store_true", help="Back up and replace an edited config")
-    sub.add_parser("show", help="Show effective values and their sources")
+    listing = sub.add_parser(
+        "list",
+        help="List effective values and their sources",
+        description="Read-only configuration listing as key=value lines; does not write files.",
+    )
+    listing.add_argument("--json", action="store_true", help="Print the full configuration report as JSON")
     for name, help_text in (
         ("clone", "Initialize and process all available history; resume safely when repeated"),
         ("pull", "Capture new/changed logs and resume unfinished Session Notes"),
@@ -417,60 +423,62 @@ def main(argv: Sequence[str] | None = None) -> int:
                 profile = load_summary_profile(resolved.generation.session_note_profile)
             except (RuntimeError, ValueError) as exc:
                 raise PipelineError(str(exc)) from exc
-            _emit(
-                {
-                    "command": "config show",
-                    "config": config_document(resolved),
-                    "generationResolved": {
-                        "profile": resolved.generation.active_profile,
-                        "provider": resolved.provider,
-                        "model": resolved.model,
-                        "reasoningEffort": resolved.reasoning_effort,
-                        "inferenceOptions": resolved.active_provider_config.inference_options(),
+            report = {
+                "command": "config list",
+                "config": config_document(resolved),
+                "generationResolved": {
+                    "profile": resolved.generation.active_profile,
+                    "provider": resolved.provider,
+                    "model": resolved.model,
+                    "reasoningEffort": resolved.reasoning_effort,
+                    "inferenceOptions": resolved.active_provider_config.inference_options(),
+                },
+                "storage": {
+                    "layoutVersion": 5,
+                    "sourceRoots": {
+                        source_id: {
+                            **{
+                                kind: str(path)
+                                for kind, path in resolved.source_storage_paths(source_id).items()
+                            },
+                            "catalog": str(resolved.source_storage_paths(source_id)["data"] / "catalog"),
+                            "provenance": str(resolved.source_storage_paths(source_id)["data"] / "provenance"),
+                        }
+                        for source_id in resolved.sources
                     },
-                    "storage": {
-                        "layoutVersion": 5,
-                        "sourceRoots": {
-                            source_id: {
-                                **{
-                                    kind: str(path)
-                                    for kind, path in resolved.source_storage_paths(source_id).items()
-                                },
-                                "catalog": str(resolved.source_storage_paths(source_id)["data"] / "catalog"),
-                                "provenance": str(resolved.source_storage_paths(source_id)["data"] / "provenance"),
-                            }
-                            for source_id in resolved.sources
-                        },
+                },
+                "configSchema": {
+                    "effectiveVersion": resolution.effective_schema_version,
+                    "hasInMemoryMigrations": resolution.has_in_memory_migrations,
+                },
+                "sources": resolution.sources,
+                "layers": list(resolution.layers),
+                "summaryProfile": {
+                    "name": profile.name,
+                    "source": profile.source,
+                    "sha256": profile.sha256,
+                    "prompt": {
+                        "source": profile.prompt.source,
+                        "id": profile.prompt.prompt_id,
+                        "version": profile.prompt.version,
+                        "sha256": profile.prompt.sha256,
                     },
-                    "configSchema": {
-                        "effectiveVersion": resolution.effective_schema_version,
-                        "hasInMemoryMigrations": resolution.has_in_memory_migrations,
+                    "schema": {
+                        "source": profile.schema.source,
+                        "sha256": profile.schema.sha256,
                     },
-                    "sources": resolution.sources,
-                    "layers": list(resolution.layers),
-                    "summaryProfile": {
-                        "name": profile.name,
-                        "source": profile.source,
-                        "sha256": profile.sha256,
-                        "prompt": {
-                            "source": profile.prompt.source,
-                            "id": profile.prompt.prompt_id,
-                            "version": profile.prompt.version,
-                            "sha256": profile.prompt.sha256,
-                        },
-                        "schema": {
-                            "source": profile.schema.source,
-                            "sha256": profile.schema.sha256,
-                        },
-                        "template": {
-                            "source": profile.template.source,
-                            "id": profile.template.template_id,
-                            "version": profile.template.version,
-                            "sha256": profile.template.sha256,
-                        },
+                    "template": {
+                        "source": profile.template.source,
+                        "id": profile.template.template_id,
+                        "version": profile.template.version,
+                        "sha256": profile.template.sha256,
                     },
-                }
-            )
+                },
+            }
+            if args.json:
+                _emit(report)
+            else:
+                print("\n".join(config_lines(report)))
             return 0
 
         from .pipeline import pipeline_status, run_pipeline
