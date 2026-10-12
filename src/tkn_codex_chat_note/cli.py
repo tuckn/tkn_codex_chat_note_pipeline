@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +110,20 @@ def build_parser() -> argparse.ArgumentParser:
     usage_report = commands.add_parser("build-report", help="Build an offline token usage and reference-cost report")
     usage_report.add_argument("--dry-run", action="store_true", help="Aggregate without writing or opening")
     usage_report.add_argument("--no-open", action="store_true", help="Write the report without opening a browser")
+    scheduled = commands.add_parser("scheduled-run", help="Capture Raw and build reviews when calendar periods close")
+    scheduled.add_argument("--dry-run", action="store_true", help="Plan without writes or inference")
+    scheduled.add_argument("--full-output", action="store_true", help="Print the complete JSON run result")
+    reviews = commands.add_parser("review-notes", help="Build source-cited weekly, monthly and yearly reviews")
+    review_sub = reviews.add_subparsers(dest="review_command", required=True)
+    review_build = review_sub.add_parser("build", help="Build a closed calendar period (default: latest closed)")
+    _add_build_options(review_build)
+    review_build.add_argument("--period", choices=("weekly", "monthly", "yearly"), required=True)
+    review_build.add_argument("--date", type=date.fromisoformat, help="A date inside the requested closed period")
+    review_due = review_sub.add_parser("due", help="Catch up closed periods since reviews.start_date or first run")
+    _add_build_options(review_due)
+    review_due.add_argument("--as-of", type=date.fromisoformat, help="Calendar date to evaluate (default: today)")
+    review_validate = review_sub.add_parser("validate", help="Validate review JSON, periods and source IDs offline")
+    review_validate.add_argument("artifact", type=Path)
     storage = commands.add_parser("storage", help="Inspect or migrate storage layout")
     migrate = storage.add_subparsers(dest="storage_command", required=True).add_parser(
         "migrate", help="Copy one source store into fresh provider-local roots; retain original evidence"
@@ -487,6 +502,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.source is not None:
             selected = config.enabled_source_configs(args.source)
             config = selected[0]
+        if args.command in {"review-notes", "scheduled-run"}:
+            from .reviews import run_reviews, run_scheduled, validate_review
+
+            if args.command == "review-notes" and args.review_command == "validate":
+                _emit(validate_review(args.artifact.expanduser().absolute()))
+                return 0
+            if args.command == "scheduled-run":
+                result = run_scheduled(config, dry_run=args.dry_run, config_path=args.config)
+            else:
+                result = run_reviews(config, kind=getattr(args, "period", None), day=getattr(args, "date", None),
+                                     as_of=getattr(args, "as_of", None), dry_run=args.dry_run,
+                                     force=args.force, allow_edited=args.allow_edited)
+            if args.full_output:
+                _emit(result)
+            review_result = result.get("reviews", result)
+            for entry in review_result.get("results", []):
+                LOGGER.info("%s %s: %s%s", entry["period"]["kind"], entry["period"]["key"], entry["status"],
+                            "; " + entry["reason"] if entry.get("reason") else "")
+                if entry.get("notePath") and entry["status"] in {"generated", "planned"}:
+                    LOGGER.info("Review note: %s", entry["notePath"])
+                if entry.get("gaps"):
+                    LOGGER.warning("Input limitations: %s; see the review or full run report", len(entry["gaps"]))
+            LOGGER.info("Review notes: generated %s; planned %s; model calls %s; cache hits %s",
+                        review_result.get("generatedCount", 0), review_result.get("plannedCount", 0),
+                        review_result.get("modelCalls", 0), review_result.get("cacheHits", 0))
+            if review_result.get("reportPath"):
+                LOGGER.info("Run report: %s", review_result["reportPath"])
+            for stage in ("capture", "pull"):
+                stage_result = result.get(stage, {})
+                for path in stage_result.get("reportPaths", []):
+                    LOGGER.info("%s report: %s", stage, path)
+                if stage_result.get("reportPath"):
+                    LOGGER.info("%s report: %s", stage, stage_result["reportPath"])
+            if not result["ok"]:
+                LOGGER.error("Some processing failed or was protected; inspect the run report")
+            return 1 if not result["ok"] else 0 if result["complete"] else 2
         if args.command == "build-report":
             from .usage_report import build_usage_report
 

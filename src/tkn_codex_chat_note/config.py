@@ -20,6 +20,7 @@ from .bridge_settings import BridgeProfileConfig
 from .config_validation import validate_config_layer
 from .inference import InferenceProvider, validate_ollama_base_url
 from .report_settings import UsageReportSettings
+from .review_settings import ReviewSettings
 from .session_notes import (
     DEFAULT_IDLE_MINUTES,
     DEFAULT_MODEL_TIMEOUT_SECONDS,
@@ -30,8 +31,8 @@ from .session_notes import (
     atomic_write_text,
 )
 
-CONFIG_SCHEMA_VERSION: Literal["8.3.0"] = "8.3.0"
-_CONFIG_SCHEMA_VERSION_PARTS = (8, 3, 0)
+CONFIG_SCHEMA_VERSION: Literal["8.4.0"] = "8.4.0"
+_CONFIG_SCHEMA_VERSION_PARTS = (8, 4, 0)
 _CONFIG_SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 APP_DIRECTORY_NAME = "codex_chat_note_pipeline"
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
@@ -274,12 +275,13 @@ class AppConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["8.3.0"] = CONFIG_SCHEMA_VERSION
+    schema_version: Literal["8.4.0"] = CONFIG_SCHEMA_VERSION
     installed_at: datetime | None = None
     sources: dict[SourceId, CodexSourceConfig] = Field(default_factory=lambda: {DEFAULT_SOURCE_ID: CodexSourceConfig()})
     cache_root: Path = Field(default_factory=default_user_cache_root)
     report_path: Path = Field(default_factory=lambda: default_app_root() / "reports")
     usage_report: UsageReportSettings = Field(default_factory=UsageReportSettings)
+    reviews: ReviewSettings = Field(default_factory=ReviewSettings)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     idle_minutes: int = Field(default=DEFAULT_IDLE_MINUTES, ge=0)
     runtime_minutes: int = Field(default=DEFAULT_RUNTIME_MINUTES, gt=0)
@@ -693,6 +695,13 @@ def _resolve_paths(value: dict[str, Any], base: Path) -> dict[str, Any]:
     for key in ("raw_root", "data_root", "state_root", "cache_root", "report_path"):
         if result.get(key) is not None:
             result[key] = resolve(result[key])
+    reviews = result.get("reviews")
+    if isinstance(reviews, dict):
+        for key in ("data_root", "state_root"):
+            if reviews.get(key) is not None:
+                if not str(reviews[key]).strip():
+                    raise PipelineError("review paths must not be empty")
+                reviews[key] = resolve(reviews[key])
     source_map = result.get("sources")
     if isinstance(source_map, dict):
         if len({str(key).casefold() for key in source_map}) != len(source_map):

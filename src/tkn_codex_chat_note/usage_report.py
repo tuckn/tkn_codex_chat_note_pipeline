@@ -173,6 +173,15 @@ def collect_usage(config: AppConfig) -> dict[str, Any]:
                     else:
                         records[key]["taskTitle"] = context["taskTitle"]
                     # Journal has the finer execution timestamp and remains authoritative.
+    for path in sorted((config.reviews.state_root / "usage").glob("*/*.json")):
+        record = _read(path, inventory)
+        if (record.get("schemaVersion") != 1 or record.get("command") != "review-notes"
+                or not record.get("usageId") or not record.get("runId")):
+            raise PipelineError(f"invalid review usage record: {path}")
+        key = f"calendar-review/{record['usageId']}"
+        if key in records:
+            raise PipelineError(f"duplicate review usage identity: {path}")
+        records[key] = {**record, "evidencePath": str(path)}
     normalized = [_normalize(record, config.usage_report.utc_offset_minutes) for record in records.values()]
     evidence.enrich(normalized)
     normalized.sort(key=lambda record: (record.get("startedAt") or "", record["sourceId"], record["usageId"]))

@@ -1,4 +1,4 @@
-schema_version: "8.3.0"
+schema_version: "8.4.0"
 # One shared cache base; codex/source_id partitions are automatic.
 cache_root: ~/.cache/codex_chat_note_pipeline
 
@@ -49,6 +49,19 @@ generation:
 idle_minutes: 30
 runtime_minutes: 230
 model_timeout_seconds: 1800
+
+# Calendar reviews across all enabled sources (independent of token usage reports).
+reviews:
+  data_root: ~/.tkn/codex_chat_note_pipeline/data/reviews
+  state_root: ~/.tkn/codex_chat_note_pipeline/state/reviews
+  language: ja  # ja or en; one content contract
+  utc_offset_minutes: 540  # Fixed UTC offset; 540 = Japan. No daylight-saving adjustment.
+  start_date: null  # due starts with periods containing its first actual run; set a date to backfill.
+  max_calls: 12  # One review command; includes Raw checks and merges. Cached stages do not count.
+  session_note_limit: 10  # Maximum Session Note generations in one scheduled-run, before reviews.
+  input_characters: 50000  # Per-call prompt ceiling; large periods are batched.
+  raw_characters: 16000  # Maximum original text returned per batch's Raw check.
+  raw_requests: 8  # Maximum evidence IDs requested per batch; 0 disables Raw drill-down.
 
 # Offline usage reports; no inference or price lookup occurs during build-report.
 report_path: ~/.tkn/codex_chat_note_pipeline/reports

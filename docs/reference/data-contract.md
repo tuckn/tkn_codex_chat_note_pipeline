@@ -1,6 +1,6 @@
 # Data contract: chat evidence and Session Notes
 
-CLI 0.28.1 · config 8.3.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6
+CLI 0.29.1 · config 8.4.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6 · Review Note 1.0.0
 
 This is the file-based interface specification for tools that consume this CLI's
 output, including context curation and insight. It defines stable identities,
@@ -16,8 +16,9 @@ use the current versions listed above.
 ## Ownership
 
 This application owns Codex chat capture, Canonical Events, source-near Session Notes,
-observed Project membership, and their evidence. Semantic membership and Working
-Context belong to context curation. Insight/Decision generation belongs to insight.
+observed Project membership, calendar Review Notes and their evidence. Review Notes
+include unadopted Intelligence candidates and AI improvement proposals. Semantic
+membership, adopted knowledge/rules and Working Context remain downstream concerns.
 RDF/JSON-LD or other graph representations can be layered on these contracts;
 they are not required to run any of the three CLIs.
 
@@ -61,6 +62,7 @@ republish derived evidence; take backups of Raw/data/state together.
 | Session Note Markdown | Generated Session Note 6; reader also supports historical Thread Note 3, 4, 5 |
 | Provenance entities, activities, index | `1.0.0` |
 | Pipeline report | Source-local integer 2; multi-source response integer 3; no downstream scope completion fields |
+| Review Note Markdown + JSON | `1.0.0`; calendar periods, evidence-backed items, candidates and coverage; see [Review Note contract](review-note-format.md) |
 
 A thread entry includes `threadId`, `threadKey`, source provider/store/ref,
 capture and canonical refs/hashes, status/reason, dates, membership history,

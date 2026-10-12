@@ -5,13 +5,14 @@
 
 ## 1. これは何か
 
-Codex CLI がローカルに残す会話ログを保全し、会話スレッド1件につき1枚の Markdown ノート（以後、**Session Note**、または、ノート）を生成するローカル CLI です。
+Codex CLI がローカルに残す会話ログを保全し、会話ごとの **Session Note** と、週次・月次・年次の **Review Note** を生成するローカル CLI です。Review Note は人向けのMarkdownと、生成AIが再利用できる出典付きJSONの組で保存します。
 
-やることは3つです。
+やることは4つです。
 
 1. **保全**：Codex の JSONL ログを、手を加えない Raw としてコピーします。
 2. **構造化**：Raw を解析し、発言・時刻・原文の行参照を持つ Canonical Events（正規化イベント）にします。
 3. **生成**：生成AIに Canonical Events を渡し、Session Note を作ります。
+4. **振り返り**：週次から月次、月次から年次レビューを作ります。不足する根拠は下位期間のレビュー、元ノート、正規化イベント、保存済みRawへ辿ります。
 
 生成される Session Note は、短い要約ではありません。後から別の観点で会話を考え直すための、時系列順の事実の記録です。
 
@@ -42,15 +43,13 @@ Codex CLI がローカルに残す会話ログを保全し、会話スレッド1
 | ------------ | ----------------------------------------------------------------------------------------------------- |
 | 会話の取得元 | ローカルの Codex ログのみ                                                                             |
 | 推論に使うAI | Codex CLI / Claude Code / GitHub Copilot CLI / Google Antigravity CLI / Ollama / Azure OpenAI から選択                         |
-| 出力         | Session Note（Markdown）、Raw コピー、Canonical Events、来歴（provenance）                            |
-| 対象外       | Codex以外のアプリの会話取得、クラウドにのみ存在する履歴、Scope分類・Decision抽出・Working Context生成 |
+| 出力         | Session Note、週次・月次・年次Review Note（Markdown＋JSON）、Raw、Canonical Events、来歴                            |
+| 対象外       | Codex以外のアプリの会話取得、クラウドにのみ存在する履歴、Scope分類・候補の自動採用・Working Context生成 |
 
 **会話の取得元は Codex 専用です。**
 推論に使うAIはそれとは独立に選べます。Claude Code・Copilot・Ollama は「生成に使うAI」であって、それらの会話を取り込む機能ではありません。
 
-このCLIの処理は Session Note の生成までです。
-
-生成された事実（Session Note）から、洞察を得るためのツールは別リポジトリとして構築します。
+Review Noteには質問・学び・実施事項・未解決・複数チャット間の考察を含められます。Intelligence Layer向けの意味・知識・状況・対象領域の候補と、生成AIの挙動改善案も、根拠・留保・次の確認付きで出力します。候補の採用、Vault・Skill・AGENTS.mdへの反映は後続の判断です。
 
 ### 1.3. 用語
 
@@ -88,6 +87,11 @@ flowchart LR
         RECORD["根拠をバージョン付きで保存する"] --> P[("バージョン付き根拠")]
 
         T --> CATALOG
+        T --> REVIEW["週次レビューを生成する"]
+        REVIEW --> W[("週次 Markdown + JSON")]
+        W --> MONTH["月次レビューを生成する"]
+        MONTH --> MONTHLY[("月次 Markdown + JSON")]
+        MONTHLY --> YEAR["年次レビューを生成する"]
         R --> RECORD
         E --> RECORD
         T --> RECORD
@@ -95,17 +99,19 @@ flowchart LR
 
     subgraph DOWNSTREAM["別リポジトリ"]
         CLASSIFY["Contextを分類する<br/>（Context分類CLI）"]
-        INSIGHT["洞察を得る<br/>（洞察CLI）"]
+        INSIGHT["候補を確認・採用し<br/>知識やルールへ反映する"]
     end
 
     L --> COPY
     M --> CATALOG
     C --> CLASSIFY
-    T --> INSIGHT
+    W --> INSIGHT
+    MONTH --> INSIGHT
+    YEAR --> INSIGHT
 ```
 
 図中の保全・解析・生成・記録は、このCLI内で行う処理です。それぞれを個別に実行する手順ではありません。
-Context分類と洞察の取得は、別リポジトリのCLIによる後続処理で、このCLIから自動実行しません。
+Context分類や候補の採用は後続処理です。このCLIからVault・Skill・AGENTS.mdを自動更新しません。月次は週次、年次は月次を基礎にし、期間境界を跨ぐ根拠は日付で対象範囲を絞ります。
 
 ### 1.5. データの保存先は4領域に分かれる
 
@@ -164,7 +170,7 @@ profiles:
 最小構成は次のとおりです。
 
 ```yaml
-schema_version: "8.3.0"
+schema_version: "8.4.0"
 sources:
   my-windows-pc:
     enabled: true
@@ -257,23 +263,64 @@ tkn-codex-chat-note provenance validate
 
 中断時は `KeyboardInterrupt` が表示され、実行レポートが完了状態にならないことがあります。
 
-### 3.4. Windows タスクスケジューラで週次実行する
+### 3.4. 週次・月次・年次レビューを生成する
 
-初回の `clone` を済ませたあと、普段 CLI にログインしているのと同じ Windows ユーザーで週1回の `pull` を登録します。
+既存設定は互換的に読み込めます。更新したCLIをインストールします。
+
+```shell
+uv tool install . --reinstall
+tkn-codex-chat-note review-notes build --period weekly --dry-run
+tkn-codex-chat-note review-notes build --period weekly
+tkn-codex-chat-note review-notes build --period monthly
+tkn-codex-chat-note review-notes build --period yearly
+```
+
+各コマンドの既定対象は直近の締まった期間です。週は月曜から日曜、月・年は暦月・暦年で、既定は日本時間です。過去の期間は `--date 2026-05-18` のように期間内の日付を指定します。まだ締まっていない期間は生成しません。
+
+週次は保存済みSession Note、月次は週次JSON、年次は月次JSONを主な入力にします。欠けた月はその月の週次へ、欠けた週や期間境界は元ノート・正規化イベントへ戻って補います。必要ならAIが指定した根拠IDから月次・週次の出典を辿り、Rawの一部を照合します。保存済みcatalogを使うため、最新の会話を反映したい場合は先に `pull` を実行してください。
+
+同じ入力・生成条件では推論を省略します。編集済み・確認済みの出力を自動上書きせず、入力が変わった場合は保護理由を表示します。`--force` でも確認済みノートは保護します。JSONが機械利用の正本で、Markdownへの注記はJSONへ自動同期しません。
+
+配置・内容・コスト上限・再開については [Review Note仕様](docs/reference/review-note-format_ja.md) を参照してください。
+
+### 3.5. Windows タスクスケジューラで定期実行する
+
+日次のタスクを一つ登録し、`scheduled-run` を起動する構成です。
+
+1. 毎回、Rawを保全します。
+2. 締まった週・月・年、または中断した生成があるときに、`pull` でSession Noteを更新します。
+3. 期限を迎えたレビューを生成します。PCの停止等で実行できなかった期間にも追いつきます。
+
+初回はその日を開始日として記録します。過去全期間の生成は自動開始しません。初回の途中週・途中月・途中年は、締まった時点でその暦期間の保存済み記録全体を対象にします。明示的に遡る場合は `reviews.start_date` を指定し、先に `review-notes due --dry-run --full-output` で計画を確認してください。
+
+```shell
+tkn-codex-chat-note scheduled-run --dry-run
+tkn-codex-chat-note scheduled-run
+```
+
+普段CLIを利用しているWindowsユーザーで、毎日1回のタスクを設定します。`scheduled-run` のRaw取得は未初期化の保存先も初期化するため、先に全履歴の `clone` を実行する必要はありません。期限到来時のSession Note生成は `reviews.session_note_limit`（既定10件）までです。履歴分も対象になるため、初回の準備は `pull --limit 10` などで段階的に進められます。未生成のノートが残っていても、レビューは正規化イベントで補完し、その不足・省略を明示します。
 
 | 設定項目     | 値                                                                                          |
 | ------------ | ------------------------------------------------------------------------------------------- |
 | プログラム   | インストール済み`tkn-codex-chat-note.exe` の絶対パス                                      |
-| 引数         | `--config "C:\path\to\config.yaml" pull`                                                  |
+| 引数         | `--config "C:\path\to\config.yaml" scheduled-run`                                         |
 | 開始フォルダ | そこに`.tkn/config.yaml` があると設定階層に加わるため、通常実行と同じ設定になる場所にする |
 
-設定オプションは `pull` より前に置きます。
+設定オプションは `scheduled-run` より前に置きます。「開始できなかった場合、すぐに実行する」を有効にし、多重実行は「新しいインスタンスを開始しない」にします。CLI認証を利用する構成では、まず「ユーザーがログオンしているときのみ実行する」で確認してください。
+
+PowerShellの登録例も同梱しています。次の `-WhatIf` は登録内容の確認だけで、タスクを作成しません。今回の実装作業でもタスク登録は行っていません。
+
+```powershell
+.\scripts\register-review-task.ps1 -CliPath (Get-Command tkn-codex-chat-note).Source -ConfigPath "C:\path\to\config.yaml" -WorkingDirectory "C:\path\to\workspace" -At "03:00" -WhatIf
+```
+
+`-WhatIf` を外すと登録します。既存の同名タスクを置き換えません。タスクスケジューラの時刻はWindowsのローカル時刻で、レビューの期間境界は `reviews.utc_offset_minutes` に従います。
 WSL の取得元を有効にしている場合は、そのユーザーから設定した UNC パスを読める必要があります。
 
 `runtime_minutes`（既定230分）は、新しい生成を開始してよい期限です。
 期限到達時に実行中だった生成には最大9分の猶予があります。
 Raw の取得と正規化はこの期限では中断されません。
-タスクスケジューラ側の停止時間は、これらより余裕を持たせてください。
+レビューにも別途 `runtime_minutes` と `reviews.max_calls` の上限が適用されます。`scheduled-run` では要約とレビューの両方の時間が必要です。同梱登録例の停止時間は12時間です。大量の初回保全には別途時間がかかります。
 
 終了コードの読み方は次のとおりです。
 
@@ -297,6 +344,10 @@ Raw の取得と正規化はこの期限では中断されません。
 | `session-notes build`                  | Session Note を更新する。`--thread-id` で得意の会話を1件選べる                  |
 | `session-notes validate <artifact>`    | 既存ノートを読み取り専用で検証する                                                 |
 | `status`                               | 前回の対象範囲・状態・レポートのパスを表示する                                     |
+| `scheduled-run`                        | Rawを保存し、期限が来た期間のSession Note更新・レビュー生成を行う                  |
+| `review-notes build --period weekly\|monthly\|yearly [--date YYYY-MM-DD]` | 指定期間のMarkdownとJSONを生成する |
+| `review-notes due [--as-of YYYY-MM-DD]` | 開始日以降の締まった期間を処理し、中断分を再開する。Raw取得・pullは行わない |
+| `review-notes validate <artifact>`     | JSONの期間境界・参照ID・推移的な出典をオフライン検証する。内容の正しさの保証ではない |
 | `build-report [--dry-run] [--no-open]` | 保存済み使用量からHTML・JSON・CSVを生成します。通常はHTMLを開きます。              |
 | `provenance validate`                  | hash・ID・来歴の関係を読み取り専用で検証する                                       |
 | `storage migrate`                      | `--from-config` で指定した取得元を新しい保存先へコピーする                       |
@@ -740,7 +791,7 @@ data_root内の参照先から長さを制限したFrontmatterだけを読み、
 参照先の共有プロファイルに、指定モデルのpricingを先に設定してください。
 
 ```yaml
-schema_version: "8.3.0"
+schema_version: "8.4.0"
 report_path: ~/.tkn/codex_chat_note_pipeline/reports
 usage_report:
   utc_offset_minutes: 540

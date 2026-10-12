@@ -3,6 +3,7 @@
 .mypy_cache/
 .ruff_cache/
 .tmp/
+/.local/
 dist/
 *.egg-info/
 __pycache__/
