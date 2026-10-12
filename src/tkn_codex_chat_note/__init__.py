@@ -1,3 +1,3 @@
-"""Preserve Codex chat evidence and generate source-near Session Notes."""
+"""Preserve Codex chat evidence and generate calendar reviews."""
 
-__version__ = "0.29.1"
+__version__ = "0.30.0"

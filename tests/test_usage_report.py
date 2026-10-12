@@ -6,7 +6,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from bridge_fixtures import wire_note
 from test_pipeline_workflow import config_for
 
 from tkn_codex_chat_note import inference
@@ -14,7 +13,7 @@ from tkn_codex_chat_note.cli import main
 from tkn_codex_chat_note.config import load_app_config
 from tkn_codex_chat_note.generation_usage import usage_totals
 from tkn_codex_chat_note.report_settings import PriceScenario, UsageReportSettings
-from tkn_codex_chat_note.session_notes import PipelineError, atomic_write_json
+from tkn_codex_chat_note.runtime import PipelineError, atomic_write_json
 from tkn_codex_chat_note.usage_records import UsageJournal, new_record
 from tkn_codex_chat_note.usage_report import build_usage_report, collect_usage, reference_cost
 
@@ -224,7 +223,7 @@ def test_invalid_prices_rejected(overrides):
 def test_new_settings_resolve_relative_to_config_and_accept_old_schema(tmp_path, monkeypatch):
     monkeypatch.setattr("tkn_codex_chat_note.config.global_config_path", lambda: tmp_path / "absent")
     path = tmp_path / "config.yaml"
-    path.write_text('schema_version: "8.0.0"\nreport_path: reports\nusage_report:\n  utc_offset_minutes: 540\n')
+    path.write_text('schema_version: "9.0.0"\nreport_path: reports\nusage_report:\n  utc_offset_minutes: 540\n')
     before = path.read_bytes()
     cfg = load_app_config(explicit_path=path, cwd=tmp_path)
     assert cfg.report_path == tmp_path / "reports"
@@ -241,33 +240,39 @@ def test_build_report_cli_routes_without_running_pipeline(tmp_path, monkeypatch,
     assert result["dryRun"] and result["recordCount"] == 1
 
 
-def test_codex_pipeline_records_usage_and_pull_does_not_double_count(tmp_path, monkeypatch):
-    from test_generation_estimates import candidate, event, note_data
-    from test_session_note_pipeline import write_chat
+def test_review_records_usage_and_repeated_build_does_not_double_count(tmp_path, monkeypatch):
+    from datetime import date
 
-    from tkn_codex_chat_note.pipeline import run_pipeline
-
-    cfg = config_for(tmp_path)
-    write_chat(cfg.sessions_root / "one.jsonl", thread_id="one", cwd=tmp_path)
-
+    from chat_fixtures import write_chat
+    from test_review_sources import response
     from tkn_genai_bridge import Runtime, Usage
     from tkn_genai_bridge.providers.base import ProviderResponse
 
+    from tkn_codex_chat_note.pipeline import run_pipeline
+    from tkn_codex_chat_note.reviews import run_reviews
+
+    cfg = config_for(tmp_path)
+    write_chat(cfg.sessions_root / "one.jsonl", thread_id="one", cwd=tmp_path,
+               started_at="2026-05-19T00:00:00Z")
+
     class Backend:
         def generate(self, profile, request):
-            payload = json.loads(request.prompt.split("BEGIN_INPUT_JSON\n")[1].split("\nEND_INPUT_JSON")[0])
-            events = tuple(event(e["id"], actor=e["actor"]) for e in payload["events"])
-            value = wire_note(note_data(candidate(tmp_path, events)))
-            return ProviderResponse(data=value, usage=Usage(input_tokens=1000, output_tokens=200))
+            return ProviderResponse(data=response(request.prompt, {}),
+                                    usage=Usage(input_tokens=1000, output_tokens=200))
 
     monkeypatch.setattr(inference, "Runtime", lambda profile, **kw: Runtime(profile, backend=Backend(), **kw))
-    report = run_pipeline(cfg, mode="clone")
-    assert report["ok"], report
-    assert report["usageTotals"]["inputTokens"] == 1000
-    assert len(collect_usage(cfg)["records"]) == 1
-    assert collect_usage(cfg)["records"][0]["noteStatus"] == "generated"
-    next_run = run_pipeline(cfg, mode="pull")
-    assert next_run["generatedSessionNoteCount"] == 0
+    assert run_pipeline(cfg, mode="clone")["complete"]
+    assert collect_usage(cfg)["records"] == []
+    options = {"kind": "weekly", "day": date(2026, 5, 19), "as_of": date(2026, 5, 25)}
+    report = run_reviews(cfg, **options)
+    assert report["ok"] and report["generatedCount"] == 1, report
+    records = collect_usage(cfg)["records"]
+    assert len(records) == 1
+    assert records[0]["inputTokens"] == 1000
+    assert records[0]["noteStatus"] == "generated"
+    assert records[0]["sourceId"] == cfg.source_id
+    assert run_pipeline(cfg, mode="pull")["complete"]
+    assert run_reviews(cfg, **options)["modelCalls"] == 0
     assert len(collect_usage(cfg)["records"]) == 1
 
 

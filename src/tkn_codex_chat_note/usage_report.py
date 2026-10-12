@@ -19,7 +19,7 @@ from .cost_policy import record_usage, usage_fields
 from .generation_usage import metric_records, usage_totals
 from .report_evidence import DIAGNOSTIC_FIELDS, LABEL_FIELDS, ReportEvidence
 from .report_settings import BridgePriceScenario
-from .session_notes import PipelineError, atomic_write_text
+from .runtime import PipelineError, atomic_write_text
 from .usage_records import TOKEN_FIELDS, timestamp, token_number
 
 DIMENSIONS = (
@@ -173,15 +173,16 @@ def collect_usage(config: AppConfig) -> dict[str, Any]:
                     else:
                         records[key]["taskTitle"] = context["taskTitle"]
                     # Journal has the finer execution timestamp and remains authoritative.
-    for path in sorted((config.reviews.state_root / "usage").glob("*/*.json")):
-        record = _read(path, inventory)
-        if (record.get("schemaVersion") != 1 or record.get("command") != "review-notes"
-                or not record.get("usageId") or not record.get("runId")):
-            raise PipelineError(f"invalid review usage record: {path}")
-        key = f"calendar-review/{record['usageId']}"
-        if key in records:
-            raise PipelineError(f"duplicate review usage identity: {path}")
-        records[key] = {**record, "evidencePath": str(path)}
+    for source in config.enabled_source_configs():
+        for path in sorted((source.review_state_root / "usage").glob("*/*.json")):
+            record = _read(path, inventory)
+            if (record.get("schemaVersion") != 1 or record.get("command") != "review-notes"
+                    or not record.get("usageId") or not record.get("runId")):
+                raise PipelineError(f"invalid review usage record: {path}")
+            key = f"calendar-review/{record['usageId']}"
+            if key in records:
+                raise PipelineError(f"duplicate review usage identity: {path}")
+            records[key] = {**record, "evidencePath": str(path)}
     normalized = [_normalize(record, config.usage_report.utc_offset_minutes) for record in records.values()]
     evidence.enrich(normalized)
     normalized.sort(key=lambda record: (record.get("startedAt") or "", record["sourceId"], record["usageId"]))

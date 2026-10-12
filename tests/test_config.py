@@ -13,7 +13,7 @@ from tkn_codex_chat_note.config import (
     load_app_config,
     resolve_app_config,
 )
-from tkn_codex_chat_note.session_notes import PipelineError
+from tkn_codex_chat_note.runtime import PipelineError
 
 
 def write_yaml(path: Path, value: dict[str, object]) -> None:
@@ -48,7 +48,7 @@ def test_packaged_example_config_uses_portable_home_paths() -> None:
     assert value["schema_version"] == CONFIG_SCHEMA_VERSION
     assert config_example_text().splitlines()[0] == f'schema_version: "{CONFIG_SCHEMA_VERSION}"'
     generation = value["generation"]
-    assert generation["session_note_profile"] == "default-jp"
+    assert "session_note_profile" not in generation
     assert generation["active_profile"] == "codex"
     assert generation["profiles"]["codex"] == {"bridge_profile": "codex-default"}
     assert "summary_prompt" not in value
@@ -82,29 +82,29 @@ def test_precedence_and_relative_paths(tmp_path: Path, monkeypatch: pytest.Monke
     write_yaml(
         home / ".tkn/codex_chat_note_pipeline/config.yaml",
         {
-            "idle_minutes": 10,
+            "runtime_minutes": 10,
             "generation": {"providers": {"codex": {"model": "global"}}},
         },
     )
     write_yaml(
         cwd / ".tkn/config.yaml",
         {
-            "idle_minutes": 20,
+            "runtime_minutes": 20,
             "generation": {"providers": {"codex": {"model": "local"}}},
         },
     )
     write_yaml(
         explicit,
-        {"idle_minutes": 25, "sources": {"windows": {"state_root": "state"}}},
+        {"runtime_minutes": 25, "sources": {"windows": {"state_root": "state"}}},
     )
 
     config = load_app_config(
         explicit_path=explicit,
         cwd=cwd,
-        overrides={"idle_minutes": 40},
+        overrides={"runtime_minutes": 40},
     )
 
-    assert config.idle_minutes == 40
+    assert config.runtime_minutes == 40
     assert config.model == "local"
     assert config.state_root == (explicit.parent / "state").absolute()
     assert config.registry_path == config.source_data_root / "project-registry.jsonl"
@@ -128,22 +128,22 @@ def test_config_resolution_reports_the_winning_source(
         cwd / ".tkn/config.yaml",
         {
             "generation": {"providers": {"codex": {"model": "project"}}},
-            "idle_minutes": 10,
+            "runtime_minutes": 10,
         },
     )
-    write_yaml(explicit, {"idle_minutes": 20})
+    write_yaml(explicit, {"runtime_minutes": 20})
 
     resolution = resolve_app_config(
         explicit_path=explicit,
         cwd=cwd,
-        overrides={"idle_minutes": 30},
+        overrides={"runtime_minutes": 30},
     )
 
     assert resolution.config.model == "project"
-    assert resolution.config.idle_minutes == 30
+    assert resolution.config.runtime_minutes == 30
     assert "schema_version" not in resolution.sources
     assert resolution.sources["generation.profiles.codex.model"].startswith("project:")
-    assert resolution.sources["idle_minutes"] == "CLI option"
+    assert resolution.sources["runtime_minutes"] == "CLI option"
     assert [layer["kind"] for layer in resolution.layers] == [
         "built-in",
         "global",
@@ -181,7 +181,7 @@ def test_unknown_key_is_rejected(tmp_path: Path) -> None:
 
 def test_config_file_requires_schema_version(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
-    path.write_text("idle_minutes: 10\n", encoding="utf-8")
+    path.write_text("runtime_minutes: 10\n", encoding="utf-8")
 
     with pytest.raises(PipelineError, match="schema_version is required"):
         load_app_config(explicit_path=path, cwd=tmp_path)
@@ -195,8 +195,8 @@ def test_config_file_requires_schema_version(tmp_path: Path) -> None:
         ('"2.0"', "expected a quoted MAJOR.MINOR.PATCH"),
         ('"2.0.0-rc1"', "expected a quoted MAJOR.MINOR.PATCH"),
         ('"1.9.0"', "schema v1 is no longer supported"),
-        ('"7.3.0"', "unsupported newer configuration schema_version"),
-        ('"8.5.0"', "unsupported newer configuration schema_version"),
+        ('"9.1.0"', "unsupported newer configuration schema_version"),
+        ('"10.0.0"', "unsupported newer configuration schema_version"),
     ],
 )
 def test_unsupported_schema_versions_are_rejected(
@@ -213,13 +213,13 @@ def test_unsupported_schema_versions_are_rejected(
 
 def test_same_major_minor_newer_patch_is_accepted(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
-    write_yaml(path, {"schema_version": "8.4.7", "idle_minutes": 10})
+    write_yaml(path, {"schema_version": "9.0.7", "runtime_minutes": 10})
 
     resolution = resolve_app_config(explicit_path=path, cwd=tmp_path)
 
     assert resolution.config.schema_version == CONFIG_SCHEMA_VERSION
     explicit = resolution.layers[-1]
-    assert explicit["schemaVersion"] == "8.4.7"
+    assert explicit["schemaVersion"] == "9.0.7"
     assert explicit["effectiveSchemaVersion"] == CONFIG_SCHEMA_VERSION
     assert explicit["migration"] is None
 
@@ -330,7 +330,7 @@ def test_inference_providers_resolve_without_changing_codex_source(
     assert config.provider == provider
     assert config.model == model
     assert config.sessions_root == config.codex_home / "sessions"
-    assert config.session_note_pipeline_config(allow_missing_watermark=True).provider == provider
+    assert config.inference_config().provider == provider
 
 
 def test_remote_ollama_endpoint_is_rejected(tmp_path: Path) -> None:
@@ -516,7 +516,7 @@ def test_old_acquisition_wrappers_are_rejected_in_schema_7(tmp_path: Path, key: 
 
 def test_config_init_preserves_existing_old_global_configuration(tmp_path: Path) -> None:
     old = Path.home() / ".tkn/genai_chat_note_pipeline/config.yaml"
-    write_yaml(old, {"schema_version": "6.0.0", "idle_minutes": 17})
+    write_yaml(old, {"schema_version": "6.0.0", "runtime_minutes": 17})
     before = old.read_bytes()
     with pytest.raises(PipelineError, match="legacy user configuration found"):
         initialize_user_config()

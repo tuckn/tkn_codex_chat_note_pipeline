@@ -1,4 +1,4 @@
-"""Period-filtered Session Notes and bounded, hash-verified original evidence."""
+"""Period-filtered canonical events and bounded, hash-verified original evidence."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .config import AppConfig
 from .media_inputs import describe_embedded_images
 from .references import resolve_store_ref
 from .review_model import REVIEW_VERSION, Period, ReviewDraft, overlapping_weeks, period_for
-from .session_notes import PipelineError
+from .runtime import PipelineError
 from .storage import read_json
 
 
@@ -65,32 +65,8 @@ class EvidenceSet:
                 for id in self.selected]
 
 
-def timeline_entries(text: str) -> list[dict[str, Any]]:
-    """Read the v6 renderer's metadata fields, including multiline Text values."""
-    match = re.search(r"^## Timeline\s*$", text, re.MULTILINE)
-    if not match:
-        return []
-    body = text[match.end():].split("\n## ", 1)[0]
-    result: list[dict[str, Any]] = []
-    for block in re.finditer(r"^- \*\*[^\n]+\*\*\s*\n(.*?)(?=^- \*\*|\Z)", body, re.MULTILINE | re.DOTALL):
-        fields: dict[str, str] = {}
-        last = ""
-        for line in block[1].splitlines():
-            value = re.match(r"^  - (Actor|Type|Text|EventRange|Sources):\s?(.*)$", line)
-            if value:
-                last = value[1]
-                fields[last] = value[2]
-            elif last == "Text" and line.startswith("    "):
-                fields[last] += "\n" + line[4:]
-        if fields.get("Text") and fields.get("Sources"):
-            result.append({"text": fields["Text"], "actor": fields.get("Actor", "unknown"),
-                           "label": fields.get("Type", "unknown"),
-                           "eventIds": [v.strip() for v in fields["Sources"].split(",") if v.strip()]})
-    return result
-
-
 def _unit(source: AppConfig, entry: dict[str, Any], canonical: Path, events: list[dict[str, Any]],
-          text: str, *, kind: str, actor: str, label: str, note: Path | None = None) -> dict[str, Any]:
+          text: str, *, kind: str, actor: str, label: str) -> dict[str, Any]:
     # Raw capture hashes change when a conversation grows; the identity of an unchanged
     # historical episode must not. Source IDs are omitted to deduplicate identical mirrors.
     identity = {"thread": entry["threadId"], "events": [e["localId"] for e in events],
@@ -99,13 +75,12 @@ def _unit(source: AppConfig, entry: dict[str, Any], canonical: Path, events: lis
     return {"id": "E" + digest(identity)[:24], "kind": kind, "text": text, "actor": actor, "label": label,
             "timestamps": sorted(set(e["timestamp"] for e in events)), "sourceId": source.source_id,
             "threadId": entry["threadId"], "title": entry.get("title", ""),
-            "notePath": str(note) if note else None, "noteSha256": entry.get("noteSha256") if note else None,
             "canonicalPath": str(canonical), "canonicalRef": entry["canonicalRef"],
             "canonicalSha256": entry["canonicalSha256"], "dataRoot": str(source.data_root),
             "events": [{k: e.get(k, "") for k in ("id", "localId", "timestamp", "rawRef")} for e in events]}
 
 
-def session_evidence(config: AppConfig, period: Period) -> EvidenceSet:
+def canonical_evidence(config: AppConfig, period: Period) -> EvidenceSet:
     result = EvidenceSet()
     for source in config.enabled_source_configs():
         path = source.data_root / "catalog/threads.json"
@@ -117,6 +92,9 @@ def session_evidence(config: AppConfig, period: Period) -> EvidenceSet:
                                "catalogAsOf": catalog.get("asOf"), "catalogSha256": digest(catalog)})
         descriptor = read_json(source.data_root / "store.json")
         for entry in catalog.get("threads", []):
+            if (entry.get("sourceId") != source.source_id
+                    or entry.get("sourceProvider", "codex") != source.source_provider):
+                continue
             if entry.get("status") == "excluded":
                 continue
             # Most closed periods do not overlap most conversations. Prune from catalog metadata
@@ -138,37 +116,10 @@ def session_evidence(config: AppConfig, period: Period) -> EvidenceSet:
                 selected = [e for e in events if period.contains(e.get("timestamp", ""))]
                 if not selected:
                     continue
-                by_id = {e["localId"]: e for e in events}
-                covered: set[str] = set()
-                boundary_ids: set[str] = set()
-                note: Path | None = None
-                if entry.get("noteRef") and entry.get("status") == "current":
-                    candidate = resolve_store_ref(source.data_root, entry["noteRef"], descriptor)
-                    if candidate.is_file() and sha256(candidate.read_bytes()).hexdigest() == entry.get("noteSha256"):
-                        note = candidate
-                if note:
-                    for item in timeline_entries(note.read_text(encoding="utf-8-sig")):
-                        refs = [by_id[id] for id in item["eventIds"] if id in by_id]
-                        if len(refs) != len(item["eventIds"]):
-                            result.gaps.append(f"{source.source_id}/{entry['threadId']}: unresolved note event IDs")
-                            continue
-                        # Do not reuse prose covering an out-of-period event, even if its start is inside.
-                        if refs and all(period.contains(e["timestamp"]) for e in refs):
-                            result.add(_unit(source, entry, canonical, refs, item["text"], kind="session-note",
-                                             actor=item["actor"], label=item["label"], note=note))
-                            covered.update(item["eventIds"])
-                        elif refs:
-                            boundary_ids.update(e["localId"] for e in refs if period.contains(e["timestamp"]))
-                else:
-                    result.gaps.append(f"{source.source_id}/{entry['threadId']}: current Session Note unavailable; "
-                                       "using period-filtered canonical source text")
-                # Recover uncovered user messages and interruptions even when a note exists.
-                # Without a current note, retain action/result evidence as well, but not duplicated completions.
                 for e in selected:
-                    important = e["kind"] == "user_message" or e.get("name") == "turn_aborted"
-                    fallback = e["localId"] in boundary_ids or (
-                        not note and e["kind"] in {"assistant_message", "tool_call", "tool_result"})
-                    if e["localId"] in covered or not (important or fallback):
+                    # Retain dialogue/actions/results and explicit interruptions, not duplicated completions.
+                    if (e["kind"] not in {"user_message", "assistant_message", "tool_call", "tool_result"}
+                            and e.get("name") != "turn_aborted"):
                         continue
                     text = describe_embedded_images(e.get("text", "")).text
                     if len(text) > 6000:
@@ -187,17 +138,19 @@ def session_evidence(config: AppConfig, period: Period) -> EvidenceSet:
 
 def period_evidence(config: AppConfig, period: Period) -> EvidenceSet:
     if period.kind == "weekly":
-        return session_evidence(config, period)
+        return canonical_evidence(config, period)
     result = EvidenceSet()
     children = ([period_for("monthly", date(period.start.year, month, 1), period.offset)
                  for month in range(1, 13)] if period.kind == "yearly" else overlapping_weeks(period))
     for child in children:
-        path = review_path(config.reviews.data_root, child)
+        path = review_path(config.review_data_root, child)
         path_field = "monthlyPath" if child.kind == "monthly" else "weeklyPath"
         try:
             saved = checked_json(path)
             if saved.get("schemaVersion") != REVIEW_VERSION or saved.get("period") != child.document():
                 raise ValueError(f"incompatible {child.kind} review")
+            if saved.get("sourceId") != config.source_id:
+                raise ValueError(f"{child.kind} review belongs to a different source")
             evidence = {e["id"]: e for e in saved["evidence"]}
             draft = ReviewDraft.model_validate({"items": saved["items"], "rawRequests": []})
             draft.validate_sources(set(evidence))

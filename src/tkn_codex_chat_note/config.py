@@ -21,18 +21,17 @@ from .config_validation import validate_config_layer
 from .inference import InferenceProvider, validate_ollama_base_url
 from .report_settings import UsageReportSettings
 from .review_settings import ReviewSettings
-from .session_notes import (
-    DEFAULT_IDLE_MINUTES,
+from .runtime import (
     DEFAULT_MODEL_TIMEOUT_SECONDS,
     DEFAULT_RUNTIME_MINUTES,
     DEFAULT_SOURCE_ID,
-    PipelineConfig,
+    InferenceConfig,
     PipelineError,
     atomic_write_text,
 )
 
-CONFIG_SCHEMA_VERSION: Literal["8.4.0"] = "8.4.0"
-_CONFIG_SCHEMA_VERSION_PARTS = (8, 4, 0)
+CONFIG_SCHEMA_VERSION: Literal["9.0.0"] = "9.0.0"
+_CONFIG_SCHEMA_VERSION_PARTS = (9, 0, 0)
 _CONFIG_SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 APP_DIRECTORY_NAME = "codex_chat_note_pipeline"
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
@@ -213,11 +212,10 @@ def _default_profiles() -> dict[str, BridgeProfileConfig | ProviderConfig]:
 
 
 class GenerationConfig(BaseModel):
-    """Named execution profiles, independent of the Session Note language profile."""
+    """Named execution profiles for calendar reviews."""
 
     model_config = ConfigDict(extra="forbid")
 
-    session_note_profile: Literal["default-jp", "default-en"] = "default-jp"
     active_profile: str = "codex"
     profiles: dict[str, BridgeProfileConfig | ProviderConfig] = Field(default_factory=_default_profiles)
 
@@ -262,6 +260,8 @@ class CodexSourceConfig(BaseModel):
     data_root: Path | None = None
     state_root: Path | None = None
 
+    reviews: ReviewSettings = Field(default_factory=ReviewSettings)
+
     @field_validator("source_root", "raw_root", "data_root", "state_root", mode="before")
     @classmethod
     def require_path(cls, value: Any) -> Any:
@@ -275,15 +275,12 @@ class AppConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["8.4.0"] = CONFIG_SCHEMA_VERSION
-    installed_at: datetime | None = None
+    schema_version: Literal["9.0.0"] = CONFIG_SCHEMA_VERSION
     sources: dict[SourceId, CodexSourceConfig] = Field(default_factory=lambda: {DEFAULT_SOURCE_ID: CodexSourceConfig()})
     cache_root: Path = Field(default_factory=default_user_cache_root)
     report_path: Path = Field(default_factory=lambda: default_app_root() / "reports")
     usage_report: UsageReportSettings = Field(default_factory=UsageReportSettings)
-    reviews: ReviewSettings = Field(default_factory=ReviewSettings)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
-    idle_minutes: int = Field(default=DEFAULT_IDLE_MINUTES, ge=0)
     runtime_minutes: int = Field(default=DEFAULT_RUNTIME_MINUTES, gt=0)
     model_timeout_seconds: int = Field(default=DEFAULT_MODEL_TIMEOUT_SECONDS, gt=0)
 
@@ -459,18 +456,20 @@ class AppConfig(BaseModel):
             return settings.endpoint
         return "http://127.0.0.1:11434"
 
-    def session_note_pipeline_config(self, *, allow_missing_watermark: bool = False) -> PipelineConfig:
-        installed_at = self.installed_at
-        if installed_at is None:
-            if not allow_missing_watermark:
-                raise PipelineError("installed_at is missing; run `tkn-codex-chat-note init` first")
-            installed_at = datetime.now().astimezone()
-        return PipelineConfig(
-            installed_at=installed_at.astimezone().isoformat(timespec="seconds"),
-            sessions_root=self.sessions_root,
-            raw_root=self.raw_root,
-            source_id=self.source_id,
-            session_note_profile=self.generation.session_note_profile,
+    @property
+    def reviews(self) -> ReviewSettings:
+        return self.source_settings.reviews
+
+    @property
+    def review_data_root(self) -> Path:
+        return self.data_root / "reviews"
+
+    @property
+    def review_state_root(self) -> Path:
+        return self.state_root / "reviews"
+
+    def inference_config(self) -> InferenceConfig:
+        return InferenceConfig(
             provider=self.provider,
             generation_profile=self.generation.active_profile,
             codex_bin=self.codex_executable,
@@ -480,7 +479,6 @@ class AppConfig(BaseModel):
             inference_options=self.active_provider_config.inference_options(),
             model=self.model,
             reasoning_effort=self.reasoning_effort,
-            idle_minutes=self.idle_minutes,
             runtime_minutes=self.runtime_minutes,
             model_timeout_seconds=self.model_timeout_seconds,
         )
@@ -630,16 +628,13 @@ def _inspect_config_schema(value: dict[str, Any], path: Path) -> dict[str, Any]:
     parts = tuple(int(part) for part in raw_version.split("."))
     current_major, current_minor, _current_patch = _CONFIG_SCHEMA_VERSION_PARTS
     major, minor, _patch = parts
-    if major == 7 and minor > 2:
-        raise PipelineError(f"unsupported newer configuration schema_version {raw_version!r}; "
-                            "only schema 7.0-7.2 can migrate to schema 8")
-    if major == 7 and minor <= 2:
-        return {
-            "schemaVersion": raw_version,
-            "effectiveSchemaVersion": CONFIG_SCHEMA_VERSION,
-            "migration": {"kind": "named-generation-profiles", "fromVersion": raw_version,
-                          "toVersion": CONFIG_SCHEMA_VERSION, "persistentConfigUpdated": False},
-        }
+    if major in {7, 8}:
+        raise PipelineError(
+            "configuration requires schema 9: move reviews settings under sources.<id>.reviews; "
+            "review data/state now use each source root's reviews subdirectory; remove "
+            "generation.session_note_profile, idle_minutes, installed_at and reviews.session_note_limit. "
+            "Preserve source IDs and raw/data/state roots. Existing artifacts are not deleted."
+        )
     if major != current_major:
         direction = "newer" if major > current_major else "older"
         action = (
@@ -695,13 +690,6 @@ def _resolve_paths(value: dict[str, Any], base: Path) -> dict[str, Any]:
     for key in ("raw_root", "data_root", "state_root", "cache_root", "report_path"):
         if result.get(key) is not None:
             result[key] = resolve(result[key])
-    reviews = result.get("reviews")
-    if isinstance(reviews, dict):
-        for key in ("data_root", "state_root"):
-            if reviews.get(key) is not None:
-                if not str(reviews[key]).strip():
-                    raise PipelineError("review paths must not be empty")
-                reviews[key] = resolve(reviews[key])
     source_map = result.get("sources")
     if isinstance(source_map, dict):
         if len({str(key).casefold() for key in source_map}) != len(source_map):
@@ -1048,65 +1036,6 @@ def config_document(config: AppConfig) -> dict[str, Any]:
             if kind != "cache":
                 settings[kind + "_root"] = str(path)
     return document
-
-
-def initialization_config(
-    path: Path | None = None,
-    *,
-    overrides: dict[str, Any] | None = None,
-    refresh_installed_at: bool = True,
-) -> tuple[AppConfig, Path, tuple[str, ...]]:
-    """Load the target config for init, tolerating only retired init-owned keys."""
-
-    target = (path or global_config_path()).expanduser().absolute()
-    if not target.is_file():
-        raise PipelineError(f"config not found: {target}; run `tkn-codex-chat-note config init` first")
-    raw: dict[str, Any] = {}
-    removed: list[str] = []
-    if target.is_file():
-        raw = _read_layer(target)
-        _reject_legacy_generation_config(raw, target)
-        _inspect_config_schema(raw, target)
-        raw = _config_properties(raw)
-        raw, removed_summary_prompt = _without_retired_user_prompt(
-            raw,
-            remove_configured=True,
-        )
-        if removed_summary_prompt:
-            removed.append("summary_prompt")
-        for key in ("context_store_root",):
-            if key in raw:
-                raw.pop(key)
-                removed.append(key)
-        if "generation" in raw:
-            raw["generation"] = normalize_generation(raw["generation"])
-        raw = _resolve_paths(raw, target.parent)
-    merged = _default_config_document()
-    original_generation = _read_layer(target).get("generation")
-    if isinstance(original_generation, dict) and "profiles" in original_generation:
-        merged["generation"]["profiles"] = {}
-    _deep_merge(merged, raw)
-    _apply_runtime_overrides(
-        merged,
-        overrides or {},
-        working=Path.cwd().absolute(),
-        sources={},
-    )
-    if refresh_installed_at:
-        merged["installed_at"] = datetime.now().astimezone()
-    try:
-        config = AppConfig.model_validate(merged)
-    except Exception as exc:
-        raise PipelineError(f"invalid configuration: {exc}") from exc
-    return (
-        config.model_copy(
-            update={
-                "cache_root": config.cache_root.expanduser().absolute(),
-            }
-        ),
-        target,
-        tuple(removed),
-    )
 
 
 def write_config(config: AppConfig, target: Path) -> None:

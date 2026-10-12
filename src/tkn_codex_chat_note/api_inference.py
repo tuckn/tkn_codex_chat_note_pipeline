@@ -166,7 +166,7 @@ class ApiClient:
         return GenerationRequest(
             prompt=alias_prompt(prompt, mapping),
             output_schema=strict_schema(schema, list(mapping.values())),
-            schema_name="session_note",
+            schema_name="review_note",
         )
 
     def body(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:

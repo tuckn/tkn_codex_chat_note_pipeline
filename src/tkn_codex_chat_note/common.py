@@ -1,4 +1,4 @@
-"""Small rendering primitives used by Session Notes."""
+"""Small text and Markdown rendering primitives."""
 
 from __future__ import annotations
 

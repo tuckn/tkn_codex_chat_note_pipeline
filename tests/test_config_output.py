@@ -38,9 +38,9 @@ def test_config_list_text_and_json_preserve_layers_and_are_readonly(
     project_config = tmp_path / ".tkn/config.yaml"
     explicit_config = tmp_path / "explicit.yaml"
     for path, settings in (
-        (global_config, {"idle_minutes": 31}),
-        (project_config, {"runtime_minutes": 32}),
-        (explicit_config, {"idle_minutes": 33}),
+        (global_config, {"runtime_minutes": 31}),
+        (project_config, {"model_timeout_seconds": 32}),
+        (explicit_config, {"runtime_minutes": 33}),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"schema_version": CONFIG_SCHEMA_VERSION, **settings}), encoding="utf-8")
@@ -50,7 +50,7 @@ def test_config_list_text_and_json_preserve_layers_and_are_readonly(
         return {path: path.read_bytes() if path.is_file() else None for path in tmp_path.rglob("*")}
 
     before = snapshot()
-    args = [*flags, "--config", str(explicit_config), "--idle-minutes", "34", "config", "list"]
+    args = [*flags, "--config", str(explicit_config), "--runtime-minutes", "34", "config", "list"]
     assert main(args) == 0
     text = capsys.readouterr()
     assert main([*args, "--json"]) == 0
@@ -58,18 +58,18 @@ def test_config_list_text_and_json_preserve_layers_and_are_readonly(
     report = json.loads(machine.out)
     lines = text.out.splitlines()
     assert "command=config list" in lines
-    assert "config.idle_minutes=34" in lines
-    assert "config.runtime_minutes=32" in lines
-    assert "sources.idle_minutes=CLI option" in lines
-    assert f"sources.runtime_minutes=project: {project_config}" in lines
+    assert "config.runtime_minutes=34" in lines
+    assert "config.model_timeout_seconds=32" in lines
+    assert "sources.runtime_minutes=CLI option" in lines
+    assert f"sources.model_timeout_seconds=project: {project_config}" in lines
     assert f"layers[1].schemaVersion={CONFIG_SCHEMA_VERSION}" in lines
     assert f"configSchema.effectiveVersion={CONFIG_SCHEMA_VERSION}" in lines
     assert "configSchema.hasInMemoryMigrations=false" in lines
     assert "generationResolved.profile=codex" in lines
-    assert "summaryProfile.name=default-jp" in lines
+    assert "summaryProfile" not in report
     assert all("=" in line for line in lines)
     assert report["command"] == "config list"
-    assert report["config"]["idle_minutes"] == 34
+    assert report["config"]["runtime_minutes"] == 34
     assert [layer["kind"] for layer in report["layers"]] == ["built-in", "global", "project", "explicit"]
     assert "test-secret-never-display" not in text.out + text.err + machine.out + machine.err
     if "--quiet" in flags:

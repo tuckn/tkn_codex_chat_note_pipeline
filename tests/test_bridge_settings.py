@@ -12,7 +12,7 @@ from tkn_codex_chat_note.bridge_settings import BridgeProfileConfig
 from tkn_codex_chat_note.cli import main
 from tkn_codex_chat_note.config import config_document, load_app_config
 from tkn_codex_chat_note.pipeline import run_pipeline
-from tkn_codex_chat_note.session_notes import PipelineError, generator_fingerprint
+from tkn_codex_chat_note.runtime import PipelineError
 
 
 def shared(profiles):
@@ -25,7 +25,7 @@ def shared(profiles):
 def application(tmp_path, **policy):
     path = tmp_path / "app.yaml"
     path.write_text(yaml.safe_dump({
-        "schema_version": "8.2.0",
+        "schema_version": "9.0.0",
         "generation": {"active_profile": "notes", "profiles": {
             "notes": {"bridge_profile": "shared-notes", **policy}}},
     }), encoding="utf-8")
@@ -33,7 +33,8 @@ def application(tmp_path, **policy):
 
 
 def fingerprint(cfg):
-    return generator_fingerprint(cfg.session_note_pipeline_config(allow_missing_watermark=True))
+    from tkn_codex_chat_note.review_generation import ReviewGenerator
+    return ReviewGenerator(cfg.enabled_source_configs()[0], "test").signature
 
 
 def test_shared_changes_and_model_override_reach_generation(tmp_path):
@@ -61,7 +62,7 @@ def test_shared_rename_keeps_identity_and_runtime_keeps_local_boundary(tmp_path)
     original = fingerprint(cfg)
     cfg.generation.profiles["notes"] = BridgeProfileConfig(bridge_profile="same")
     assert fingerprint(cfg) == original
-    client = ApiClient(cfg.session_note_pipeline_config(allow_missing_watermark=True))
+    client = ApiClient(cfg.inference_config())
     assert client.profile.local_only and client.profile.ollama.think is False
     assert client.profile.max_output_tokens == 2048
     assert client.limits.input_tokens + client.limits.output_tokens <= 32768
@@ -81,7 +82,7 @@ def test_shared_rename_keeps_identity_and_runtime_keeps_local_boundary(tmp_path)
 def test_invalid_reference_or_mixed_transport_fails_offline(tmp_path, profile):
     shared({"shared-notes": {"provider": "codex", "model": "one"}})
     path = tmp_path / "app.yaml"
-    path.write_text(yaml.safe_dump({"schema_version": "8.2.0", "generation": {
+    path.write_text(yaml.safe_dump({"schema_version": "9.0.0", "generation": {
         "active_profile": "notes", "profiles": {"notes": profile}}}), encoding="utf-8")
     with pytest.raises((PipelineError, ValueError)):
         load_app_config(explicit_path=path, cwd=tmp_path)
@@ -99,7 +100,7 @@ def test_shared_dry_run_reads_without_generating_or_writing(tmp_path, monkeypatc
     monkeypatch.setattr(Runtime, "generate", lambda *a, **k: pytest.fail("generation"))
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     report = run_pipeline(cfg, mode="clone", dry_run=True)
-    assert report["ok"] and report["threadCounts"] == {"planned": 2}
+    assert report["ok"] and report["threadCounts"] == {"current": 2}
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
 
 
@@ -136,7 +137,7 @@ def test_explicit_legacy_profile_does_not_read_unused_shared_config(tmp_path):
     shared_path = shared({"codex-default": {"provider": "codex"}})
     shared_path.write_text("invalid yaml", encoding="utf-8")
     path = tmp_path / "legacy.yaml"
-    path.write_text(yaml.safe_dump({"schema_version": "8.1.0", "generation": {
+    path.write_text(yaml.safe_dump({"schema_version": "9.0.0", "generation": {
         "active_profile": "legacy", "profiles": {"legacy": {"provider": "codex", "model": "one"}}}}),
         encoding="utf-8")
     assert load_app_config(explicit_path=path, cwd=tmp_path).model == "one"
@@ -172,11 +173,10 @@ def test_antigravity_configuration_selector_and_runtime(tmp_path, monkeypatch, c
             return ProviderResponse({"ok": True}, usage=Usage(input_tokens=10, output_tokens=2))
 
     monkeypatch.setattr(inference, "Runtime", lambda profile, **kw: Runtime(profile, backend=Backend(), **kw))
-    assert inference.invoke_structured(cfg.session_note_pipeline_config(allow_missing_watermark=True),
+    assert inference.invoke_structured(cfg.inference_config(),
                                        "test", {"type": "object"}, cwd=tmp_path, timeout=10,
                                        usage_observer=observed.append) == {"ok": True}
     assert observed[-1]["model"] is None  # Requested identity is not a reported model.
     assert observed[-1]["inputTokens"] == 10 and inference.provider_name("antigravity") == "Google Antigravity"
     assert inference.is_supported_generator("Google Antigravity")
     assert app.read_bytes() == before
-

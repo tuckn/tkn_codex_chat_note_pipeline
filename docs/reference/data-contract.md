@@ -1,521 +1,183 @@
-# Data contract: chat evidence and Session Notes
+# Data contract: chat evidence and calendar reviews
 
-CLI 0.29.1 · config 8.4.0 · storage 5 · catalog/provenance 1.0.0 · Session Note 6 · Review Note 1.0.0
+CLI 0.30.0 · config 9.0.0 · storage 5 · catalog/provenance 1.0.0 · Review Note 1.0.0
 
-This is the file-based interface specification for tools that consume this CLI's
-output, including context curation and insight. It defines stable identities,
-published schemas, content verification, reference resolution, and safe reads
-during concurrent updates. Consumers use these published files rather than
-depending on the producer's Python package or private checkpoints.
+This is the file interface for consumers of captured Codex conversations and calendar
+reviews. For operation, see the [README](../../README.md); for review content, see the
+[Review Note contract](review-note-format.md).
 
-For installation and normal operation, see the [README](../../README.md).
-For the contents of a generated note, see [Session Note format](session-note-format.md).
-Supported historical formats below describe reader compatibility; new stores
-use the current versions listed above.
+## Ownership and processing
 
-## Ownership
+The application captures local chat files, exports deterministic Canonical Events,
+records observed Project membership and generates weekly, monthly and yearly reviews.
+Weekly reviews consume Canonical Events; monthly reviews consume weekly JSON; yearly
+reviews consume monthly JSON. Missing lower-period evidence falls back to Canonical
+Events and bounded, hash-verified Raw excerpts. Session Note generation is removed.
+Existing Session Notes are neither read as review inputs nor deleted.
 
-This application owns Codex chat capture, Canonical Events, source-near Session Notes,
-observed Project membership, calendar Review Notes and their evidence. Review Notes
-include unadopted Intelligence candidates and AI improvement proposals. Semantic
-membership, adopted knowledge/rules and Working Context remain downstream concerns.
-RDF/JSON-LD or other graph representations can be layered on these contracts;
-they are not required to run any of the three CLIs.
+Intelligence candidates and AI behavior improvements remain proposals. Adopted knowledge,
+semantics, rules and Working Context belong to downstream processes. This CLI never
+rewrites a Vault, Skill, memory or AGENTS.md automatically.
 
-## Identity, versions, and references
+`raw ingest` only captures source files. `clone` initializes storage, captures and
+normalizes; `pull` refreshes an initialized store. These commands do not call a model.
+`scheduled-run` captures and normalizes, then generates closed, due review periods.
+A successful normalization does not imply that reviews have been generated.
 
-- `threadId` is the original conversation ID. For Codex, `threadKey` is UUIDv5
-  in the URL namespace using `codex-thread:<threadId>`. It is independent of
-  Project membership and file location.
-- Session Note `id` is UUIDv4 and survives regeneration. `sessionNoteId` and
-  filenames are display/legacy locators, not global IDs.
-- `sourceProvider` is fixed to `codex`. `sourceId` identifies the acquisition
-  input directory (PC/environment/storage root), configured under
-  the map key `sources.<source_id>`; neither selects the inference provider.
-  Existing source IDs, Raw references, and artifact IDs survive config migration.
-  Storage namespaces use `(sourceProvider, sourceId)`, with an independent catalog and provenance for each source.
-  Acquisition of other applications is outside this repository. Catalog rows use
-  `(sourceProvider, sourceId, threadKey)`; identical threadKeys across environments are allowed.
-  Each environment has its own note UUID and checkpoint.
-- `data:/` resolves under this source's final data_root. `raw:/<provider>/<source_id>/`
-  is a virtual source prefix: remove that prefix and resolve the remainder under
-  this source's final raw_root. Never append the provider/source_id twice.
-  References are locators, not identity; historical bytes use snapshotRef.
-- Canonical IDs include threadKey, capture SHA-256, and a local event/line ID.
-  They identify one version, not a stable event across arbitrary log rewrites.
-- Entity versions are `sha256:<hex>` over exact bytes. Join evidence by
-  `(id, version)`, not names or paths.
+## Source identity and configuration
 
-Raw schema-3 paths are latest source copies and can change. Historical evidence
-must use the retained provenance `snapshotRef` and hash, not a mutable Raw path.
-Legacy schema-1 hash captures remain readable after explicit layout migration. Raw-only acquisition does not
-republish derived evidence; take backups of Raw/data/state together.
+`sources` is an ID-keyed map. Each source has source_root, optional raw_root/data_root/
+state_root, enabled/include_archived, and reviews settings. Source IDs identify acquisition
+environments, not inference providers. Preserve their spelling across configuration updates.
+The source provider is `codex`. Generation profiles are configured separately.
+
+Source IDs allow ASCII letters/digits/._-, starting with a letter or digit. Windows device
+names, trailing dots, duplicate YAML keys and case-only duplicate IDs are rejected.
+Map layers merge by ID; an explicit map suppresses implicit source defaults. Disabled
+sources are not scanned. `--source <id>` selects one enabled source.
+
+Each source owns its catalog, evidence, reviews and checkpoints. Reviews are generated
+independently; sources are not merged into one calendar note. Review settings belong to
+`sources.<id>.reviews`. Review outputs are `<data_root>/reviews`; review state is
+`<state_root>/reviews`. Review-specific output roots are not configurable.
+
+Configuration 9 rejects earlier schemas during ordinary commands with migration guidance.
+Move top-level reviews into each source, remove its data_root/state_root/session_note_limit,
+and remove generation.session_note_profile, idle_minutes and installed_at. Preserve source
+IDs and final Raw/data/state paths. Existing storage 5 needs no rewrite. Historical combined
+review stores are not automatically converted to source-local stores.
+
+## Stable identities and references
+
+- threadId is the original conversation ID. threadKey is UUIDv5 in the URL namespace
+  for `codex-thread:<threadId>`, independent of Project membership and location.
+- Catalog identity is `(sourceProvider, sourceId, threadKey)`. Identical threadKeys in
+  different environments are allowed.
+- `data:/` resolves under this source's data_root. `raw:/<provider>/<source_id>/` is
+  a virtual prefix: remove it and resolve the remaining path under this source's raw_root.
+- Canonical event IDs include threadKey, capture SHA-256 and local event/line identity.
+  They identify a particular version, not a stable event across arbitrary rewrites.
+- Entity versions are `sha256:<hex>` of exact bytes. Join evidence by `(id, version)`.
+  Filenames and locators are not identities.
+- Review IDs bind output location and period. Candidate IDs bind their review and content.
+  Retain original IDs and metadata when relocating or adopting an artifact.
+
+Raw schema-3 paths are latest source copies and may change. Historical citations use
+retained provenance snapshotRef and hash, not a mutable latest Raw path. No cloud-only
+history is fetched, and no complete-history claim is made.
 
 ## Published artifacts
 
-| Artifact | Version / content |
+| Artifact | Contract |
 | --- | --- |
-| Raw manifest | Namespaced reader supports 1/2/3, current writes use 3; source refs, hashes, byte counts and capture metadata |
-| `store.json` | `1.0.0`; storageVersion 5, source identity, Raw prefix, legacy aliases |
-| `catalog/threads.json` | `1.0.0`; `asOf` and `threads` |
-| Canonical event export | `1.0.0`; parser 2, event locators, source metadata and diagnostics |
-| Session Note Markdown | Generated Session Note 6; reader also supports historical Thread Note 3, 4, 5 |
-| Provenance entities, activities, index | `1.0.0` |
-| Pipeline report | Source-local integer 2; multi-source response integer 3; no downstream scope completion fields |
-| Review Note Markdown + JSON | `1.0.0`; calendar periods, evidence-backed items, candidates and coverage; see [Review Note contract](review-note-format.md) |
+| Raw manifest | Reads 1/2/3; writes 3, with refs, hashes, byte counts and capture metadata |
+| store.json | 1.0.0; storageVersion 5, source identity, Raw prefix and legacy aliases |
+| catalog/threads.json | 1.0.0; asOf and threads |
+| Canonical export | 1.0.0; parser 2, event locators, source metadata and diagnostics |
+| Provenance entities, activities, index | 1.0.0; versioned artifacts and normalization lineage |
+| Capture/normalization report | Integer 4, for source-local and multi-source responses |
+| Review Markdown and JSON | 1.0.0; periods, claims, evidence, candidates and coverage |
 
-A thread entry includes `threadId`, `threadKey`, source provider/store/ref,
-capture and canonical refs/hashes, status/reason, dates, membership history,
-and, when a note exists, `noteId`, `noteRef` and `noteSha256`.
-The last field is an additive 0.8 export field. Consumers of older catalogs can
-obtain the published note hash from the matching provenance-index artifact.
+Catalog rows include source identity, threadId/threadKey, capture and canonical refs/hashes,
+status/reason, dates and observed membership/history. New rows do not publish Session Note
+noteId/noteRef/noteSha256. A current status means normalized evidence is available, not that
+an AI summary exists. Failed/excluded rows and diagnostics remain visible. Internal or
+approval-only conversations are excluded from review inputs.
 
-`membership` preserves the source observation: explicit, projectless, inferred
-from roots, ambiguous, unmatched, or unavailable. Nullable sourceProjectId,
-projectKind, and candidate IDs preserve uncertainty. `membershipHistory` records
-when the pipeline observed a change, not when the user made it. Prefer this
-catalog over a note's older sourceProjectId when selecting current membership.
+Membership preserves explicit, projectless, root-inferred, ambiguous, unmatched or
+unavailable observations. Nullable IDs and candidate IDs retain uncertainty. Membership
+history dates when the pipeline observed a change, not when the user made it.
 
-Unknown records, divergent histories, active conversations and
-protected/failed notes remain visible. Excluded internal conversations are not
-eligible summary inputs. A note is advertised as current only for the inputs
-observed by that run. No complete cloud-history coverage is claimed.
+Exact duplicate captures and provable byte-prefix versions are coalesced for normalization.
+Divergent histories are retained, ordered by history start while preserving source order.
+No active branch is inferred and history_base does not discard records. historyBranches,
+sourceSetSha256 and per-file sourceDiagnostics describe the retained set. Branch events
+have history-qualified localId/branchId and physical Raw line locators. Singular capture
+fields identify only the first retained history; use the branch records for full coverage.
 
-### Multiple histories (0.16.0)
+## Provenance and reads
 
-Each thread ID still produces one Session Note. Exact duplicate captures and
-provable byte-prefix versions are coalesced; other histories are all included,
-ordered by history start time with source order retained within each history.
-The pipeline does not infer an active branch or replay `history_base` to discard
-other records. It preserves that metadata as evidence.
-
-Catalog entries and canonical exports add optional `historyBranches` and
-`sourceSetSha256`. Each branch includes its History ID, source/capture ref,
-capture hash, start/last timestamps, and the observed `historyBase`. Canonical
-exports also include per-file `sourceDiagnostics`. Events in a branched thread
-have a history-qualified `localId` and `branchId`; `rawRef` still points to the
-original capture and physical `Lnnnnnn` line. Every captured input participates
-in provenance, including duplicate or prefix copies.
-
-For compatibility, singular `sourceCaptureRef`/`sourceCaptureSha256` identify
-the first retained history, not the entire merged input. Branched notes add
-parallel `sourceCaptureRefs`/`sourceCaptureSha256s` lists and `sourceSetSha256`.
-The latter hashes the sorted retained-capture hashes as compact UTF-8 JSON.
-Consumers must use the plural fields and canonical event locators for complete
-coverage of branched notes. These are additive fields within the existing schemas.
-All retained captures are checked for changes before publishing the note.
-
-### Text inference preparation (0.16.1)
-
-Raw and canonical events retain embedded images byte-for-byte. Text inference
-replaces recognized image data URIs, typed image blocks, and image-generation
-results with format, decoded byte count, SHA-256 of decoded bytes, and an explicit
-statement that visual content was not inspected. This does not interpret images.
-Surrounding text, event IDs, history IDs, and Raw locators are retained. Untyped
-base64 strings and ordinary long text are not discarded. Notes list affected
-events in Source Notes; split offsets refer to the prepared text.
-
-## Inference preparation and private checkpoints
-
-Session Note schema 6 and Canonical Events retain their existing public contracts.
-Generator prompt version 10 uses single-event inference anchors; the renderer still
-publishes `startEventId` / `endEventId` and can read older valid ranges. The Japanese
-prompt is 3.8 and English prompt is 1.4. Identical same-invocation command output
-may be replaced with `duplicateOfEventId` in inference input only. Completion
-metadata and source event IDs remain; ambiguous identity and different output are
-never compacted. Debug-escaped output must match a whole-string encoding of the
-response (with transport newline normalization), not a loose text similarity.
-
-Validated chunks and overview merges are cached below the source cache's
-`generation/` directory. Keys bind exact prepared prompts and event IDs; the
-namespace also binds the complete source events, capture/generation fingerprints,
-source identity, thread, project and chunk size. Entries use atomic replacement,
-content hashes and repeated schema/source validation. A changed source invalidates
-the whole thread's stage namespace; this is not an append-only incremental summary.
-`--force` bypasses stage reuse. Invalid entries are regenerated. Checkpoints are
-disposable, contain derived private text, persist across successful runs and are
-not published consumer inputs. Cache deletion affects reuse, not existing notes.
-Dry runs never create or read inference-stage checkpoints or call the model.
-
-Pipeline report schema 2 adds optional `threads[].generationMetrics` for generation
-attempts: `modelCalls`, `transportRetries`, `semanticRetries`, `reusedChunks`,
-`reusedReductions`, `rejectedCheckpoints` (checksum-valid but semantically invalid),
-`inputCharactersBeforeDeduplication`, `deduplicatedCharacters`,
-`deduplicatedEventCount`, `preparedTextCharacters`, `submittedTextCharacters`,
-`submittedPromptCharacters` and `durationSeconds` when available. Character counts
-are not token/cost estimates. `submittedTextCharacters` describes the planned event
-parts including reused parts; `submittedPromptCharacters` counts actual attempted
-prompts including repairs/retries, excluding provider-added schema/overhead. Missing
-metrics are unavailable, not measured zeros. Hard interruption can leave the run
-report unfinished while already saved generation stages remain reusable.
-
-## Provenance
-
-Entity records contain schemaVersion, id, version, sha256, ref, kind, mediaType,
-byteCount, and snapshotRef. Exact snapshots live under
-`data:/provenance/blobs/<hash-prefix>/<hash>`. The entity filename hashes
-`id + NUL + sha256`. A relocated entity can retain its first stored locator;
+Entities contain schemaVersion, id, version, sha256, ref, kind, mediaType, byteCount and
+snapshotRef. Exact snapshots live at `data:/provenance/blobs/<hash-prefix>/<hash>`.
+Entity filenames hash id + NUL + sha256. A relocated entity can retain its first locator;
 use snapshotRef for historical bytes.
 
-Activities contain UUID id/runId, stage/subject, start/end times, status, agent,
-used/generated entity versions, and derivedFrom edges. Agent metadata records
-software version, inference provider/model/effort, and profile/prompt/schema/
-template fingerprints. Current upstream stages are normalization and Session Note
-generation. Relations express stage dependencies; they do not prove every
-sentence follows from every source.
+Activities record run/subject/stage, timestamps, agent, used/generated entity versions and
+derivedFrom edges. The current upstream generation stage is deterministic normalization.
+Review JSON carries its own claim-level evidence and transitive citations. A dependency
+edge alone does not establish semantic truth.
 
-The index contains schemaVersion, runId, asOf, pipelineComplete, artifacts, and
-activityRefs. Artifacts include status and threadKey. Old downstream artifacts
-from a reused shared store are retained as inactive; this application does not
-refresh or delete them.
+The provenance index records runId/asOf/pipelineComplete/artifacts/activityRefs. Current
+artifacts identify Canonical Events and thread/source identity. Older derived artifacts
+in a reused store remain inactive; they are not refreshed or deleted.
 
-## Consumer procedure
+Consumers should:
 
-1. Read the catalog and index, preserving their bytes/run information.
-2. Select current notes, and verify UUID, supported schema, content hash and
-   source identity. Reject traversal outside declared roots.
-3. Read historical bytes from snapshotRef; validate hash and byte count.
-4. Preserve note identities and evidence versions in the consumer's output.
-5. Recheck the input catalog and selected note hashes before committing.
+1. Preserve the catalog/index bytes and run metadata used for selection.
+2. Verify supported schemas, source identity and hashes of selected canonical/review files.
+3. Resolve historical snapshotRef safely and verify hashes and byte counts.
+4. Preserve evidence IDs/versions and inferred/proposed status in downstream outputs.
+5. Recheck inputs before publishing; retry if concurrent updates changed them.
 
-The files are atomically replaced individually, not committed as one database
-transaction. During a concurrent run a reader can observe different generations
-and should reject inconsistent input and retry. The downstream CLIs implement
-this conservative validation; they do not mutate upstream checkpoints.
+Files are atomically replaced individually, not as one database transaction. Readers can
+observe different generations and must reject inconsistent combinations. `raw ingest`
+does not republish the derived index. `provenance validate` checks structure, identities,
+snapshot hashes/lengths and current artifacts; it does not prove semantic accuracy.
 
-`clone`/`pull` and a full Session Note build can be complete when all eligible
-notes are current, independently of downstream execution. Read report coverage
-and exclusions as well as pipelineComplete. `raw ingest` does not change the
-previous derived-data index, so its timestamp can differ.
+## Storage and migration
 
-`provenance validate` checks structural compatibility, identities, snapshot
-hashes/lengths, activity IDs/relations and current mutable artifacts. It does not
-prove semantic accuracy, completeness of reasoning, or that a reported event
-was independently verified. No automatic garbage collection or source deletion
-is performed.
+Omitted source roots resolve to `~/.tkn/codex_chat_note_pipeline/<kind>/codex/<source_id>`.
+Configured roots are final paths. Roots may share a parent but must not overlap one another
+or input directories. Ownership markers bind source identity; locks protect actual roots.
 
-## Storage layout 5
+- Raw: sessions/, archived_sessions/, manifest.jsonl and metadata/.
+- Data: source-aligned/, catalog/, provenance/, store.json and reviews/.
+- State: pipeline.json, normalization/, reports/, last-run.json and reviews/.
+- Review state: index.json, reports/, usage/, transactions/ and backups/.
 
-`sources.<source_id>.raw_root/data_root/state_root` are optional final paths.
-An omitted root is `~/.tkn/codex_chat_note_pipeline/<kind>/codex/<source_id>`.
-The shared cache_root is a base; actual cache is `<cache_root>/codex/<source_id>`.
-Source roots may share a parent but cannot overlap one another or input source_root directories.
-Ownership markers bind each root to provider/source_id; locks are per actual root.
+Historical Session Note files/checkpoints may coexist without being updated. Back up
+Raw/data/state together. Review state is needed for restart and edit protection. Cache is
+regenerable. Review stage cache lives at cache_root/reviews, keyed by generation signature
+and exact prompt. Hash/schema/citation validation precedes reuse.
 
-Raw contains sessions/, archived_sessions/, manifest.jsonl and metadata/.
-Data contains source-aligned/, session-notes/, catalog/, provenance/ and store.json.
-State contains pipeline.json, ledger.json, threads/, normalization/ and reports/.
-Keep raw/data/state together for backup and relocation. State is required for
-faithful restart and edited-note protection; public provenance is not a substitute
-for private operational checkpoints. Cache can be regenerated.
+store.json rawRefAliases/dataRefAliases translate legacy locators longest-prefix first,
+once, rejecting traversal before and after translation. Immutable snapshots retain bytes.
+The storage-5 ownership filename and applicationId remain legacy identifiers deliberately;
+a package rename does not change ownership of existing stores.
 
-`store.json` contains rawRefPrefix, rawRefAliases (old full prefixes), and
- dataRefAliases (old relative prefixes mapped to current relative prefixes).
-Resolve aliases longest-prefix first, once, rejecting traversal before and after
-translation. Python readers can use references.resolve_store_ref. Canonical data:/
-locators resolve locally; Raw locators are source-qualified. Historical snapshots
-and note bodies retain their exact bytes during migration.
+`storage migrate --from-config <old-config> --dry-run` plans a copy into fresh destination
+roots. The source configuration is standalone. Historical config schemas 2 through 8 and
+current 9 are supported by the explicit migration reader, subject to supported minor
+versions; ordinary runtime configuration only accepts 9. Source stores 2/3/4 and completed
+5 are supported. Preserve source identity and stop concurrent source writers.
 
-`storage migrate --from-config <old-config> --dry-run` plans a copy into the fresh
-roots in the destination config. The source configuration is standalone, never
-combined with destination layers. Supported source configs are integer 2,
-2.0.x–2.2.x, 3.0.x, 4.0.x–4.1.x, 5.0.x, 6.0.x and 7.0.x. Source stores 2/3/4 and completed 5
-are supported; future formats and pending source migrations are rejected.
-Keep the same source identity. Concurrent source writers must be stopped.
+Migration copies Raw, canonical data, provenance, reviews, historical notes and state.
+Mutable locators are translated, while immutable snapshots and old note bytes remain
+unchanged. Source data/configuration are not modified. Conflicts fail closed; interrupted
+copies resume from their plan and write errors roll back destination changes. Review IDs
+bind location: migration is not a promise of automatic review identity regeneration.
 
-Apply copies source payloads, selected catalog/provenance, all required immutable
-snapshots, and checkpoint state. Mutable locators are translated, but immutable
-activities/entities/blobs and note bytes/UUIDs remain unchanged. Source config and
-data are never modified. State/migration.json records a deterministic file plan;
-conflicts/source changes fail closed, write errors roll back destination changes,
-and interrupted copies resume using the same plan. Completion verifies the copied
-provenance. A completed migration is a no-write operation on repetition.
+## Review generation and usage
 
-After a storage-5 relocation, generation fingerprints remain valid. Old Thread
-Notes can be regenerated by a later pull when their generation format differs,
-subject to ordinary reviewed/edited protections. The migrator never calls a model.
-Downstream curation/insight v0.2.0 accept named data roots and Session Note 6.
-Keep input names stable while changing their paths.
+The [Review Note contract](review-note-format.md) specifies period boundaries, fallback,
+bounded Raw verification, categories, candidate projections, publication and protection.
+JSON is authoritative for higher-period generation; Markdown is a human rendering.
 
-## Multiple Codex sources (config 7)
+Generation profiles select shared tkn_genai_bridge profiles. Effective generation settings
+and Bridge version bind cache identity; profile-label and price-only changes do not.
+The shared Bridge configuration is resolved explicitly, with no implicit application-CWD
+Bridge config. Authentication is lazy and never runs during dry-run.
 
-The top-level `sources` map use stable source_id keys. Source values use source_root
-instead of home and must not repeat source_id. ASCII letters/digits/._- are allowed,
-starting with a letter or digit; lowercase kebab-case is recommended. Reject spaces,
-Unicode, trailing dots, Windows device names, duplicate YAML keys, and case-only
-IDs across the source map. Preserve exact IDs in storage identity and provenance.
-Map layers merge by ID; an explicit map suppresses implicit source defaults and
-an empty map clears all sources. Per-source output paths remain final directories.
+Review call/time and API limits apply per source invocation. Cached validated stages do
+not consume calls. Budget exhaustion defers unfinished work for a later invocation.
+Transport errors are not automatically retried. Missing usage/cost stays unknown, not zero.
+Configured reservations are conservative estimates, not invoice guarantees.
 
-Processing iterates enabled sources in map order with a shared generation-attempt
-limit and deadline. All selected stores are preflighted before mutation; per-source
-locks, catalogs, evidence, notes, and checkpoints stay independent. Reject overlapping
-outputs and overlapping enabled input directories. Disabled inputs are not scanned.
-`--source <source_id>` selects one enabled source; targeted thread builds and storage
-migration require a single selection. Migration selects the same source ID in a
-standalone schema-6/7 source config. Account-based filtering is outside this contract.
+Review usage records live under each source's state_root/reviews/usage. build-report reads
+these plus historical source journals/reports, deduplicating recorded attempts. It keeps
+known subtotals distinct from missing totals, and cached/reasoning tokens as subsets.
+Price scenarios are reference estimates, not actual invoices. Cost calculation uses Bridge
+pricing. Reports contain index.html, usage.json and usage.csv, without prompt/answer bodies.
 
-Single-source reports retain schema 2 and add sourceProvider/sourceId plus
-attemptedSessionNoteCount. Multiple-source responses use schema 3 with sourceResults,
-aggregate threadCounts, generatedSessionNoteCount, attemptedSessionNoteCount, failed,
-warnings, and reportPaths. Source-local run reports remain schema 2 in each state_root;
-there is no shared persisted batch report. Compact CLI output removes threads/rawIngest
-inside sourceResults; --full-output retains them. Status/provenance inspect selected
-stores without scanning live chat inputs. Source failures make the overall result fail.
-
-Schema 5/6 to 7 is an explicit configuration-only update when IDs and final roots
-are retained. Move chat.providers.codex.sources to top-level sources (schema 5
-also needs the ID-keyed map and home renamed to source_root); remove chat.
-The new default app root is ~/.tkn/codex_chat_note_pipeline. Old omitted roots
-must be made explicit using their old resolved paths before using schema 7;
-relative paths must keep their original meaning if the config file moves.
-Legacy migration readers resolve omitted source roots against the old application
-root, never the renamed default. Generation provider settings are independent.
-
-Storage 5, Raw manifests, catalogs, provenance and Session Note schemas are unchanged;
-existing consumers continue to read each data_root without package changes.
-The storage ownership filename .tkn-genai-chat-note-root.json and applicationId
-tkn-genai-chat-note-pipeline are stable storage-5 identifiers retained across the
-rename. Existing immutable provenance and profile hashes remain intact. Newly
-published software metadata uses tkn-codex-chat-note-pipeline and the current version.
-`config list` uses config.sources and storage.sourceRoots.<source_id>; the top-level
-sources object in its `--json` response still describes configuration value provenance.
-The default output is one `key=value` per line: mappings use dots and arrays use
-indexed keys such as `[0]`; empty containers, booleans and null use JSON literals.
-Strings are unquoted, Windows path separators are preserved, and control characters
-are escaped. `config list --json` returns the complete structured report with
-`command: "config list"`. Both forms are read-only and log at INFO on stderr.
-The old `config show` command is removed; JSON consumers must use `config list --json`.
-
-
-## API generation (0.18.0)
-
-Configuration 7.1.0 adds `azure-openai` and optional `limits`/`model_digest` for Ollama.
-Schema 7.0.x is normalized in memory; it is not persistently migrated. Public Session
-Note schema remains 6. Version 0.18 left unconfigured Codex fingerprints unchanged;
-0.19 updates prompt identities for every provider as described below.
-In 0.18/0.19, `inferenceOptions` bound Azure endpoint/deployment/model version/tenant/subscription,
-pricing and API limits to cache identity. The current contract is described below.
-No bearer token is persisted. Reports add optional `generationMetrics.apiRequests`;
-usage unavailable from a provider or failed attempt stays null. `estimatedCostJpy` uses
-observed tokens at configured normal input/output rates, without cached-input discount.
-`reservedCostJpy` is a pre-request conservative reservation, not billed cost.
-
-Partial prompts fit the configured input limit through smaller event chunks. Full
-merge and semantic-repair prompts are checked by the same limit; over-limit requests
-are never submitted. Azure uses named-tokenizer estimates with margin; Ollama uses
-UTF-8 bytes plus template allowance. Output caps include reasoning. Successful
-transport is separate from schema, citation, timeline coverage, and factual quality.
-Per-command budgets count retries and unknown-charge attempts. They are not a durable
-cross-process cap; restarting a command grants a new budget, while validated generation
-checkpoints remain reusable. `--dry-run` performs no token acquisition or API request.
-
-API-only wire encoding `event-id-aliases-v1` maps structured source-ID fields to a
-per-request alias table and restores them before public validation. Source prose is
-not rewritten. All API citation fields reference one shared enum; overview repairs
-receive permitted IDs. Per-command budgets are shared across selected acquisition
-sources; no budget is shared between separate processes.
-
-
-## Generation estimates, usage and state reconciliation (0.19.0)
-
-Per-thread `generationEstimate` and aggregate `generationEstimate` are additive report
-fields in source schema 2 / multi-source schema 3. Estimates include selected generation
-candidates only and report preparedTextCharacters, pendingPromptCharacters, baseCalls,
-inputTokensEstimate, outputTokensCeiling and baseCostCeilingJpy. Token values aggregate
-requests, not a single context. Unavailable provider token/price data is null. Future
-merge inputs reserve the configured full input limit; output ceilings reserve each
-base call's maximum. Repair/retry calls are excluded. Known chunk checkpoints are
-validated and excluded; final merge reuse is not assumed. mayExceedCommandBudget flags
-base work above the shared command limits; it is not a guarantee of completion.
-
-Both preview and runtime token estimates are read-only. A hash-verified local o200k_base
-cache supplies named-tokenizer counts plus margin; no cache download/repair is performed.
-Missing/corrupt cache falls back to utf8-byte-upper-bound. Codex/command providers report
-characters only, as their injected context and billing are not observable. Dry-run makes
-no network request, token acquisition, file/cache/report/lock write or inference call.
-
-apiRequests adds requestSequence, stage and outputTokenLimit. usageTotals is present
-per thread and per source/command. Unknown values yield null complete totals plus known*
-subtotals and *MissingRequests counts. Retries and failed requests remain separate records;
-reservations remain distinct from estimated observed-token cost. Durable analysis should
-sum unique per-source run reports, not copies in last-run.json or compact stdout.
-
-Merge inference privately adds stateItemReviews when partial state items exist. Every
-item requires exactly one retain/resolved disposition. Retain deterministically copies
-the original text/citations into its original state category. Resolved requires a reason
-and later, known event IDs in the same history. Semantic sufficiency remains a model
-judgment. Reviews are kept in generationMetrics and removed before public schema-6
-validation/rendering. Repair receives state context; invalid reviews cannot become
-accepted checkpoints. Narrative source aliases are rejected unless present literally
-in the original source. Only redundant timeline endpoints are removed from merge input;
-final source-linked timeline records are unchanged.
-
-API request records additionally identify `inputJsonFormat` (`default` or `compact`).
-Merge repairs retain partial facts/citations and omit the redundant top-level allowed-ID list.
-Compact repair JSON removes formatting whitespace only. Resolution evidence may include
-earlier context, but must also include at least one event later than the pending state
-within each originating history.
-
-
-## Browser authentication and deployment identity (0.20.0)
-
-Config 7.2.0 supports a minimal Azure provider: model (= deployment), reasoning_effort
-and azure.endpoint. Limits default when omitted; tenant_id and deployment-keyed pricing
-are optional. Legacy Azure fields in schema-7 configs are normalized before layer merging
-and runtime overrides: azure.deployment -> provider.model, flat rates -> azure.pricing
-under that deployment, model_version and subscription_id removed. No config file write.
-Codex/Ollama settings and fingerprints retain their prior meaning.
-
-Azure authentication uses InteractiveBrowserCredential, an endpoint/optional-tenant account
-record below ~/.tkn/codex_chat_note_pipeline/authentication, and a named encrypted SDK token
-cache. It does not launch az or read/copy another application's credentials. Authentication
-is lazy, never happens during dry-run, and opens a browser only when cached authorization
-requires interaction. Failure occurs before the generation HTTP submission.
-
-Azure request model is the configured deployment. apiRequests.model is the unparsed actual
-response identity, never a configured guess; requestedDeployment is recorded separately.
-A nonempty actual model is required. Azure notes add generatorDeployment and use generatorModel
-for the observed identity; provenance agent.model is actual and requestedDeployment is explicit.
-Pricing applies only when the requested deployment has an entry, and the applied rates are
-recorded with each request. No matching price means null cost/reservation and no JPY cap;
-token/call limits still apply. Rates can become stale after server-side deployment changes.
-
-Azure generation identity adds azureGenerationContract=2 to invalidate old checkpoints.
-Checkpoint envelope version 2 hashes both value and responseModel; other providers retain
-version 1. A resumed stage supplies the observed model to the runner, and any later differing
-response/checkpoint causes a reported failure, including that request's actual usage.
-Completed/current or entirely cached work cannot discover a server-side change without a
-request; --force starts new generation without reusing those stages. No automatic Azure
-management API or chargeable probe is added to dry-run or cache reuse.
-
-
-## Named generation profiles (0.21.0)
-
-Config schema 8 replaces generation.active_provider/providers with
-active_profile/profiles. Profile keys are arbitrary names; each entry explicitly
-selects provider. HTTP endpoint, model, reasoning_effort, pricing, limits and optional
-authentication share a level; executable names only a CLI binary. Azure model remains
-the requested deployment. Schema 7.0–7.2 converts in memory before layering, preserving
-storage roots, authentication cache identity and the internal inference/cache contract.
-A label-only profile rename does not change the generation fingerprint.
-
-Source-local and multi-source reports add generationProfile and generationProvider.
-Thread estimates and provenance agent records add generationProfile; the existing
-agent.profile still means the application-owned Session Note language/template profile.
-These fields are additive. Source, artifact and note identities remain unchanged.
-CLI --profile selects a name; compatibility --provider rejects ambiguous matches.
-
-
-## Command budget pause (0.21.1)
-
-Cost/call budget exhaustion is a command-wide generation pause, not a per-thread
-provider failure. The interrupted thread and later generation candidates have status
-deferred with reason api-cost-budget or api-call-budget. Current/protected notes retain
-their normal state. A generationStop object on source/multi-source reports records
-reason, message, requestCount, maxCalls, reservedCostJpy, nextCallReserveJpy and maxCostJpy.
-Missing cost information remains null. API records include only submitted requests.
-One generation-budget-stop progress event is emitted; subsequent candidates do not
-estimate or invoke the model. Capture and report finalization can continue.
-Exit code 2 means incomplete; independent failures still produce failure status.
-Checkpoint format, generation fingerprint, configured caps and reservation accounting
-are unchanged. Same-setting pull can reuse validated chunks with a fresh command budget.
-
-## Generation usage (CLI 0.24.0)
-
-This is usage of the pipeline's inference, separate from tokens in the captured source conversations.
-Each source owns state/usage/<runId>/<usageId>.json (schemaVersion 1). The usage ID identifies one
-attempt, is created before inference, and is reused when the record is atomically updated on completion.
-Records contain execution timestamps, run/source/thread IDs, command/profile/provider, requested model,
-response model when supplied, reasoning effort, stage, status, duration, and noteStatus.
-
-inputTokens/outputTokens are measured totals. cachedInputTokens and reasoningTokens are subsets;
-cacheWriteTokens is optional. Missing values are null. A partial Codex stream can retain
-knownInputTokens/knownOutputTokens while the corresponding full totals remain null.
-usageSource names the provider evidence; usageScope distinguishes invocation-turns from api-request.
-A hard stop can leave a started or unfinished record. Never infer zero usage from that state.
-
-Run reports add generationMetrics.usageRecords. For APIs, apiRequests is a compatibility view of the
-same attempts; readers must prefer usageRecords and must not add both arrays. usageTotals preserves
-missing values and known subtotals. Neither usage capture nor its addition to reports changes
-Session Note identity, content schema, generation fingerprints, or provenance links.
-
-build-report reads the journal and historical source run reports, never last-run.json.
-The source ID + usage ID deduplicates journal/report entries. Older API entries without usage IDs
-use source ID + run ID + thread ID + array position. Historical CLI modelCalls become unknown-usage
-attempts; unrecorded counts cannot be reconstructed. The reporting date uses the inference start
-timestamp, with usage_report.utc_offset_minutes (UTC by default).
-
-report_path owns index.html, usage.json, and usage.csv. usage.json schemaVersion 1 includes normalized
-records, unique successful note-generation identities, complete/known usage totals, configured price
-scenarios, source-file hashes, warnings, a snapshot ID, and a build timestamp. It does not contain
-prompt/answer bodies. CSV has one attempt per row and blank cells for missing usage; formula-like
-string cells have a leading apostrophe for spreadsheet safety. The HTML embeds its own snapshot
-and performs filtering locally. Its JSON/CSV links refer to the full exported snapshot.
-
-Reference costs use the same measured counts at user-configured rates and retain the currency and
-pricing date. They are not actual invoices or forecasts of another model's behavior. Unknown required
-counts produce null costs. No-cache scenarios price all input normally; observed-cache scenarios use
-known cache reads and optional writes without adding those subsets twice. No online lookup, model
-invocation, currency conversion, tax, or tool-fee calculation occurs. Config 8.0 remains readable
-through compatible in-memory normalization to 8.3; stored user configuration is not rewritten.
-
-
-## Shared generation bridge (CLI 0.28)
-
-Application generation profiles use bridge_profile, optional overrides,
-limits and model_digest. Legacy application pricing remains readable as a compatibility
-adapter, but rates now belong to Bridge profiles. Connection/model/authentication/pricing are resolved from
-~/.tkn/genai_bridge/config.yaml. Legacy inline profiles remain readable; all execution
-uses tkn_genai_bridge 0.10.0 pinned to a GitHub commit archive ZIP URL in package metadata.
-uv downloads, extracts, builds and installs this dependency; no Git executable or PyPI publication
-of Bridge is required. The lockfile records the archive URL and content hash. No application CWD config is
-implicitly loaded as Bridge config. Runtime plan is offline.
-The application selects bridge_profile explicitly (codex-default when not configured),
-so changing Bridge's default_profile does not switch this application's profile.
-Legacy application and shared rates for the same model must agree; conflicting rates
-are rejected. Resolved generation settings are exposed by config list's generationResolved.
-
-The Bridge version and effective settings participate in generation identity. A shared
-profile rename or price-only change does not invalidate results. A Bridge version or
-generation-setting change invalidates generation checkpoints and makes unreviewed notes
-eligible for regeneration; reviewed and edited note protections remain unchanged.
-Shared API profiles receive default application budgets. Lower shared output/context
-limits are respected. Unknown usage remains null. Bridge record hashes and version
-are mapped to application journal fields without storing prompt/response bodies.
-Bridge 0.7 preserves cache-write usage, usage.completeness and known_subtotal when reported.
-Partial observations remain null in total fields and are mapped to knownInputTokens,
-knownOutputTokens, knownCachedInputTokens, knownReasoningTokens and knownCacheWriteTokens.
-usageCompleteness retains Bridge's complete/partial/unknown distinction; usageComplete additionally
-requires both input and output totals. Partial usage costs remain unknown with usage_incomplete
-when pricing is configured. Missing values are not fabricated. Historical evidence is not rewritten.
-Antigravity is supported through shared profiles (default executable agy) and the provider selector.
-
-Bridge owns browser authentication. One Runtime and command budget are shared across
-selected sources, and owned authentication resources are closed on exit or failure.
-Authentication objects are reused within a command; a new command may require authentication again.
-API transport errors stop without automatic retries. httpStatus, retryAfterSeconds and
-submissionUnknown are retained in journals and reports when available. JSON/schema failures allow bounded regeneration; semantic
-repair, source validation, budgets, persistence and resume remain application-owned.
-
-usage_report.price_scenarios can reference {bridge_profile, model} to select shared
-Bridge rates; legacy inline scenarios remain supported. Bridge TokenPricing validates
-rates and estimate_cost calculates both reference-report scenarios and pre-call reservations.
-GenerationRecord.cost_estimate supplies measured-use reference costs, including failed attempts.
-No application formula multiplies token counts by rates. Token estimation, conservative cache
-assumptions, sequential command reservation totals and stopping remain application-owned.
-
-API budgets require JPY rates. A different configured currency is rejected before submission;
-unconfigured prices remain unknown and only token/call limits apply. Explicit zero prices are known.
-Reservations use the effective shared/application output cap. In observed mode, the most expensive
-of ordinary input, cache reads and configured writes is reserved. Unknown/overflowed configured
-reservations prevent submission. Estimates do not guarantee actual usage or invoice ceilings.
-
-Additive journal fields include bridgeUsage (raw counts, input_tokens_scope, completeness and known_subtotal), costEstimate,
-and plannedCostEstimate. Existing inputTokens means total input including caches; uncached-scope
-provider values are summed only with complete cache counts, otherwise the total is null and the
-known subtotal is retained. Legacy Claude Bridge records without cache-write counts cannot be
-fully repriced. estimatedCostJpy is populated only for a known JPY amount. Cost snapshots preserve
-rates, currency, date, calculation basis and unavailable reason; price changes never rewrite history.
-Report records retain these fields and add referenceCostDetails alongside compatible referenceCosts.
-Reference costs may use other currencies; HTML selects one scenario/currency at a time.
+Dry-run is read-only: no inference, authentication, network, directories, locks, reports,
+cache or state writes. It describes saved evidence and planned work, not a persisted update.

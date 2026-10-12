@@ -1,22 +1,21 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
+from chat_fixtures import write_chat
 from pydantic import ValidationError
 from test_config import write_yaml
-from test_session_note_pipeline import FakeSummarizer, write_chat
 from test_storage_layout import snapshot
 
 from tkn_codex_chat_note.cli import main
 from tkn_codex_chat_note.config import AppConfig, config_document, load_app_config, resolve_app_config, write_config
 from tkn_codex_chat_note.pipeline import pipeline_status, run_pipeline
 from tkn_codex_chat_note.provenance import validate_provenance
-from tkn_codex_chat_note.session_notes import PipelineError, now_local
+from tkn_codex_chat_note.runtime import PipelineError
 from tkn_codex_chat_note.storage_migration import migrate_storage
 
 
@@ -24,7 +23,7 @@ def multi_config(root: Path) -> AppConfig:
     return AppConfig.model_validate(
         {
             "cache_root": root / "cache",
-            "idle_minutes": 0,
+
             "sources": {
                 name: {
                     "source_root": root / name / "input",
@@ -149,23 +148,22 @@ def test_source_roundtrip_and_dry_run_leave_all_stores_unchanged(tmp_path: Path)
     loaded = load_app_config(explicit_path=path, cwd=tmp_path)
     assert config_document(loaded) == config_document(config)
     before = snapshot(tmp_path)
-    summarizer = FakeSummarizer()
-    report = run_pipeline(loaded, mode="clone", dry_run=True, summarizer=summarizer)
+    report = run_pipeline(loaded, mode="clone", dry_run=True)
     assert report["ok"] and not report["complete"]
-    assert report["threadCounts"] == {"planned": 2}
-    assert report["attemptedSessionNoteCount"] == 2
-    assert not summarizer.calls and snapshot(tmp_path) == before
+    assert report["threadCounts"] == {"current": 2}
+    assert report["normalizedThreadCount"] == 2
+    assert snapshot(tmp_path) == before
     status = pipeline_status(config)
     assert len(status["sourceResults"]) == 2 and not status["initialized"]
     assert snapshot(tmp_path) == before
 
 
-def test_two_sources_generate_isolated_notes_and_resume_without_ai(tmp_path: Path) -> None:
+def test_two_sources_normalize_isolated_evidence_and_resume(tmp_path: Path) -> None:
     config = multi_config(tmp_path)
     source_chats(config)
     events: list[dict[str, Any]] = []
-    report = run_pipeline(config, mode="clone", summarizer=FakeSummarizer(), progress=events.append)
-    assert report["complete"] and report["generatedSessionNoteCount"] == 2
+    report = run_pipeline(config, mode="clone", progress=events.append)
+    assert report["complete"] and report["normalizedThreadCount"] == 2
     assert len(report["reportPaths"]) == 2
     assert {event["sourceId"] for event in events} == set(config.sources)
     note_ids = set()
@@ -178,43 +176,10 @@ def test_two_sources_generate_isolated_notes_and_resume_without_ai(tmp_path: Pat
         row = catalog["threads"][0]
         assert row["sourceId"] == source.source_id
         assert row["sourceCaptureRef"].startswith(f"raw:/codex/{source.source_id}/")
-        note_ids.add(row["noteId"])
+        note_ids.add((row["sourceId"], row["threadKey"]))
     assert len(note_ids) == 2
-    summarizer = FakeSummarizer()
-    assert run_pipeline(config, mode="pull", summarizer=summarizer)["complete"]
-    assert not summarizer.calls
+    assert run_pipeline(config, mode="pull")["complete"]
     assert pipeline_status(config)["complete"]
-
-
-def test_limit_is_shared_including_failed_attempts(tmp_path: Path) -> None:
-    config = multi_config(tmp_path)
-    source_chats(config)
-    summarizer = FakeSummarizer(fail_thread="same-thread")
-    report = run_pipeline(config, mode="clone", summarizer=summarizer, limit=1)
-    assert report["attemptedSessionNoteCount"] == 1
-    assert report["threadCounts"] == {"failed": 1, "deferred": 1}
-    assert not report["ok"] and not report["complete"]
-    assert len(summarizer.calls) == 1
-
-
-def test_runtime_deadline_is_shared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import tkn_codex_chat_note.pipeline as pipeline
-
-    config = multi_config(tmp_path)
-    source_chats(config)
-    original = pipeline._run_source_pipeline
-    deadlines = []
-
-    def capture_deadline(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        deadlines.append(kwargs["deadline"])
-        kwargs["deadline"] = now_local() - timedelta(seconds=1)
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(pipeline, "_run_source_pipeline", capture_deadline)
-    summarizer = FakeSummarizer()
-    report = run_pipeline(config, mode="clone", summarizer=summarizer)
-    assert len(deadlines) == 2 and deadlines[0] == deadlines[1]
-    assert report["threadCounts"] == {"deferred": 2} and not summarizer.calls
 
 
 @pytest.mark.parametrize("invalid", ["duplicate-input", "overlap-input", "overlap-output", "unowned-output"])
@@ -232,7 +197,7 @@ def test_all_sources_preflight_before_any_write(tmp_path: Path, invalid: str) ->
         (second.data_root / "personal.txt").write_text("Keep me")
     before = snapshot(tmp_path)
     with pytest.raises(PipelineError, match="overlap|unowned"):
-        run_pipeline(config, mode="clone", summarizer=FakeSummarizer())
+        run_pipeline(config, mode="clone")
     assert snapshot(tmp_path) == before
 
 
@@ -247,7 +212,7 @@ def test_disabled_and_selected_sources_are_not_processed(tmp_path: Path) -> None
     from tkn_codex_chat_note.storage import validate_storage
 
     validate_storage(config)
-    run_pipeline(config, mode="clone", summarizer=FakeSummarizer())
+    run_pipeline(config, mode="clone")
     assert not second.raw_root.exists() and not second.state_root.exists()
     assert pipeline_status(config)["sourceId"] == first.source_id
     with pytest.raises(PipelineError, match="no enabled Codex source"):
@@ -269,7 +234,7 @@ def test_one_source_error_does_not_hide_other_source_results(tmp_path: Path, mon
         return original(source, **kwargs)
 
     monkeypatch.setattr(pipeline, "_run_source_pipeline", fail_one)
-    report = run_pipeline(config, mode="clone", summarizer=FakeSummarizer())
+    report = run_pipeline(config, mode="clone")
     assert not report["ok"] and not report["complete"]
     assert report["sourceResults"][1]["complete"]
     assert report["failed"][0]["sourceId"] == "pc-windows"
@@ -297,18 +262,18 @@ def test_cli_multi_source_show_status_selection_and_compact_output(
     assert main([*args, "--source", "pc-windows", "raw", "ingest", "--dry-run"]) == 0
     output = capsys.readouterr()
     assert output.out == ""
-    assert "Source: codex/pc-windows" in output.err
+    assert "Source: pc-windows" in output.err
     assert main([*args, "--source", "missing", "status"]) == 1
     assert "unknown source_id" in json.loads(capsys.readouterr().out)["error"]
-    assert main([*args, "session-notes", "build", "--thread-id", "same-thread", "--dry-run"]) == 1
-    assert "requires --source" in json.loads(capsys.readouterr().out)["error"]
+    assert main([*args, "--source", "pc-windows", "review-notes", "due", "--dry-run", "--full-output"]) == 0
+    assert json.loads(capsys.readouterr().out)["sourceId"] == "pc-windows"
 
 
 @pytest.mark.parametrize("schema", ["5.0.0", "6.0.0", "7.0.0"])
 def test_storage_5_relocation_accepts_old_and_multi_source_configs(tmp_path: Path, schema: str) -> None:
     config = multi_config(tmp_path / "old")
     source_chats(config)
-    run_pipeline(config, mode="clone", summarizer=FakeSummarizer())
+    run_pipeline(config, mode="clone")
     document = config_document(config)
     selected_id = "pc-wsl-ubuntu"
     if schema == "5.0.0":
@@ -356,7 +321,7 @@ def test_processing_error_is_saved_in_its_source_state(tmp_path: Path, monkeypat
         return discover(source, *args, **kwargs)
 
     monkeypatch.setattr(pipeline, "discover", fail_discovery)
-    report = run_pipeline(config, mode="clone", summarizer=FakeSummarizer())
+    report = run_pipeline(config, mode="clone")
     failed = report["sourceResults"][0]
     assert failed["error"] == "cannot read source catalog" and failed["reportPath"]
     persisted = json.loads(Path(failed["reportPath"]).read_text())

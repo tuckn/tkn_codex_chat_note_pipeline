@@ -14,7 +14,7 @@ from .config import AppConfig
 from .inference import invoke_structured
 from .review_evidence import EvidenceSet, digest, raw_supplement
 from .review_model import REVIEW_VERSION, Period, ReviewDraft
-from .session_notes import PipelineError, atomic_write_json
+from .runtime import PipelineError, atomic_write_json
 from .usage_records import UsageJournal
 
 Generator = Callable[[str, dict[str, Any]], dict[str, Any]]
@@ -37,18 +37,23 @@ class ReviewGenerator:
         self.instructions = files("tkn_codex_chat_note").joinpath("resources/review-prompt.md").read_text("utf-8")
         self.schema = ReviewDraft.model_json_schema()
         source = config.enabled_source_configs()[0]
-        self.pipeline_config = source.session_note_pipeline_config(allow_missing_watermark=True)
+        self.pipeline_config = source.inference_config()
+        options = dict(self.pipeline_config.inference_options)
+        if options.get("generation_settings_sha256"):
+            # Bridge's generation identity excludes profile aliases and price-only changes.
+            options.pop("bridge", None)
+            options.pop("bridge_profile", None)
         self.signature = digest({"version": REVIEW_VERSION, "instructions": self.instructions,
                                  "schema": self.schema, "settings": self.settings.model_dump(mode="json", include={
                                      "language", "utc_offset_minutes", "input_characters",
                                      "raw_characters", "raw_requests"
                                  }),
                                  "provider": config.provider, "model": config.model,
-                                 "options": self.pipeline_config.inference_options,
+                                 "options": options,
                                  "effort": config.reasoning_effort})
         self.cache_root = config.cache_root / "reviews" / self.signature
-        self.journal = UsageJournal(self.settings.state_root / "usage" / run_id,
-                                    {"runId": run_id, "command": "review-notes", "sourceId": "reviews",
+        self.journal = UsageJournal(config.review_state_root / "usage" / run_id,
+                                    {"runId": run_id, "command": "review-notes", "sourceId": config.source_id,
                                      "generationProfile": config.generation.active_profile, "noteStatus": "unfinished"})
         self.api: ApiClient | None = None
 

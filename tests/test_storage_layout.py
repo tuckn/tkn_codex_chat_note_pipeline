@@ -6,13 +6,13 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from chat_fixtures import write_chat
 from test_pipeline_workflow import config_for
-from test_session_note_pipeline import FakeSummarizer, write_chat
 
 from tkn_codex_chat_note.config import AppConfig, write_config
 from tkn_codex_chat_note.pipeline import pipeline_status, run_pipeline
 from tkn_codex_chat_note.provenance import validate_provenance
-from tkn_codex_chat_note.session_notes import PipelineError
+from tkn_codex_chat_note.runtime import PipelineError
 from tkn_codex_chat_note.storage_migration import migrate_storage
 
 
@@ -43,7 +43,7 @@ def legacy_store(tmp_path: Path, *, raw_only: bool = False) -> tuple[AppConfig, 
     return config_for(tmp_path / "new"), source_config, source
 
 
-def test_migration_preserves_notes_ids_snapshots_and_regenerates_new_contract(tmp_path: Path) -> None:
+def test_migration_preserves_historical_notes_and_normalizes_copied_raw(tmp_path: Path) -> None:
     config, source_config, source = legacy_store(tmp_path)
     before = snapshot(tmp_path)
     plan = migrate_storage(config, from_config=source_config, dry_run=True)
@@ -59,10 +59,10 @@ def test_migration_preserves_notes_ids_snapshots_and_regenerates_new_contract(tm
     assert new_note.read_bytes() == old_note.read_bytes()
     assert validate_provenance(config.data_root)["ok"]
     assert pipeline_status(config)["initialized"]
-    summary = FakeSummarizer()
-    report = run_pipeline(config, mode="pull", summarizer=summary)
-    assert report["complete"] and summary.calls
-    assert report["threads"][0]["noteRef"].startswith("data:/session-notes/")
+    report = run_pipeline(config, mode="pull")
+    assert report["complete"]
+    assert "noteRef" not in report["threads"][0]
+    assert new_note.read_bytes() == old_note.read_bytes()
     assert report["threads"][0]["sourceCaptureRef"].startswith("raw:/codex/windows/")
     assert validate_provenance(config.data_root)["ok"]
     assert snapshot(source) == original
@@ -77,9 +77,8 @@ def test_migration_preserves_hand_edited_note_bytes(tmp_path: Path) -> None:
     new = config.data_root / "session-notes" / note.relative_to(source / "data/thread-notes")
     assert new.read_bytes() == edited
     assert validate_provenance(config.data_root)["ok"]
-    summary = FakeSummarizer()
-    run_pipeline(config, mode="pull", summarizer=summary)
-    assert not summary.calls and new.read_bytes() == edited
+    run_pipeline(config, mode="pull")
+    assert new.read_bytes() == edited
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
@@ -140,13 +139,13 @@ def test_two_source_stores_are_independent_and_cannot_reuse_a_root(tmp_path: Pat
     first = config_for(tmp_path / "first")
     first.sources = {"pc-one": first.source_settings}
     write_chat(first.sessions_root / "one.jsonl", thread_id="same-thread", cwd=Path("C:/example/project"))
-    report = run_pipeline(first, mode="clone", summarizer=FakeSummarizer())
+    report = run_pipeline(first, mode="clone")
     assert report["complete"]
     before = snapshot(first.data_root)
     second = config_for(tmp_path / "second")
     second.sources = {"pc-two": second.source_settings}
     write_chat(second.sessions_root / "one.jsonl", thread_id="same-thread", cwd=Path("C:/example/project"))
-    assert run_pipeline(second, mode="clone", summarizer=FakeSummarizer())["complete"]
+    assert run_pipeline(second, mode="clone")["complete"]
     assert snapshot(first.data_root) == before
     assert validate_provenance(first.data_root)["ok"] and validate_provenance(second.data_root)["ok"]
     second.source_settings.data_root = first.data_root
@@ -170,24 +169,23 @@ def test_raw_only_legacy_store_is_usable_without_originals(tmp_path: Path) -> No
     before = snapshot(source)
     migrate_storage(config, from_config=source_config, dry_run=False)
     assert snapshot(source) == before
-    report = run_pipeline(config, mode="pull", summarizer=FakeSummarizer())
+    report = run_pipeline(config, mode="pull")
     assert report["complete"] and validate_provenance(config.data_root)["ok"]
 
 
 def test_current_store_can_be_relocated_without_inference_or_identity_changes(tmp_path: Path) -> None:
     old = config_for(tmp_path / "old")
     write_chat(old.sessions_root / "one.jsonl", thread_id="one", cwd=Path("C:/example"))
-    assert run_pipeline(old, mode="clone", summarizer=FakeSummarizer())["complete"]
+    assert run_pipeline(old, mode="clone")["complete"]
     source_config = tmp_path / "old.yaml"
     write_config(old, source_config)
     before = snapshot(tmp_path / "old")
     new = config_for(tmp_path / "new")
     migrate_storage(new, from_config=source_config, dry_run=False)
-    note = next(new.data_root.rglob("*.md"))
+    note = next((new.data_root / "source-aligned").rglob("*.json"))
     original = note.read_bytes()
-    summary = FakeSummarizer()
-    result = run_pipeline(new, mode="pull", summarizer=summary)
-    assert result["complete"] and not summary.calls
+    result = run_pipeline(new, mode="pull")
+    assert result["complete"]
     assert note.read_bytes() == original
     assert snapshot(tmp_path / "old") == before
 
@@ -204,7 +202,7 @@ def test_migration_requires_disjoint_destination_roots(tmp_path: Path) -> None:
 def test_shared_v4_store_is_split_without_copying_another_sources_provenance(tmp_path: Path) -> None:
     old = config_for(tmp_path / "seed")
     write_chat(old.sessions_root / "one.jsonl", thread_id="one", cwd=Path("C:/example"))
-    assert run_pipeline(old, mode="clone", summarizer=FakeSummarizer())["complete"]
+    assert run_pipeline(old, mode="clone")["complete"]
     shared = tmp_path / "shared"
     for kind in ("raw", "data", "state"):
         shutil.copytree(getattr(old, kind + "_root"), shared / kind / "codex/windows")
@@ -213,7 +211,7 @@ def test_shared_v4_store_is_split_without_copying_another_sources_provenance(tmp
         shutil.copytree(old.data_root / name, public / name)
     catalog = json.loads((public / "catalog/threads.json").read_text())
     for row in catalog["threads"]:
-        row["noteRef"] = row["noteRef"].replace("data:/", "data:/codex/windows/", 1)
+        row["canonicalRef"] = row["canonicalRef"].replace("data:/", "data:/codex/windows/", 1)
     catalog["threads"].append(
         {"threadId": "other", "threadKey": "other", "sourceProvider": "codex", "sourceId": "other", "status": "pending"}
     )
@@ -273,7 +271,7 @@ def test_migration_rejects_invalid_identity_or_source_version_before_writes(tmp_
         value["captureRef"] = "raw:/foreign/elsewhere.jsonl"
         path.write_text(json.dumps(value) + "\n", encoding="utf-8")
     else:
-        run_pipeline(config, mode="clone", summarizer=FakeSummarizer())
+        run_pipeline(config, mode="clone")
         path = config.data_root / "store.json"
         value = json.loads(path.read_text(encoding="utf-8"))
         value["sourceId"] = "foreign"
@@ -326,11 +324,10 @@ def test_legacy_default_roots(schema: str, monkeypatch: pytest.MonkeyPatch) -> N
                     }
                 },
                 "cache_root": Path.home() / ".cache/genai_chat_note_pipeline",
-                "idle_minutes": 0,
             }
         )
         write_chat(old.sessions_root / "one.jsonl", thread_id="one", cwd=tmp_path / "project")
-        run_pipeline(old, mode="clone", summarizer=FakeSummarizer())
+        run_pipeline(old, mode="clone")
         document = config_document(old)
         codex = document.pop("sources")["windows"]
         for kind in ("raw", "data", "state"):
@@ -351,7 +348,5 @@ def test_legacy_default_roots(schema: str, monkeypatch: pytest.MonkeyPatch) -> N
         new = config_for(tmp_path / "new")
         migrate_storage(new, from_config=path, dry_run=False)
         assert snapshot(legacy_root) == before
-        summary = FakeSummarizer()
-        assert run_pipeline(new, mode="pull", summarizer=summary)["complete"]
-        assert not summary.calls
+        assert run_pipeline(new, mode="pull")["complete"]
         assert validate_provenance(new.data_root)["ok"]

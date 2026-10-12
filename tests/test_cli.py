@@ -31,15 +31,15 @@ def test_retired_commands_and_compatibility_flags_are_removed(args: list[str]) -
         build_parser().parse_args(args)
 
 
-@pytest.mark.parametrize("args", [["clone"], ["pull"], ["session-notes", "build"]])
+@pytest.mark.parametrize("args", [["clone"], ["pull"], ["review-notes", "due"], ["scheduled-run"]])
 def test_builds_write_by_default_and_have_explicit_dry_run(args: list[str]) -> None:
     assert not build_parser().parse_args(args).dry_run
     assert build_parser().parse_args([*args, "--dry-run"]).dry_run
 
 
 def test_clone_dry_run_and_pull_initialization_boundary(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
+    from chat_fixtures import write_chat
     from test_pipeline_workflow import config_for
-    from test_session_note_pipeline import write_chat
 
     from tkn_codex_chat_note.config import write_config
 
@@ -51,7 +51,7 @@ def test_clone_dry_run_and_pull_initialization_boundary(tmp_path: Path, capsys: 
     assert "clone" in json.loads(capsys.readouterr().out)["error"]
     assert main(["--config", str(target), "clone", "--dry-run", "--full-output"]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result["threads"][0]["status"] == "planned"
+    assert result["threads"][0]["status"] == "current"
     assert not config.data_root.exists() and result["reportPath"] is None
 
 
@@ -83,7 +83,7 @@ def test_pipeline_exit_codes_and_summary_output(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "Run report: C:/reports/run.json" in captured.err
-    assert "clone: generated 0 notes;" in captured.err
+    assert "clone: normalized 0 conversations;" in captured.err
     assert "private" not in captured.err
     assert main(["clone", "--full-output"]) == expected
     result = json.loads(capsys.readouterr().out)
@@ -157,40 +157,12 @@ def test_jsonl_parse_warning_uses_configured_logging(
     assert captured.err == ""
 
 
-def test_progress_events_are_human_readable(
-    capsys: CaptureFixture[str],
-) -> None:
-    args = build_parser().parse_args(["config", "list", "--json"])
-    _configure_logging(args)
-
-    _progress(
-        {
-            "type": "thread-start",
-            "index": 2,
-            "total": 7,
-            "threadId": "thread-2",
-        }
-    )
-    _progress(
-        {
-            "type": "thread-complete",
-            "index": 2,
-            "total": 7,
-            "threadId": "thread-2",
-            "sessionNotePath": r"C:\notes\thread-2.md",
-            "durationSeconds": 12.5,
-            "chunkCount": 2,
-            "modelCalls": 3,
-        }
-    )
-
+def test_source_progress_is_human_readable(capsys: CaptureFixture[str]) -> None:
+    _configure_logging(build_parser().parse_args(["config", "list", "--json"]))
+    _progress({"type": "source-start", "sourceId": "pc"})
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err.splitlines() == [
-        "[INFO] Starting thread 2/7: thread-2",
-        "[SUCCESS] Completed thread 2/7: thread-2 "
-        r"(12.5s, 2 chunks, 3 model calls) — Session Note: C:\notes\thread-2.md",
-    ]
+    assert captured.err == "[INFO] Source: pc\n"
 
 
 @pytest.mark.parametrize(
@@ -220,63 +192,18 @@ def test_console_formatter_keeps_redirected_output_plain(level: int, name: str) 
     assert formatter.format(record) == f"[{name}] message"
 
 
-def test_pipeline_progress_separates_current_notes_from_generation_attempts(capsys: CaptureFixture[str]) -> None:
-    _configure_logging(build_parser().parse_args(["config", "list", "--json"]))
-    _progress({"type": "session-note-status", "currentCount": 12, "total": 359,
-               "unchangedCount": 12, "generatedCount": 0})
-    for kind in ("thread-start", "thread-complete", "thread-failed"):
-        _progress({"type": kind, "index": 1, "total": 359, "attemptLimit": 3,
-                   "threadId": "example", "error": "failed"})
-    _progress({"type": "session-note-status", "currentCount": 13, "total": 359,
-               "unchangedCount": 12, "generatedCount": 1})
-    _progress({"type": "thread-start", "index": 2, "total": 359, "attemptLimit": None,
-               "threadId": "example"})
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "12/359 (already current: 12; generated this run: 0)" in captured.err
-    assert "13/359 (already current: 12; generated this run: 1)" in captured.err
-    for verb in ("Starting", "Completed", "Failed"):
-        assert f"{verb} thread (attempt 1 this run, limit 3): example" in captured.err
-    assert "Starting thread (attempt 2 this run): example" in captured.err
-    assert "thread 1/359" not in captured.err
-
-
-def test_repair_fallback_progress_explains_unsent_draft_and_regeneration(capsys: CaptureFixture[str]) -> None:
-    _configure_logging(build_parser().parse_args(["config", "list", "--json"]))
-    _progress({"type": "repair-input-fallback", "threadId": "example-thread",
-               "repairInputTokensEstimate": 62386, "inputTokenLimit": 60000,
-               "regenerationInputTokensEstimate": 59500, "validationFeedbackIncluded": True})
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "[WARNING] Repair input estimate 62386 exceeds limit 60000" in captured.err
-    assert "without the invalid draft" in captured.err and "feedback included" in captured.err
-
-
-def test_config_list_reports_application_owned_summary_profile(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: CaptureFixture[str],
+def test_config_list_reports_source_reviews_without_summary_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: CaptureFixture[str],
 ) -> None:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-
     assert main(["-q", "config", "list", "--json"]) == 0
     output = json.loads(capsys.readouterr().out)
-
-    profile = output["summaryProfile"]
-    assert profile["name"] == "default-jp"
-    assert profile["source"].endswith("profiles/default-jp")
-    assert len(profile["sha256"]) == 64
-    assert profile["prompt"]["version"] == "3.10"
-    assert profile["prompt"]["source"].endswith("profiles/default-jp/prompt.md")
-    assert profile["schema"]["source"].endswith("profiles/default-jp/output.schema.json")
-    assert len(profile["schema"]["sha256"]) == 64
-    assert profile["template"]["version"] == "4.1"
-    assert profile["template"]["source"].endswith("profiles/default-jp/template.md")
-    assert "decisionProfile" not in output and "workingContextProfile" not in output
+    assert "summaryProfile" not in output
+    assert output["config"]["sources"]["windows"]["reviews"]["language"] == "ja"
+    assert "reviews" not in output["config"]
     assert output["config"]["schema_version"] == CONFIG_SCHEMA_VERSION
     assert output["configSchema"] == {
-        "effectiveVersion": CONFIG_SCHEMA_VERSION,
-        "hasInMemoryMigrations": False,
+        "effectiveVersion": CONFIG_SCHEMA_VERSION, "hasInMemoryMigrations": False,
     }
     assert output["sources"]["generation.profiles.codex.bridge_profile"] == "built-in defaults"
     assert [layer["kind"] for layer in output["layers"]] == ["built-in", "global", "project"]
@@ -343,58 +270,6 @@ def test_invalid_config_returns_machine_readable_error(
     assert output["ok"] is False
 
 
-def test_validate_command_accepts_legacy_thread_note_v3(
-    tmp_path: Path,
-    capsys: CaptureFixture[str],
-) -> None:
-    note = tmp_path / "note.md"
-    note.write_text(
-        """---
-type: threadNote
-schemaVersion: 3
-promptId: f5dfc679-13d3-4fcc-9736-b7d4e6bb5c11
-promptVersion: "2.0"
-outputSchemaSha256: 3ebffe117e29f76dfca25375a7e96ba0867de31a7ed68022dc6b65d91d651170
-templateId: 4d19c51c-0d02-43a5-b6ad-6d67f9739b75
-templateVersion: "2.0"
-reviewStatus: unreviewed
-automatedValidation: passed
-status: done
-sourceType: codexChat
-sourceThreadIds:
-  - thread-1
-sourceRefs:
-  - windows/2026/chat.jsonl
-sourceFingerprint: abc123
----
-
-# Thread Note
-
-## Summary
-
-- Completed.
-
-## Key Developments
-
-### Reported Result
-
-- Completed.
-
-## Last Known State
-
-- Work State: done — Completed.
-- Latest User Direction: Complete it.
-""",
-        encoding="utf-8",
-    )
-
-    result = main(["session-notes", "validate", str(note)])
-
-    assert result == 0
-    output = json.loads(capsys.readouterr().out)
-    assert output["valid"] is True
-
-
 @pytest.mark.parametrize("provider", ["claude-code", "github-copilot"])
 def test_other_acquisition_providers_are_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: CaptureFixture[str], provider: str
@@ -412,15 +287,6 @@ def test_other_acquisition_providers_are_rejected(
     assert main(["--config", str(target), "raw", "ingest", "--dry-run"]) == 1
     assert "unknown configuration key: chat" in json.loads(capsys.readouterr().out)["error"]
     assert not (tmp_path / "user").exists()
-
-
-def test_session_note_command_and_legacy_reader(capsys: CaptureFixture[str]) -> None:
-    assert main(["session-notes", "validate", str(Path(__file__).parent / "fixtures/session-note-v6.md")]) == 0
-    assert json.loads(capsys.readouterr().out)["schemaVersion"] == 6
-    assert main(["session-notes", "validate", str(Path(__file__).parent / "fixtures/thread-note-v5.md")]) == 0
-    assert json.loads(capsys.readouterr().out)["schemaVersion"] == 5
-    with pytest.raises(SystemExit):
-        main(["thread-notes", "build"])
 
 
 def test_cli_name_and_version_match_package(capsys: CaptureFixture[str]) -> None:

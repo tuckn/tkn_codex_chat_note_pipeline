@@ -80,7 +80,7 @@ class BridgeProfileConfig(BaseModel):
     def inference_options(self) -> dict[str, Any]:
         with Runtime(self.profile) as runtime:
             plan = runtime.plan(GenerationRequest(prompt="identity", output_schema={"type": "object"},
-                                                  schema_name="session_note"))
+                                                  schema_name="review_note"))
         result: dict[str, Any] = {
             "bridge": self.profile.model_dump(mode="json"),
             "bridge_profile": self.bridge_profile,

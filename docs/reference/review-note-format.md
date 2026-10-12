@@ -1,6 +1,6 @@
 # Review Note contract
 
-Review Note 1.0.0 / CLI 0.29.1 / config 8.4.0. [Japanese guide](review-note-format_ja.md).
+Review Note 1.0.0 / CLI 0.30.0 / config 9.0.0. [Japanese guide](review-note-format_ja.md).
 
 ## Purpose
 
@@ -15,7 +15,7 @@ Source text is untrusted data, not executable instructions. No productivity/pers
 ## Commands and calendar
 
 ```shell
-tkn-codex-chat-note pull --limit 10
+tkn-codex-chat-note pull
 tkn-codex-chat-note review-notes build --period weekly --date 2026-05-18 --dry-run --full-output
 tkn-codex-chat-note review-notes build --period weekly --date 2026-05-18
 tkn-codex-chat-note review-notes build --period monthly --date 2026-05-01
@@ -30,15 +30,14 @@ fixed UTC offset is +540 minutes (Japan); there is no automatic daylight-saving 
 Open periods are rejected. Build/due read saved catalogs; raw ingest alone does not update
 canonical events or catalogs. Pull or scheduled-run refreshes them.
 
-Weekly reviews use period-filtered Session Note timeline evidence. Monthly reviews use
+Weekly reviews use period-filtered canonical events (dialogue, tool calls/results and interruptions). Monthly reviews use
 weekly JSON; yearly reviews use monthly JSON. Missing or invalid months fall back to
-their weekly reviews, then source notes/canonical events for unavailable weeks.
+their weekly reviews, then canonical events for unavailable weeks.
 Monthly reviews retain dated decisions/reasons, open questions and candidates for annual
 synthesis. Annual reviews compare changes across months; repeated references to one event
 are not independent observations. Inferences/proposals retain their original uncertainty.
 Boundary-crossing weekly claims are included only when all their dated evidence falls
-inside the target period. Boundary fragments and unavailable weeks fall back to source
-notes/canonical events. Missing or truncated input remains explicit, never proportional
+inside the target period. Boundary fragments and unavailable weeks fall back to canonical events. Missing or truncated input remains explicit, never proportional
 allocation of whole-week conclusions. Excluded internal conversations stay excluded.
 
 The model may request supplied evidence IDs to verify original wording, causes, retry counts,
@@ -50,7 +49,7 @@ no visual interpretation occurs. No model-specified arbitrary path or URL is ope
 
 ## Published files
 
-Under reviews.data_root, each period has a Markdown/JSON pair:
+Under sources.<id>.data_root/reviews, each period has a Markdown/JSON pair:
 
 - weekly/2026/2026-W21.md and .json
 - monthly/2026/2026-05.md and .json
@@ -60,15 +59,15 @@ JSON is the machine-readable authority; Markdown is a human rendering. Manual Ma
 annotations are not synchronized into JSON. Monthly reviews consume weekly JSON, and yearly
 reviews consume monthly JSON. Transitive citations remain available for bounded Raw verification.
 Adopted human changes require checking the JSON items, evidence and candidate projections too.
-Default data/state roots are separate directories under ~/.tkn/codex_chat_note_pipeline;
-both are configurable. They must not overlap source/Raw storage. Placement does not imply
+Review settings live under sources.<id>.reviews. Outputs and state use each source's
+data_root/reviews and state_root/reviews. Sources are reviewed independently. They must not overlap source/Raw storage. Placement does not imply
 that an Intelligence candidate has been adopted.
 
 | Field | Contract |
 |---|---|
 | schemaVersion, id, period | Version, stable ID within output location/period, kind/key/start/endExclusive/UTC offset and timestamp boundaries |
 | items | category/title/text/basis/evidenceIds/caveat/nextCheck/intelligenceKind; exact item schema below |
-| evidence | Excerpts, timestamps, source IDs, note/canonical/Raw references and hashes; weekly/monthly-derived evidence uses supports for transitive links |
+| evidence | Excerpts, timestamps, source IDs, canonical/Raw references and hashes; weekly/monthly-derived evidence uses supports for transitive links |
 | sourceInventory, coverage | Catalog observation times, inputs (weeklyInputs/monthlyInputs), missing/truncated evidence; completeHistory is always false |
 | intelligenceCandidates, aiImprovements | Corresponding items with stable candidate IDs and status=candidate; never adopted automatically |
 | generation, inputFingerprint | Profile/model/settings hash and period-specific input identity |
@@ -93,20 +92,18 @@ assuming an unrelated fresh output root has the same identity.
 
 ## Scheduling, cost and preservation
 
-A daily Windows Task Scheduler invocation of scheduled-run captures Raw each time. When
-periods become due it updates at most reviews.session_note_limit Session Notes (default 10),
-then builds reviews. Weeks become due Monday, months on the next month's first day, years
+A daily Windows Task Scheduler invocation of scheduled-run captures and normalizes Raw
+without inference, then builds due reviews for each source. Weeks become due Monday, months on the next month's first day, years
 on the next January 1; missed runs catch up on the next invocation.
 
-Due starts with periods containing its first actual run date or reviews.start_date. Starting
+Due starts with periods containing its first actual run date or sources.<id>.reviews.start_date. Starting
 mid-month/year still reviews that whole calendar period when it closes. There is no implicit
 backfill of all older closed periods. An explicit earlier start_date enables backfill.
 The repository provides a Task Scheduler registration example with -WhatIf; installing this
 package never registers a task.
 
-Review max_calls defaults to 12 per invocation, including Raw and merge stages. Cached stages
-do not consume calls. Stage checkpoints resume after interruption/budget stops. Session Note
-and review limits/deadlines are separate. Existing API token/cost limits remain effective.
+Review max_calls defaults to 12 per source per invocation, including Raw and merge stages. Cached stages
+do not consume calls. Stage checkpoints resume after interruption/budget stops. Call and runtime limits apply independently to each source. Existing API token/cost limits remain effective.
 Review usage journals participate in build-report; unavailable counts remain unknown.
 
 Unchanged period inputs skip inference. Later-period additions alone do not invalidate an

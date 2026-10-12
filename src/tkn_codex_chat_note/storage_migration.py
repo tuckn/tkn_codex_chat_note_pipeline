@@ -19,7 +19,7 @@ from .config import AppConfig, CodexSourceConfig, _read_layer, _resolve_paths, v
 from .initialization import ROOT_KINDS, ROOT_OWNERSHIP_MARKER, _ownership_marker_document
 from .provenance import validate_provenance
 from .raw_capture import SOURCE_ID_PATTERN, _mirror_relative
-from .session_notes import PipelineError, atomic_write_bytes
+from .runtime import PipelineError, atomic_write_bytes
 from .storage import STORAGE_VERSION, _root_lock, read_json, validate_storage
 
 
@@ -155,14 +155,19 @@ def _read_source_store(path: Path, selected_id: str | None = None) -> SourceStor
             raise ValueError(f"{field} must be a non-empty path string")
     if "source_id" in document and not isinstance(document["source_id"], str):
         raise ValueError("source_id must be a string")
-    if not re.fullmatch(r"(?:2|[2-8]\.[0-9]+\.[0-9]+)", version):
-        raise PipelineError("migration source requires a standalone schema-2/3/4/5/6/7/8 configuration")
+    if not re.fullmatch(r"(?:2|[2-9]\.[0-9]+\.[0-9]+)", version):
+        raise PipelineError("migration source requires a standalone schema-2/3/4/5/6/7/8/9 configuration")
     major, minor = (2, 0) if version == "2" else tuple(int(part) for part in version.split(".")[:2])
-    if minor > {2: 2, 3: 0, 4: 1, 5: 0, 6: 0, 7: 2, 8: 4}[major]:
+    if minor > {2: 2, 3: 0, 4: 1, 5: 0, 6: 0, 7: 2, 8: 4, 9: 0}[major]:
         raise PipelineError("unsupported migration source config version")
-    if major in {5, 6, 7, 8}:
+    if major in {5, 6, 7, 8, 9}:
         if major in {5, 6}:
             document = _legacy_sources(document, major)
+        if major < 9:
+            for key in ("reviews", "idle_minutes", "installed_at"):
+                document.pop(key, None)
+            if isinstance(document.get("generation"), dict):
+                document["generation"].pop("session_note_profile", None)
         config = AppConfig.model_validate(_resolve_paths(document, path.parent))
         if selected_id is not None:
             config = config.for_source(selected_id)
@@ -273,7 +278,10 @@ def _build_source_plan(source: SourceStore, config: AppConfig) -> list[Migration
     for path in _files(source.raw, source.raw):
         if path.name not in {ROOT_OWNERSHIP_MARKER, ".pipeline.lock"}:
             add(path, source.raw, config.raw_root / path.relative_to(source.raw))
-    groups = ("session-notes", "thread-notes", "source-aligned", "threads", "projects", "project-registry.jsonl")
+    groups = (
+        "session-notes", "thread-notes", "reviews", "source-aligned",
+        "threads", "projects", "project-registry.jsonl",
+    )
     for name in groups:
         for path in _files(source.data / name, source.data):
             relative = path.relative_to(source.data)

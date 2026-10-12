@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .session_notes import PipelineError
+from .runtime import PipelineError
 
 
 def _contained(root: Path, relative: str) -> Path:

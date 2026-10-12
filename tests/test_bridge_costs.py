@@ -14,7 +14,7 @@ from tkn_codex_chat_note.api_inference import ApiClient, ApiError
 from tkn_codex_chat_note.config import load_app_config
 from tkn_codex_chat_note.cost_policy import reservation_cost
 from tkn_codex_chat_note.report_settings import BridgePriceScenario
-from tkn_codex_chat_note.session_notes import PipelineError
+from tkn_codex_chat_note.runtime import PipelineError
 from tkn_codex_chat_note.usage_report import _normalize, build_usage_report, reference_cost
 
 PRICE = {"currency": "JPY", "pricing_date": "2026-01-01", "input_per_million": 30,
@@ -29,7 +29,7 @@ def configured(tmp_path, **price_updates):
     profile["pricing"]["deployment"].update(price_updates)
     shared({"shared-notes": profile})
     cfg = load_app_config(explicit_path=application(tmp_path), cwd=tmp_path)
-    return cfg, ApiClient(cfg.session_note_pipeline_config(allow_missing_watermark=True))
+    return cfg, ApiClient(cfg.inference_config())
 
 
 def backend(client, usage, *, fail=False):
@@ -99,7 +99,7 @@ def test_price_update_changes_amount_without_regenerating_notes_or_input_estimat
     assert changed_client.pricing.input_per_million == 90
     override = load_app_config(explicit_path=tmp_path / "app.yaml", cwd=tmp_path,
                                overrides={"model": "unpriced"})
-    assert ApiClient(override.session_note_pipeline_config(allow_missing_watermark=True)).pricing is None
+    assert ApiClient(override.inference_config()).pricing is None
 
 
 def test_conflicting_legacy_and_shared_prices_rejected(tmp_path):

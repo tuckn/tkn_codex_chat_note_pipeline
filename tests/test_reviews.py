@@ -11,19 +11,18 @@ import pytest
 from tkn_codex_chat_note.cli import build_parser, main
 from tkn_codex_chat_note.config import AppConfig, load_app_config, write_config
 from tkn_codex_chat_note.provenance import ProvenanceStore, json_bytes
-from tkn_codex_chat_note.review_evidence import period_evidence, review_path, timeline_entries
+from tkn_codex_chat_note.review_evidence import period_evidence, review_path
 from tkn_codex_chat_note.review_model import ReviewDraft, closed_periods, period_for
 from tkn_codex_chat_note.reviews import run_reviews, run_scheduled, validate_review
-from tkn_codex_chat_note.session_notes import PipelineError, atomic_write_json
+from tkn_codex_chat_note.runtime import PipelineError, atomic_write_json
 
 
 def config_for(root: Path, **settings: Any) -> AppConfig:
     return AppConfig(
         sources={"windows": {"source_root": root / "codex", "raw_root": root / "raw",
-                             "data_root": root / "data", "state_root": root / "state"}},
+                             "data_root": root / "data", "state_root": root / "state", "reviews": settings}},
         cache_root=root / "cache",
         generation={"profiles": {"codex": {"provider": "codex", "model": "test-model"}}},
-        reviews={"data_root": root / "reviews", "state_root": root / "review-state", **settings},
     )
 
 
@@ -111,15 +110,6 @@ def test_calendar_iso_year_leap_month_and_timezone_boundaries() -> None:
     assert all(p.end <= date(2027, 1, 1) for p in closed)
 
 
-def test_timeline_multiline_and_history_headings() -> None:
-    entries = timeline_entries("## Timeline\n### History H1\n#### 2026-05-18\n- **01:02:03**\n"
-                               "  - Actor: User\n  - Type: Request\n  - Text: first\n    second\n"
-                               "  - EventRange: L000001 -> L000001\n  - Sources: L000001\n"
-                               "## Last Known State\n- Text: outside\n")
-    assert entries[0]["text"] == "first\nsecond"
-    assert entries[0]["eventIds"] == ["L000001"]
-
-
 def test_dry_run_writes_nothing_and_never_calls_model(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     seed(config, [("2026-05-19T00:00:00Z", "Question")])
@@ -169,7 +159,7 @@ def test_edited_and_reviewed_outputs_are_preserved(tmp_path: Path) -> None:
     assert len(model.prompts) == 1
     assert weekly(config, model, allow_edited=True, force=True)["generatedCount"] == 1
     assert any("Human annotation" in p.read_text(encoding="utf-8")
-               for p in (config.reviews.state_root / "backups").rglob("*.md"))
+               for p in (config.review_state_root / "backups").rglob("*.md"))
     md.write_text(md.read_text(encoding="utf-8").replace('reviewStatus: "unreviewed"', 'reviewStatus: "accepted"'),
                   encoding="utf-8")
     assert weekly(config, model, force=True, allow_edited=True)["results"][0]["status"] == "blocked"
@@ -215,7 +205,7 @@ def test_unsupported_citation_does_not_publish(tmp_path: Path) -> None:
     seed(config, [("2026-05-19T00:00:00Z", "Question")])
     result = weekly(config, lambda *_: {"items": [item("made-up-id")], "rawRequests": []})  # type: ignore[arg-type]
     assert not result["ok"]
-    assert not list(config.reviews.data_root.rglob("*.md"))
+    assert not list(config.review_data_root.rglob("*.md"))
 
 
 def test_empty_model_response_does_not_claim_no_activity(tmp_path: Path) -> None:
@@ -269,7 +259,7 @@ def test_year_uses_monthly_items_and_retains_transitive_sources(tmp_path: Path) 
     assert [e["kind"] for e in inputs.input_records()] == ["monthly-review"]
     assert "Monthly synthesis distinct" in inputs.input_records()[0]["text"]
     assert any(e["kind"] == "weekly-review" for e in inputs.evidence.values())
-    assert any(e["kind"] == "session-note" for e in inputs.evidence.values())
+    assert any(e["kind"] == "canonical-excerpt" for e in inputs.evidence.values())
     result = run_reviews(config, kind="yearly", day=date(2026, 1, 1), as_of=date(2027, 1, 5),
                          generate=FakeGenerator())
     assert result["ok"], result
@@ -284,7 +274,7 @@ def test_year_falls_back_to_weekly_when_month_missing_or_invalid(tmp_path: Path,
     seed(config, [("2026-05-19T00:00:00Z", "Question")])
     weekly(config, FakeGenerator())
     if invalid_month:
-        path = review_path(config.reviews.data_root, period_for("monthly", date(2026, 5, 1)))
+        path = review_path(config.review_data_root, period_for("monthly", date(2026, 5, 1)))
         atomic_write_json(path, {"text": "INVALID MONTH MUST NOT BE USED"})
     inputs = period_evidence(config, period_for("yearly", date(2026, 1, 1)))
     assert not inputs.monthly_inputs and inputs.weekly_inputs
@@ -368,7 +358,7 @@ def test_open_period_is_rejected(tmp_path: Path) -> None:
 
 def test_source_and_raw_output_overlap_is_rejected(tmp_path: Path) -> None:
     config = config_for(tmp_path)
-    config.reviews.data_root = config.raw_root / "reviews"
+    config.sources["windows"].data_root = config.raw_root / "reviews"
     with pytest.raises(PipelineError, match="overlap"):
         weekly(config, FakeGenerator(), dry_run=True)
 
@@ -383,7 +373,7 @@ def test_review_config_paths_and_cli_defaults(tmp_path: Path, monkeypatch: pytes
     assert args.period == "yearly" and not args.dry_run
     monkeypatch.chdir(tmp_path)
     assert main(["--config", str(path), "review-notes", "due", "--dry-run"]) == 0
-    assert not config.reviews.state_root.exists()
+    assert not config.review_state_root.exists()
 
 
 def test_scheduled_capture_does_not_generate_before_due(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -398,7 +388,7 @@ def test_scheduled_capture_does_not_generate_before_due(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(pipeline, "run_pipeline", run)
     result = run_scheduled(config)
-    assert result["ok"] and calls == ["raw"]
+    assert result["ok"] and calls == ["clone"]
 
 
 def test_intelligence_and_improvement_candidates_keep_status_and_citations(tmp_path: Path) -> None:
@@ -448,7 +438,7 @@ def test_review_usage_is_included_in_offline_report(tmp_path: Path) -> None:
     from tkn_codex_chat_note.usage_report import collect_usage
 
     config = config_for(tmp_path)
-    journal = UsageJournal(config.reviews.state_root / "usage/run", {"sourceId": "reviews", "runId": "run",
+    journal = UsageJournal(config.review_state_root / "usage/run", {"sourceId": "reviews", "runId": "run",
                            "threadId": "weekly/2026-W21", "command": "review-notes", "noteStatus": "generated"})
     journal({"type": "usage-complete", **new_record("codex", "test-model", "high"), "status": "received"})
     report = collect_usage(config)
@@ -457,11 +447,13 @@ def test_review_usage_is_included_in_offline_report(tmp_path: Path) -> None:
     assert report["records"][0]["inputTokens"] is None
 
 
-def test_scheduled_due_run_limits_session_note_generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_scheduled_due_run_only_captures_normalizes_and_reviews(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import tkn_codex_chat_note.pipeline as pipeline
     import tkn_codex_chat_note.reviews as reviews
 
-    config = config_for(tmp_path, start_date=date(2026, 5, 18), session_note_limit=3)
+    config = config_for(tmp_path, start_date=date(2026, 5, 18))
     calls: list[dict[str, Any]] = []
 
     def run(*_: Any, **kwargs: Any) -> dict[str, Any]:
@@ -472,5 +464,5 @@ def test_scheduled_due_run_limits_session_note_generation(tmp_path: Path, monkey
     monkeypatch.setattr(reviews, "review_today", lambda _: date(2026, 5, 25))
     result = run_scheduled(config)
     assert result["ok"]
-    assert [c["mode"] for c in calls] == ["raw", "pull"]
-    assert calls[1]["limit"] == 3
+    assert [c["mode"] for c in calls] == ["clone"]
+    assert "limit" not in calls[0]

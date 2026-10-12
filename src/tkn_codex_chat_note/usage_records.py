@@ -49,7 +49,7 @@ class UsageJournal:
 
     def __call__(self, event: dict[str, Any]) -> None:
         if event.get("type") in {"usage-start", "usage-complete", "api-request-start", "api-request-complete"}:
-            from .session_notes import atomic_write_json
+            from .runtime import atomic_write_json
 
             record = {key: value for key, value in event.items() if key != "type"}
             record.update(self.context, schemaVersion=1)
@@ -60,7 +60,7 @@ class UsageJournal:
             self.observer(event)
 
     def finish(self, status: str) -> None:
-        from .session_notes import atomic_write_json
+        from .runtime import atomic_write_json
 
         for usage_id, record in self.records.items():
             record["noteStatus"] = status

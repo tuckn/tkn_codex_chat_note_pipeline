@@ -29,7 +29,8 @@ Separate changed requirements from failures. A tool log quoting another command 
 Image hashes can identify bytes, not visual meaning or equal intent. Images here are NOT visually inspected.
 Never invent cost/time savings or treat a speculative root cause as confirmed.
 
-Weekly input is period-filtered Session Note evidence, supplemented by original records when needed.
+Weekly input is period-filtered canonical chat events, with bounded Raw verification when needed.
+Canonical events are parsed mechanically; no per-conversation AI summary is generated or consumed.
 Monthly input primarily consists of weekly review items. Yearly input primarily consists of monthly
 review items; unavailable months fall back to weekly reviews and then original source evidence.
 Monthly reviews should preserve dated changes, decisions and reasons, unresolved questions, and

@@ -10,12 +10,11 @@ from tkn_codex_chat_note.cli import build_parser
 from tkn_codex_chat_note.config import (
     AppConfig,
     GenerationConfig,
-    config_document,
     load_app_config,
     normalize_generation,
     resolve_app_config,
 )
-from tkn_codex_chat_note.session_notes import PipelineError, generator_fingerprint
+from tkn_codex_chat_note.runtime import PipelineError
 
 ENDPOINT = "https://example.openai.azure.com/openai/v1/"
 RATES = {"notes": {"input_jpy_per_million": 10, "output_jpy_per_million": 20, "pricing_date": "2026-09-14"}}
@@ -35,7 +34,7 @@ def generation():
 def config_path(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     path = tmp_path / "config.yaml"
-    path.write_text(yaml.safe_dump({"schema_version": "8.0.0", "generation": generation()}), encoding="utf-8")
+    path.write_text(yaml.safe_dump({"schema_version": "9.0.0", "generation": generation()}), encoding="utf-8")
     return path
 
 
@@ -58,7 +57,7 @@ def test_profile_switch_routes_endpoint_model_and_overrides_only_selected(config
     assert local.provider == "ollama" and local.ollama_base_url == "http://localhost:11500"
     codex = load_app_config(explicit_path=config_path, cwd=config_path.parent, overrides={"profile": "codex-high"})
     assert codex.codex_executable == "custom-codex"
-    assert codex.session_note_pipeline_config(allow_missing_watermark=True).codex_bin == "custom-codex"
+    assert codex.inference_config().codex_bin == "custom-codex"
 
 
 def test_compatibility_provider_rejects_ambiguity_and_preserves_unique_match(config_path):
@@ -76,7 +75,7 @@ def test_provider_is_explicit_even_when_profile_name_matches_another_provider():
     cfg = AppConfig(generation={"active_profile": "codex", "profiles": {
         "codex": {"provider": "ollama", "model": "local"}}})
     assert cfg.provider == "ollama"
-    assert cfg.session_note_pipeline_config(allow_missing_watermark=True).provider == "ollama"
+    assert cfg.inference_config().provider == "ollama"
 
 
 @pytest.mark.parametrize("profile", [
@@ -95,36 +94,11 @@ def test_invalid_transports_fail_without_authentication(profile):
         GenerationConfig(active_profile="chosen", profiles={"chosen": profile})
 
 
-def test_legacy_layers_migrate_without_modifying_cache_identity_or_files(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
-    legacy = {"active_provider": "azure-openai", "providers": {
-        "azure-openai": {"model": "notes", "azure": {"endpoint": ENDPOINT, "pricing": RATES}}}}
-    old = tmp_path / "old.yaml"
-    old.write_text(yaml.safe_dump({"schema_version": "7.2.0", "generation": legacy}), encoding="utf-8")
-    original = old.read_bytes()
-    resolution = resolve_app_config(explicit_path=old, cwd=tmp_path)
-    assert resolution.has_in_memory_migrations
-    assert resolution.layers[-1]["migration"]["kind"] == "named-generation-profiles"
-    canonical = normalize_generation(legacy)
-    canonical["profiles"]["renamed"] = canonical["profiles"].pop("azure-openai")
-    canonical["active_profile"] = "renamed"
-    new = AppConfig(generation=canonical)
-    old_pipeline = resolution.config.session_note_pipeline_config(allow_missing_watermark=True)
-    new_pipeline = new.session_note_pipeline_config(allow_missing_watermark=True)
-    assert old_pipeline.inference_options == new_pipeline.inference_options
-    assert generator_fingerprint(old_pipeline) == generator_fingerprint(new_pipeline)
-    assert old_pipeline.generation_profile != new_pipeline.generation_profile
-    assert old.read_bytes() == original
-    document = config_document(new)
-    assert "providers" not in document["generation"]
-    assert "azure" not in document["generation"]["profiles"]["renamed"]
-
-
 def test_layers_merge_by_profile_and_provider_change_discards_previous_transport(config_path):
     project = config_path.parent / ".tkn/config.yaml"
     project.parent.mkdir()
-    project.write_text(yaml.safe_dump({"schema_version": "8.0.0", "generation": generation()}), encoding="utf-8")
-    override = {"schema_version": "8.0.0", "generation": {"profiles": {"azure-high": {"reasoning_effort": "medium"}}}}
+    project.write_text(yaml.safe_dump({"schema_version": "9.0.0", "generation": generation()}), encoding="utf-8")
+    override = {"schema_version": "9.0.0", "generation": {"profiles": {"azure-high": {"reasoning_effort": "medium"}}}}
     config_path.write_text(yaml.safe_dump(override), encoding="utf-8")
     cfg = load_app_config(explicit_path=config_path, cwd=config_path.parent)
     assert cfg.reasoning_effort == "medium" and cfg.model == "notes"
@@ -145,7 +119,6 @@ def test_conflicting_legacy_and_new_fields_are_rejected():
     mixed["providers"] = {"codex": {"model": "remote"}}
     with pytest.raises(ValueError, match="both"):
         normalize_generation(mixed)
-
 
 
 @pytest.mark.parametrize("old,new", [("active_provider", "profiles"), ("providers", "active_profile")])

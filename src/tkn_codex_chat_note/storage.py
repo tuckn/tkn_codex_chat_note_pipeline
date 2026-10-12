@@ -17,7 +17,7 @@ from .initialization import (
     inspect_reset_target_ownership,
     validate_reset_targets,
 )
-from .session_notes import PipelineError, atomic_write_json, now_iso
+from .runtime import PipelineError, atomic_write_json, now_iso
 
 STORAGE_VERSION = 5
 

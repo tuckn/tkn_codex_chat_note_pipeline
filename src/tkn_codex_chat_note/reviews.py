@@ -18,8 +18,8 @@ from .review_evidence import checked_json, digest, period_evidence, review_path
 from .review_generation import Generator, ReviewBudgetStop, ReviewGenerator
 from .review_model import REVIEW_VERSION, Period, PeriodKind, ReviewDraft, closed_periods, period_for
 from .review_render import render_review
-from .session_notes import PipelineError, atomic_write_bytes, atomic_write_json, now_iso
-from .storage import _root_lock, read_json
+from .runtime import PipelineError, atomic_write_bytes, atomic_write_json, now_iso
+from .storage import _root_lock, read_json, validate_source_layout
 
 
 def review_today(config: AppConfig) -> date:
@@ -27,10 +27,10 @@ def review_today(config: AppConfig) -> date:
 
 
 def _validate_roots(config: AppConfig) -> None:
-    data, state = config.reviews.data_root.resolve(), config.reviews.state_root.resolve()
+    data, state = config.review_data_root.resolve(), config.review_state_root.resolve()
     if data == state or data.is_relative_to(state) or state.is_relative_to(data):
-        raise PipelineError("reviews.data_root and reviews.state_root must be separate directories")
-    for root in (config.reviews.data_root, config.reviews.state_root):
+        raise PipelineError("source review data and state roots must be separate directories")
+    for root in (config.review_data_root, config.review_state_root):
         if root.is_symlink() or (root.exists() and not root.is_dir()):
             raise PipelineError(f"review root must be an ordinary directory: {root}")
     for source in config.enabled_source_configs():
@@ -43,9 +43,9 @@ def _validate_roots(config: AppConfig) -> None:
 
 
 def _paths(config: AppConfig, period: Period) -> tuple[Path, Path]:
-    path = review_path(config.reviews.data_root, period)
+    path = review_path(config.review_data_root, period)
     for candidate in (path, path.with_suffix(".md")):
-        if candidate.is_symlink() or not candidate.resolve().is_relative_to(config.reviews.data_root.resolve()):
+        if candidate.is_symlink() or not candidate.resolve().is_relative_to(config.review_data_root.resolve()):
             raise PipelineError("review output escapes its configured root")
     return path, path.with_suffix(".md")
 
@@ -75,19 +75,19 @@ def _recover(config: AppConfig, index: dict[str, Any], *, dry_run: bool) -> None
         pending = record.get("pending")
         if not pending:
             continue
-        transaction_path = config.reviews.state_root / "transactions" / (pending["transaction"] + ".json")
+        transaction_path = config.review_state_root / "transactions" / (pending["transaction"] + ".json")
         transaction = checked_json(transaction_path, pending["sha256"])
         for target in transaction["outputs"]:
-            path = config.reviews.data_root / target["relativePath"]
-            if path.is_symlink() or not path.resolve().is_relative_to(config.reviews.data_root.resolve()):
+            path = config.review_data_root / target["relativePath"]
+            if path.is_symlink() or not path.resolve().is_relative_to(config.review_data_root.resolve()):
                 raise PipelineError("unsafe pending review output")
             if _hash(path) not in (target["previousSha256"], target["sha256"]):
                 raise PipelineError(f"pending review output was edited; retained transaction: {transaction_path}")
         if not dry_run:
             for target in transaction["outputs"]:
-                atomic_write_bytes(config.reviews.data_root / target["relativePath"], target["text"].encode("utf-8"))
+                atomic_write_bytes(config.review_data_root / target["relativePath"], target["text"].encode("utf-8"))
             index["reviews"][key] = transaction["record"]
-            atomic_write_json(config.reviews.state_root / "index.json", index)
+            atomic_write_json(config.review_state_root / "index.json", index)
 
 
 def _publish(config: AppConfig, period: Period, value: dict[str, Any], index: dict[str, Any]) -> None:
@@ -98,18 +98,18 @@ def _publish(config: AppConfig, period: Period, value: dict[str, Any], index: di
               "hashes": {p.suffix: sha256(b).hexdigest() for p, b in zip(paths, outputs, strict=True)}}
     txid = str(uuid4())
     transaction = {"record": record, "outputs": [
-        {"relativePath": path.relative_to(config.reviews.data_root).as_posix(),
+        {"relativePath": path.relative_to(config.review_data_root).as_posix(),
          "sha256": sha256(content).hexdigest(), "previousSha256": _hash(path), "text": content.decode("utf-8")}
         for path, content in zip(paths, outputs, strict=True)]}
     # Retain old bytes before replacement, including explicitly allowed manual edits.
     for path in paths:
         if path.is_file():
-            atomic_write_bytes(config.reviews.state_root / "backups" / txid / path.name, path.read_bytes())
-    txpath = config.reviews.state_root / "transactions" / (txid + ".json")
+            atomic_write_bytes(config.review_state_root / "backups" / txid / path.name, path.read_bytes())
+    txpath = config.review_state_root / "transactions" / (txid + ".json")
     atomic_write_json(txpath, transaction)
     index["reviews"][key] = {**index["reviews"].get(key, {}), "pending": {
         "transaction": txid, "sha256": _hash(txpath)}}
-    atomic_write_json(config.reviews.state_root / "index.json", index)
+    atomic_write_json(config.review_state_root / "index.json", index)
     _recover(config, index, dry_run=False)
 
 
@@ -142,8 +142,8 @@ def _build(config: AppConfig, period: Period, generator: ReviewGenerator, index:
     draft = generator.build(period, evidence)
     draft.validate_sources(set(evidence.evidence))
     value: dict[str, Any] = {
-        "schemaVersion": REVIEW_VERSION, "type": "reviewNote",
-        "id": str(uuid5(NAMESPACE_URL, str(config.reviews.data_root.resolve()) + "/" + key)),
+        "schemaVersion": REVIEW_VERSION, "type": "reviewNote", "sourceId": config.source_id,
+        "id": str(uuid5(NAMESPACE_URL, str(config.review_data_root.resolve()) + "/" + key)),
         "period": period.document(), "generatedAt": now_iso(), "reviewStatus": "unreviewed",
         "inputFingerprint": fingerprint,
         "items": list({digest(item.model_dump()): item.model_dump() for item in draft.items}.values()),
@@ -162,22 +162,23 @@ def _build(config: AppConfig, period: Period, generator: ReviewGenerator, index:
     return {**result, "status": "generated", "gaps": value["coverage"]["gaps"]}
 
 
-def run_reviews(config: AppConfig, *, kind: PeriodKind | None = None, day: date | None = None,
+def _run_source_reviews(config: AppConfig, *, kind: PeriodKind | None = None, day: date | None = None,
                 as_of: date | None = None, dry_run: bool = False, force: bool = False,
                 allow_edited: bool = False, generate: Generator | None = None) -> dict[str, Any]:
     _validate_roots(config)
     today = as_of or review_today(config)
     if not dry_run:
-        config.reviews.state_root.mkdir(parents=True, exist_ok=True)
-        config.reviews.data_root.mkdir(parents=True, exist_ok=True)
+        config.review_state_root.mkdir(parents=True, exist_ok=True)
+        config.review_data_root.mkdir(parents=True, exist_ok=True)
     run_id = str(uuid4())
     report: dict[str, Any] = {"schemaVersion": REVIEW_VERSION, "runId": run_id, "startedAt": now_iso(),
+                              "sourceId": config.source_id,
                               "command": "review-notes", "dryRun": dry_run, "asOf": today.isoformat(),
                               "maxCalls": config.reviews.max_calls,
                               "results": [], "ok": True, "complete": True, "reportPath": None}
-    lock = nullcontext() if dry_run else _root_lock(config.reviews.state_root)
+    lock = nullcontext() if dry_run else _root_lock(config.review_state_root)
     with lock:
-        path = config.reviews.state_root / "index.json"
+        path = config.review_state_root / "index.json"
         index = read_json(path, {"schemaVersion": REVIEW_VERSION, "startedOn": today.isoformat(), "reviews": {}})
         if index.get("schemaVersion") != REVIEW_VERSION:
             raise PipelineError("unsupported review state schema")
@@ -218,9 +219,34 @@ def run_reviews(config: AppConfig, *, kind: PeriodKind | None = None, day: date 
                       pendingPeriods=len(periods) - len(report["results"]))
         report["finishedAt"] = now_iso()
         if not dry_run:
-            report["reportPath"] = str(config.reviews.state_root / "reports" / f"{run_id}.json")
+            report["reportPath"] = str(config.review_state_root / "reports" / f"{run_id}.json")
             atomic_write_json(Path(report["reportPath"]), report)
     return report
+
+
+def _combine_reviews(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(reports) == 1:
+        return reports[0]
+    return {"ok": all(r["ok"] for r in reports), "complete": all(r["complete"] for r in reports),
+            "sourceResults": reports,
+            "results": [{"sourceId": r["sourceId"], **item} for r in reports for item in r.get("results", [])],
+            "reportPaths": [r["reportPath"] for r in reports if r.get("reportPath")],
+            **{key: sum(r.get(key, 0) for r in reports)
+               for key in ("modelCalls", "cacheHits", "generatedCount", "plannedCount", "pendingPeriods")}}
+
+
+def run_reviews(config: AppConfig, *, kind: PeriodKind | None = None, day: date | None = None,
+                as_of: date | None = None, dry_run: bool = False, force: bool = False,
+                allow_edited: bool = False, generate: Generator | None = None) -> dict[str, Any]:
+    sources = config.enabled_source_configs()
+    validate_source_layout(config)
+    for source in sources:
+        _validate_roots(source)
+    reports = []
+    for source in sources:
+        reports.append(_run_source_reviews(source, kind=kind, day=day, as_of=as_of, dry_run=dry_run,
+                                           force=force, allow_edited=allow_edited, generate=generate))
+    return _combine_reviews(reports)
 
 
 def _validate_review(path: Path) -> dict[str, Any]:
@@ -265,17 +291,17 @@ def validate_review(path: Path) -> dict[str, Any]:
 def run_scheduled(config: AppConfig, *, dry_run: bool = False, config_path: Path | None = None) -> dict[str, Any]:
     from .pipeline import run_pipeline
 
-    capture = run_pipeline(config, mode="raw", dry_run=dry_run, config_path=config_path)
+    sources = config.enabled_source_configs()
+    validate_source_layout(config)
+    if len(sources) > 1:
+        results = [run_scheduled(source, dry_run=dry_run, config_path=config_path) for source in sources]
+        return {"ok": all(r["ok"] for r in results), "complete": all(r["complete"] for r in results),
+                "sourceResults": results,
+                "reviews": _combine_reviews([r["reviews"] for r in results if "reviews" in r])}
+    config = sources[0]
+    _validate_roots(config)
+    capture = run_pipeline(config, mode="clone", dry_run=dry_run, config_path=config_path)
     if not capture["ok"]:
         return {"ok": False, "complete": False, "capture": capture}
-    plan = run_reviews(config, dry_run=True)
-    # Always initialize the calendar watermark. On first use there is no implicit historical backfill.
-    if not plan["plannedCount"] or dry_run:
-        reviews = plan if dry_run or not plan["ok"] else run_reviews(config)
-        return {"ok": reviews["ok"], "complete": reviews["complete"], "capture": capture, "reviews": reviews}
-    pull = run_pipeline(config, mode="pull", limit=config.reviews.session_note_limit, config_path=config_path)
-    if not pull["ok"]:
-        return {"ok": False, "complete": False, "capture": capture, "pull": pull}
-    reviews = run_reviews(config)
-    return {"ok": reviews["ok"], "complete": reviews["complete"] and pull["complete"],
-            "capture": capture, "pull": pull, "reviews": reviews}
+    reviews = run_reviews(config, dry_run=dry_run)
+    return {"ok": reviews["ok"], "complete": reviews["complete"], "capture": capture, "reviews": reviews}

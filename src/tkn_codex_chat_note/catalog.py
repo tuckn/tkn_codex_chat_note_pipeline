@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -13,7 +12,6 @@ from uuid import NAMESPACE_URL, uuid5
 from .app_state import CodexAppState, load_codex_app_state
 from .chat_logs import (
     ThreadSource,
-    fingerprint_events,
     has_clean_user_message,
     is_approval_review,
     is_known_internal_thread,
@@ -24,16 +22,12 @@ from .config import AppConfig
 from .histories import combine_histories
 from .provenance import ProvenanceStore, immutable_bytes, json_bytes
 from .raw_capture import RawCaptureError, RawSourceInput, _stable_source_bytes, ingest_raw_sources
-from .session_notes import (
-    Candidate,
+from .runtime import (
     PipelineError,
-    Project,
     atomic_write_json,
     now_iso,
-    now_local,
     path_variants,
     source_event_time,
-    source_timestamp,
 )
 from .storage import read_json
 
@@ -49,7 +43,6 @@ def thread_key(thread_id: str) -> str:
 @dataclass
 class Discovery:
     entries: list[dict[str, Any]]
-    candidates: dict[str, Candidate]
     evidence: dict[str, list[dict[str, Any]]]
     raw_report: dict[str, Any]
     projects: dict[str, dict[str, Any]]
@@ -209,7 +202,6 @@ def discover(config: AppConfig, provenance: ProvenanceStore, *, run_id: str) -> 
         except (OSError, ValueError) as exc:
             failures.append({"stage": "normalize", "sourceRef": item.source_ref, "error": str(exc)})
     entries: list[dict[str, Any]] = []
-    candidates: dict[str, Candidate] = {}
     evidence: dict[str, list[dict[str, Any]]] = {}
     for thread_id, versions in sorted(groups.items()):
         key = thread_key(thread_id)
@@ -346,35 +338,5 @@ def discover(config: AppConfig, provenance: ProvenanceStore, *, run_id: str) -> 
             entry.update(status="failed", reason="without-event-time")
             failures.append({"stage": "normalize", "threadId": thread_id, "reason": entry["reason"]})
             continue
-        if event_time > now_local() - timedelta(minutes=config.idle_minutes):
-            entry.update(status="deferred", reason="active-conversation")
-        project = Project(
-            project_id=key,
-            title="Conversation (preserve every independent work item)",
-            current_root=config.source_data_root / "threads" / key,
-            context_path=config.data_root,
-            note_directory=(
-                config.source_data_root / "session-notes" / source_timestamp(log.timestamp).strftime("%Y/%m")
-            ),
-            assigned_thread_ids=frozenset({thread_id}),
-            source_project_id=str(observed["sourceProjectId"] or ""),
-            state_directory=config.source_state_root / "threads" / key,
-        )
-        qualified_ref = f"codex/{thread_id}"
-        candidates[key] = Candidate(
-            project=project,
-            thread_id=thread_id,
-            started_at=log.timestamp,
-            source_path=item.source_path,
-            source_ref=qualified_ref,
-            source_relative_ref=item.source_ref,
-            fingerprint=fingerprint_events(thread_id, source.events, qualified_ref),
-            events=source.events,
-            source_last_event_at=source.last_event_at,
-            source_capture_ref=item.capture_ref,
-            source_capture_sha256=item.capture_sha256,
-            source_captures=combined.captures if combined.branches else (),
-            history_branches=combined.branches,
-            source_set_sha256=combined.source_set_sha256,
-        )
-    return Discovery(entries, candidates, evidence, raw_report, projects, warnings, failures, metadata_entity)
+        entry.update(status="current", reason=None)
+    return Discovery(entries, evidence, raw_report, projects, warnings, failures, metadata_entity)

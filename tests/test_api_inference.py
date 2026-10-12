@@ -1,21 +1,18 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import httpx
 import pytest
 from pydantic import ValidationError
-from test_thread_timeline import candidate, config, event
 from tkn_genai_bridge.providers import litellm as bridge_backend
 
 from tkn_codex_chat_note import api_inference
 from tkn_codex_chat_note.api_inference import ApiClient, ApiError, strict_schema
 from tkn_codex_chat_note.api_settings import ApiLimits, AzureSettings
 from tkn_codex_chat_note.config import GenerationConfig
-from tkn_codex_chat_note.session_notes import ProviderSummarizer, generator_fingerprint
 
 AZURE = {
     "endpoint": "https://example.openai.azure.com/openai/v1/",
@@ -174,56 +171,6 @@ def test_limits_and_provider_config_validate_offline():
         )
 
 
-def test_generation_identity_includes_endpoint_deployment_and_limits(tmp_path):
-    cfg = replace(config(tmp_path), provider="azure-openai", inference_options=settings().inference_options)
-    one = generator_fingerprint(cfg)
-    changed = replace(cfg, model="new-deployment")
-    assert generator_fingerprint(changed) != one
-    assert (
-        generator_fingerprint(
-            replace(cfg, inference_options={**cfg.inference_options, "limits": {"output_tokens": 2048}})
-        )
-        != one
-    )
-
-
-def test_auth_failure_not_retried_by_summarizer(tmp_path, fake_http):
-    calls, replies = fake_http
-    replies.append(httpx.Response(401))
-    runner = ProviderSummarizer(
-        replace(
-            config(tmp_path),
-            provider="azure-openai",
-            model="example-model",
-            inference_options=settings().inference_options,
-        )
-    )
-    with pytest.raises(Exception, match="HTTP 401"):
-        runner.generate(candidate(tmp_path, (event("e"),)))
-    assert len(calls) == 1 and runner.last_metrics["modelCalls"] == 1
-
-
-def test_server_errors_preserve_retry_after_without_automatic_retry(tmp_path, fake_http):
-    calls, replies = fake_http
-    replies.append(httpx.Response(429, headers={"Retry-After": "9"}))
-    sleeper = Mock()
-    runner = ProviderSummarizer(
-        replace(config(tmp_path), provider="azure-openai", model="example-model",
-                inference_options=settings().inference_options), sleeper=sleeper)
-    with pytest.raises(Exception, match="HTTP 429") as error:
-        runner._invoke("hello")
-    assert isinstance(error.value.__cause__, ApiError)
-    assert error.value.__cause__.retry_after == 9 and not error.value.__cause__.retryable
-    sleeper.assert_not_called()
-    assert len(calls) == 1 and runner.last_metrics["modelCalls"] == 1
-    row = runner.last_metrics["apiRequests"][0]
-    assert row["httpStatus"] == 429 and row["retryAfterSeconds"] == 9
-    from tkn_codex_chat_note.usage_report import _normalize
-
-    normalized = _normalize(row, 0)
-    assert normalized["httpStatus"] == 429 and normalized["retryAfterSeconds"] == 9
-
-
 def test_ollama_explicit_context_digest_and_usage(fake_http):
     calls, replies = fake_http
     replies.extend(
@@ -256,10 +203,10 @@ def test_ollama_explicit_context_digest_and_usage(fake_http):
     assert body["think"] is False and client.records[0]["inputTokens"] == 300
 
 
-def test_complete_session_schema_transport_shape():
-    from tkn_codex_chat_note.summary_resources import load_summary_profile
+def test_complete_review_schema_transport_shape():
+    from tkn_codex_chat_note.review_model import ReviewDraft
 
-    schema = strict_schema(load_summary_profile().schema.value)
+    schema = strict_schema(ReviewDraft.model_json_schema())
 
     def check(node):
         if isinstance(node, dict):
@@ -291,21 +238,6 @@ def test_all_citations_are_bound_once_in_transport_schema():
     assert "enum" not in source["properties"]["eventIds"]["items"]
 
 
-def test_merge_repair_receives_authorized_source_ids():
-    from tkn_codex_chat_note.prompting import render_repair_prompt
-    from tkn_codex_chat_note.summary_resources import load_summary_profile
-
-    text = render_repair_prompt(
-        load_summary_profile().prompt,
-        thread_id="example",
-        validation_error="unknown source",
-        draft={},
-        allowed_event_ids=["valid"],
-    )
-    payload = json.loads(text.split("BEGIN_INPUT_JSON\n")[1].split("\nEND_INPUT_JSON")[0])
-    assert payload["allowedEventIds"] == ["valid"] and "events" not in payload
-
-
 def test_short_wire_ids_round_trip_without_rewriting_narrative(fake_http):
     from tkn_codex_chat_note.api_inference import alias_prompt, remap_event_ids
 
@@ -333,39 +265,6 @@ def test_schema_property_names_are_not_removed():
     assert strict_schema(schema)["properties"] == {"pattern": {"type": "string"}}
 
 
-def test_multi_source_command_shares_api_budget(tmp_path, monkeypatch):
-    from test_multi_sources import multi_config, source_chats
-
-    from tkn_codex_chat_note import pipeline
-
-    cfg = multi_config(tmp_path)
-    source_chats(cfg)
-    cfg.generation = GenerationConfig(
-        active_provider="azure-openai",
-        providers={"azure-openai": {"model": "example-model", "azure": AZURE, "limits": {}}},
-    )
-    clients, source_ids = [], []
-
-    def run(source, **kwargs):
-        runner = kwargs["summarizer"]
-        clients.append(runner.api_client)
-        source_ids.append(runner.config.source_id)
-        return {
-            "ok": True,
-            "complete": True,
-            "threadCounts": {},
-            "generatedSessionNoteCount": 0,
-            "attemptedSessionNoteCount": 0,
-            "failed": [],
-            "sourceProvider": "codex",
-            "sourceId": source.source_id,
-        }
-
-    monkeypatch.setattr(pipeline, "_run_source_pipeline", run)
-    assert pipeline.run_pipeline(cfg, mode="clone")["ok"]
-    assert clients[0] is clients[1] and source_ids == list(cfg.sources)
-
-
 def test_azure_dry_run_never_authenticates_or_writes(tmp_path, monkeypatch):
     from test_multi_sources import multi_config, source_chats
 
@@ -381,30 +280,7 @@ def test_azure_dry_run_never_authenticates_or_writes(tmp_path, monkeypatch):
     with (patch.object(ApiClient, "invoke", side_effect=AssertionError("API invocation")),
           patch.object(bridge_backend, "azure_headers", side_effect=AssertionError("authentication"))):
         report = run_pipeline(cfg, mode="clone", dry_run=True)
-    assert report["ok"] and report["threadCounts"] == {"planned": 2}
-    assert report["generationEstimate"]["baseCostCeilingJpy"] > 0
+    assert report["ok"] and report["threadCounts"] == {"current": 2}
+    assert "generationEstimate" not in report
+    assert report["normalizedThreadCount"] == 2
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-
-
-def test_azure_note_can_pass_strict_staged_validation(tmp_path):
-    from test_session_note_pipeline import note_data
-
-    from tkn_codex_chat_note.session_notes import render_note, validate_staged_session_notes
-
-    case = replace(candidate(tmp_path, (event("user"),)), source_ref="codex/thread")
-    cfg = replace(config(tmp_path), provider="azure-openai", inference_options=settings().inference_options)
-    data = note_data(case)
-    data.update(
-        _generator="Azure OpenAI",
-        _generatorProvider=cfg.provider,
-        _generatorModel="response-model-2026-07-09",
-        _generatorDeployment=cfg.model,
-        _generatorReasoningEffort=cfg.reasoning_effort,
-    )
-    rendered = render_note(case, data, {}, profile=cfg.summary_profile)
-    note = tmp_path / "20260101T090000+0900-automated-session-note.md"
-    note.write_text(rendered, encoding="utf-8")
-    notes, hashes = validate_staged_session_notes(tmp_path, [case], cfg, strict_threads={case.thread_id})
-    assert notes[case.thread_id] == note.name and hashes[case.thread_id]
-    # Provider options belong to the generation identity/provenance, not scalar note metadata.
-    assert "generatorOptions:" not in rendered

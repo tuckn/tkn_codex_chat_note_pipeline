@@ -21,11 +21,7 @@ from .config import (
 from .config_output import config_lines
 from .console_logging import ColorFormatter, ConsoleFilter, log_success, supports_color
 from .raw_capture import RawCaptureError
-from .session_notes import (
-    PipelineError,
-    validate_session_note,
-)
-from .summary_resources import load_summary_profile
+from .runtime import PipelineError
 
 LOGGER = logging.getLogger("tkn_codex_chat_note")
 
@@ -50,15 +46,9 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source", help="Select one enabled source_id from sources")
     parser.add_argument("--model")
     parser.add_argument(
-        "--session-note-profile",
-        choices=("default-jp", "default-en"),
-        help="Session Note language (generation.session_note_profile)",
-    )
-    parser.add_argument(
         "--reasoning-effort",
         choices=("low", "medium", "high", "xhigh", "max", "ultra"),
     )
-    parser.add_argument("--idle-minutes", type=int)
     parser.add_argument("--runtime-minutes", type=int)
     parser.add_argument("--model-timeout-seconds", type=int)
     parser.add_argument("--codex-executable")
@@ -83,7 +73,7 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tkn-codex-chat-note",
-        description="Preserve local Codex chat evidence and generate reusable Session Notes.",
+        description="Preserve Codex Raw, normalize events, and generate weekly, monthly and yearly reviews.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     _add_runtime_options(parser)
@@ -100,13 +90,13 @@ def build_parser() -> argparse.ArgumentParser:
     listing.add_argument("--json", action="store_true", help="Print the full configuration report as JSON")
     for name, help_text in (
         ("clone", "Initialize and process all available history; resume safely when repeated"),
-        ("pull", "Capture new/changed logs and resume unfinished Session Notes"),
+        ("pull", "Capture new/changed logs and refresh canonical events without inference"),
     ):
         command = commands.add_parser(
-            name, help=help_text, description=help_text + ". Generates and writes by default."
+            name, help=help_text, description=help_text + ". Writes by default; no inference."
         )
-        _add_build_options(command)
-        command.add_argument("--limit", type=int, help="Maximum Session Note generations; remaining work is deferred")
+        command.add_argument("--dry-run", action="store_true", help="Inspect without writes or inference")
+        command.add_argument("--full-output", action="store_true", help="Print the full run result")
     usage_report = commands.add_parser("build-report", help="Build an offline token usage and reference-cost report")
     usage_report.add_argument("--dry-run", action="store_true", help="Aggregate without writing or opening")
     usage_report.add_argument("--no-open", action="store_true", help="Write the report without opening a browser")
@@ -119,7 +109,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_build_options(review_build)
     review_build.add_argument("--period", choices=("weekly", "monthly", "yearly"), required=True)
     review_build.add_argument("--date", type=date.fromisoformat, help="A date inside the requested closed period")
-    review_due = review_sub.add_parser("due", help="Catch up closed periods since reviews.start_date or first run")
+    review_due = review_sub.add_parser(
+        "due", help="Catch up closed periods since sources.<id>.reviews.start_date or first run")
     _add_build_options(review_due)
     review_due.add_argument("--as-of", type=date.fromisoformat, help="Calendar date to evaluate (default: today)")
     review_validate = review_sub.add_parser("validate", help="Validate review JSON, periods and source IDs offline")
@@ -147,15 +138,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ingest.add_argument("--dry-run", action="store_true", help="Inspect without writing")
     ingest.add_argument("--full-output", action="store_true", help="Explicitly print the full JSON report to stdout")
-    for name, dest, label in (("session-notes", "notes_command", "Session Notes"),):
-        group = commands.add_parser(name, help="Build or validate " + label)
-        sub = group.add_subparsers(dest=dest, required=True)
-        build = sub.add_parser("build", help="Re-evaluate " + label + " (generates and writes by default)")
-        _add_build_options(build)
-        build.add_argument("--thread-id", help="Select one source conversation; defaults to every conversation")
-        build.add_argument("--limit", type=int)
-        validate = sub.add_parser("validate", help="Validate an existing artifact")
-        validate.add_argument("artifact", type=Path)
     return parser
 
 
@@ -177,7 +159,6 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "provider",
         "model",
         "reasoning_effort",
-        "idle_minutes",
         "runtime_minutes",
         "model_timeout_seconds",
         "codex_executable",
@@ -186,8 +167,6 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "ollama_base_url",
     )
     result = {name: getattr(args, name) for name in names if getattr(args, name, None) is not None}
-    if args.session_note_profile is not None:
-        result["generation"] = {"session_note_profile": args.session_note_profile}
     return result
 
 
@@ -209,30 +188,6 @@ def _emit(value: dict[str, Any]) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
-def _table_text(value: Any) -> str:
-    return " ".join(str(value).split()) or "-"
-
-
-def _emit_project_table(projects: list[dict[str, Any]]) -> None:
-    if not projects:
-        print("No registered Projects.")
-        return
-    headers = ("STATUS", "NAME", "PROJECT ID", "CURRENT ROOT")
-    rows = [
-        (
-            _table_text(project["status"]),
-            _table_text(project["name"]),
-            _table_text(project["projectId"]),
-            _table_text(project["currentRoot"]),
-        )
-        for project in projects
-    ]
-    widths = [max(len(headers[index]), *(len(row[index]) for row in rows)) for index in range(3)]
-    print(f"{headers[0]:<{widths[0]}}  {headers[1]:<{widths[1]}}  {headers[2]:<{widths[2]}}  {headers[3]}")
-    for status, name, project_id, current_root in rows:
-        print(f"{status:<{widths[0]}}  {name:<{widths[1]}}  {project_id:<{widths[2]}}  {current_root}")
-
-
 def _usage_summary(value: dict[str, Any]) -> str:
     parts = []
     for key, label in (("inputTokens", "input"), ("outputTokens", "output")):
@@ -246,159 +201,9 @@ def _usage_summary(value: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
-def _estimate_summary(value: dict[str, Any]) -> str:
-    if value.get("status") == "unavailable":
-        return "estimate unavailable: " + str(value.get("reason", "unknown"))
-    text = (f"{value.get('preparedTextCharacters', 0):,} input characters; "
-            f"{value.get('baseCalls', 0)} base calls; {value.get('cachedChunkCount', 0)} cached chunks")
-    tokens = value.get("inputTokensEstimate")
-    if isinstance(tokens, int):
-        text += f"; total input estimate {tokens:,} tokens"
-        text += f"; output ceiling {value.get('outputTokensCeiling', 0):,} tokens"
-    cost = value.get("baseCostCeilingJpy")
-    if isinstance(cost, int | float):
-        text += f"; base cost ceiling JPY {cost:.2f} (repairs/retries extra)"
-    if value.get("mergeUsesInputCeiling"):
-        text += "; merge input reserves its limit"
-    if value.get("commandMaxCostJpy") is not None:
-        text += f"; command limit JPY {value['commandMaxCostJpy']:.2f} / {value['commandMaxCalls']} calls"
-    if value.get("unavailableCount"):
-        text += f"; {value['unavailableCount']} thread estimates unavailable (totals incomplete)"
-    if value.get("mayExceedCommandBudget"):
-        text += "; completion may require more than this command budget"
-    return text
-
-
-def _metric_summary(value: dict[str, Any]) -> str:
-    metrics: list[str] = []
-    duration = value.get("durationSeconds")
-    if isinstance(duration, int | float):
-        metrics.append(f"{duration:g}s")
-    chunks = value.get("chunkCount")
-    if isinstance(chunks, int):
-        metrics.append(f"{chunks} chunk{'s' if chunks != 1 else ''}")
-    calls = value.get("modelCalls")
-    if isinstance(calls, int):
-        metrics.append(f"{calls} model call{'s' if calls != 1 else ''}")
-    transport_retries = value.get("transportRetries")
-    if isinstance(transport_retries, int) and transport_retries:
-        metrics.append(f"{transport_retries} transport retries")
-    semantic_retries = value.get("semanticRetries")
-    if isinstance(semantic_retries, int) and semantic_retries:
-        metrics.append(f"{semantic_retries} semantic retries")
-    for name, label in (("reusedChunks", "cached chunks"), ("reusedReductions", "cached merges")):
-        if value.get(name):
-            metrics.append(f"{value[name]} {label}")
-    if value.get("usageTotals", {}).get("requestCount"):
-        metrics.append(_usage_summary(value["usageTotals"]))
-    return f" ({', '.join(metrics)})" if metrics else ""
-
-
-def _session_note_path_summary(value: dict[str, Any]) -> str:
-    path = value.get("sessionNotePath")
-    return f" — Session Note: {path}" if isinstance(path, str) and path else ""
-
-
-def _thread_progress_label(value: dict[str, Any]) -> str:
-    index = value.get("index", "?")
-    if "attemptLimit" in value:
-        limit = value["attemptLimit"]
-        suffix = f", limit {limit}" if limit is not None else ""
-        return f"(attempt {index} this run{suffix})"
-    return f"{index}/{value.get('total', '?')}"
-
-
-def _progress(value: dict[str, Any]) -> None:
-    LOGGER.debug(
-        "Progress event: %s",
-        json.dumps(value, ensure_ascii=False, separators=(",", ":")),
-    )
-    event_type = value.get("type")
-    if event_type == "source-start":
-        LOGGER.info("Source: %s/%s", value["sourceProvider"], value["sourceId"])
-    elif event_type == "session-note-status":
-        LOGGER.info(
-            "Session Notes up to date (no regeneration needed): %s/%s "
-            "(already current: %s; generated this run: %s)",
-            value["currentCount"], value["total"], value["unchangedCount"], value["generatedCount"],
-        )
-    elif event_type == "thread-start":
-        LOGGER.info(
-            "Starting thread %s: %s",
-            _thread_progress_label(value),
-            value.get("threadId", "unknown"),
-        )
-    elif event_type == "thread-resumed":
-        LOGGER.info(
-            "Resuming completed thread %s/%s from cache: %s%s",
-            value.get("index", "?"),
-            value.get("total", "?"),
-            value.get("threadId", "unknown"),
-            _session_note_path_summary(value),
-        )
-    elif event_type == "chunk-start":
-        LOGGER.info(
-            "Generating chunk %s/%s for thread %s",
-            value.get("chunk", "?"),
-            value.get("chunkCount", "?"),
-            value.get("threadId", "unknown"),
-        )
-    elif event_type == "generation-estimate":
-        LOGGER.info("Estimate for %s: %s", value.get("threadId", "all"), _estimate_summary(value))
-        if value.get("provider") == "azure-openai" and value.get("costBudgetEnforced") is False:
-            LOGGER.info("No price configured for this deployment: cost unknown; only token/call limits apply")
-    elif event_type == "api-request-start":
-        if value.get("reservedCostJpy") is not None:
-            LOGGER.info("API input estimate %s tokens; call reserve JPY %.2f; command reserve JPY %.2f",
-                        value["inputTokenEstimate"], value["reservedCostJpy"], value["commandReservedCostJpy"])
-        else:
-            LOGGER.info("API input estimate %s tokens", value["inputTokenEstimate"])
-    elif event_type in {"api-request-complete", "usage-complete"}:
-        LOGGER.info("API %s: %s", value.get("status"), _usage_summary(value))
-    elif event_type == "model-attempt":
-        LOGGER.info(
-            "Calling %s (attempt %s, timeout %ss, %s prompt characters)",
-            value.get("provider", "Codex"),
-            value.get("attempt", "?"),
-            value.get("timeoutSeconds", "?"),
-            value.get("promptCharacters", "?"),
-        )
-    elif event_type == "stage-resumed":
-        LOGGER.info("Reusing validated %s for thread %s",
-                    "merge" if value.get("stage") == "reusedReductions" else "chunk", value["threadId"])
-    elif event_type == "validation-repair":
-        LOGGER.warning("Repairing generated output: %s", value.get("reason", "validation failed"))
-    elif event_type == "repair-input-fallback":
-        LOGGER.warning(
-            "Repair input estimate %s exceeds limit %s for thread %s; "
-            "regenerating from the original input without the invalid draft "
-            "(input estimate %s; validation feedback %s)",
-            value["repairInputTokensEstimate"], value["inputTokenLimit"], value["threadId"],
-            value["regenerationInputTokensEstimate"],
-            "included" if value["validationFeedbackIncluded"] else "omitted to fit the limit",
-        )
-    elif event_type == "thread-complete":
-        log_success(
-            LOGGER,
-            "Completed thread %s: %s%s%s",
-            _thread_progress_label(value),
-            value.get("threadId", "unknown"),
-            _metric_summary(value),
-            _session_note_path_summary(value),
-        )
-    elif event_type == "generation-budget-stop":
-        LOGGER.warning(
-            "Generation paused at thread %s: %s. Remaining generation is deferred; "
-            "validated checkpoints are kept. Run pull again without --force to resume with a new command budget.",
-            value.get("threadId"), value.get("message"),
-        )
-    elif event_type == "thread-failed":
-        LOGGER.error(
-            "Failed thread %s: %s — %s",
-            _thread_progress_label(value),
-            value.get("threadId", "unknown"),
-            value.get("error", "unknown error"),
-        )
+def _progress(event: dict[str, Any]) -> None:
+    if event.get("type") == "source-start":
+        LOGGER.info("Source: %s", event.get("sourceId", ""))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -434,10 +239,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 overrides=_overrides(args),
             )
             resolved = resolution.config
-            try:
-                profile = load_summary_profile(resolved.generation.session_note_profile)
-            except (RuntimeError, ValueError) as exc:
-                raise PipelineError(str(exc)) from exc
             report = {
                 "command": "config list",
                 "config": config_document(resolved),
@@ -468,27 +269,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 },
                 "sources": resolution.sources,
                 "layers": list(resolution.layers),
-                "summaryProfile": {
-                    "name": profile.name,
-                    "source": profile.source,
-                    "sha256": profile.sha256,
-                    "prompt": {
-                        "source": profile.prompt.source,
-                        "id": profile.prompt.prompt_id,
-                        "version": profile.prompt.version,
-                        "sha256": profile.prompt.sha256,
-                    },
-                    "schema": {
-                        "source": profile.schema.source,
-                        "sha256": profile.schema.sha256,
-                    },
-                    "template": {
-                        "source": profile.template.source,
-                        "id": profile.template.template_id,
-                        "version": profile.template.version,
-                        "sha256": profile.template.sha256,
-                    },
-                },
             }
             if args.json:
                 _emit(report)
@@ -529,7 +309,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         review_result.get("modelCalls", 0), review_result.get("cacheHits", 0))
             if review_result.get("reportPath"):
                 LOGGER.info("Run report: %s", review_result["reportPath"])
-            for stage in ("capture", "pull"):
+            for stage in ("capture",):
                 stage_result = result.get(stage, {})
                 for path in stage_result.get("reportPaths", []):
                     LOGGER.info("%s report: %s", stage, path)
@@ -570,27 +350,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "status":
             _emit(pipeline_status(config))
             return 0
-        if getattr(args, "artifact", None) is not None:
-            validators = {
-                "session-notes": validate_session_note,
-            }
-            _emit(validators[args.command](args.artifact.expanduser().absolute()))
-            log_success(LOGGER, "Validation succeeded: %s", args.artifact)
-            return 0
         LOGGER.info("%s %s", "Planning" if args.dry_run else "Starting", args.command)
-        LOGGER.info("Generation profile: %s (provider=%s, model=%s, reasoning=%s)",
-                    config.generation.active_profile, config.provider, config.model, config.reasoning_effort)
-        report = run_pipeline(
-            config,
-            mode=args.command,
-            dry_run=args.dry_run,
-            force=getattr(args, "force", False),
-            allow_edited=getattr(args, "allow_edited", False),
-            thread_id=getattr(args, "thread_id", None),
-            limit=getattr(args, "limit", None),
-            config_path=args.config,
-            progress=_progress,
-        )
+        report = run_pipeline(config, mode=args.command, dry_run=args.dry_run,
+                              config_path=args.config, progress=_progress)
         for report_path in report.get("reportPaths", []):
             LOGGER.info("Run report: %s", report_path)
         if report.get("reportPath"):
@@ -601,7 +363,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _emit(report)
         counts = report["threadCounts"]
         summary = (
-            f"{args.command}: generated {report.get('generatedSessionNoteCount', 0)} notes; "
+            f"{args.command}: normalized {report.get('normalizedThreadCount', 0)} conversations; "
             f"current {counts.get('current', 0)}, deferred {counts.get('deferred', 0)}, "
             f"excluded {counts.get('excluded', 0)}, failed {len(report['failed']) or counts.get('failed', 0)}"
         )

@@ -30,6 +30,7 @@ def render_review(value: dict[str, Any], json_path: Path, language: str) -> str:
     title = (f"{p['kind'].title()} review" if en else titles[p["kind"]] + "レビュー") + f" — {p['key']}"
     lines = [frontmatter([
         ("type", "reviewNote"), ("schemaVersion", value["schemaVersion"]), ("id", value["id"]),
+        ("sourceId", value["sourceId"]),
         ("title", title), ("periodKind", p["kind"]), ("periodStart", p["start"]),
         ("periodEndExclusive", p["endExclusive"]), ("utcOffsetMinutes", p["utcOffsetMinutes"]),
         ("generatedAt", value["generatedAt"]), ("reviewStatus", value["reviewStatus"]),

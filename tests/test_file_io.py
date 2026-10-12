@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from tkn_codex_chat_note import file_io
-from tkn_codex_chat_note.session_notes import atomic_write_bytes
+from tkn_codex_chat_note.runtime import atomic_write_bytes
 
 
 @pytest.mark.parametrize("code", [5, 32, 33])
