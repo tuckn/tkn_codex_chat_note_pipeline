@@ -29,6 +29,12 @@ def configured(root: Path, *names: str) -> AppConfig:
 
 def response(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
     payload = json.loads(prompt.split("BEGIN_REVIEW_INPUT_JSON\n")[1].split("\nEND_REVIEW_INPUT_JSON")[0])
+    if "auditUnits" in payload:
+        return {"decisions": [{"itemId": u["id"], "action": "keep", "replacements": [],
+                               "reason": "Supported by supplied source."} for u in payload["auditUnits"]]}
+    if "findings" in payload:
+        return {"decisions": [{"findingId": f["id"], "action": "omit", "targetId": "",
+                               "reason": "Redundant fixture finding."} for f in payload["findings"]]}
     if "items" in payload:
         return {"items": payload["items"], "rawRequests": []}
     evidence = payload["evidence"][0]

@@ -7,7 +7,61 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.36.0 - 2026-10-14
+
+- Pack source audits by shared evidence while preserving every selected excerpt, per-item citation scope, and final note order.
+- Use lossless request-local evidence aliases and restore canonical IDs before validation, caching, and storage; include mappings in cache identity.
+- Record repeated source transmission, retain correction/completion and overview checks for all review periods, and reuse unchanged extraction/coverage caches.
+
+## 0.35.0 - 2026-10-14
+
+- Reconcile distinct extracted findings even when citations overlap, and carry the sources of mapped findings into each theme's audit so later decisions and completion reports remain available.
+- Check the overview after the body, using the source-audited statements and their citations, without rewriting the body.
+- Allocate row budgets within one review-wide character ceiling and validate unchanged rows against their allocations too; keep bounded repairs and publication protection.
+- Apply the same checks to weekly, monthly and yearly reviews, recording allocations and overview decisions in the audit trail.
+
+## 0.34.0 - 2026-10-14
+
+- Bound weekly/monthly/yearly composition and source corrections by item and prose limits.
+- Limit restoration to six consequential findings and two new topics per review; keep considered
+  findings and omission reasons in JSON instead of expanding the readable note into a full inventory.
+- Reject overlong replacements, repair bounded responses once, and preserve existing notes on failure.
+  Include measured counts in length errors and resend only affected rows and sources for their repair.
+- Include turn-ending and terminal replies plus the next user message in audit context to avoid
+  mistaking progress-only excerpts for absent completion or correction reports.
+
+## 0.33.1 - 2026-10-14
+
+- Label the insights section neutrally so source-backed hypotheses from a single conversation
+  are not presented as conclusions supported by multiple conversations.
+
+## 0.33.0 - 2026-10-13
+
+- Automatically reconcile missing findings and verify composed weekly/monthly/yearly items against
+  bounded source excerpts before publication, including request/completion and temporal scope.
+- Split unrelated topics and retain material reuse purposes; validate audit coverage and per-item
+  citation permissions, and retain the quality decisions in JSON.
+- Share repeated sources within audit batches, checkpoint completed audits, and resume under existing
+  budgets. Failed audits preserve existing notes; added model calls appear in usage records.
+
+## 0.32.0 - 2026-10-13
+
+- Edit weekly, monthly and yearly findings in a dedicated final synthesis pass; connect themes,
+  decisions, outcomes and remaining questions instead of repeating classified event lists.
+- Render thematic tables, narrative cross-chat insights and verifiable AI improvement proposals.
+  Group source links by document and retain full excerpts and exact claim citations in JSON.
+- Reuse extraction checkpoints when editorial policy changes; budget and cache the final pass,
+  including single-batch reviews. Empty periods still require no model calls.
+
 ## [Unreleased]
+
+## [0.31.0] - 2026-10-13
+
+- 出力検証エラー時は応答だけを修復し、呼出し上限を超えた場合も元資料を再送せず再開できるようにする。
+
+- 週次レビューの通常ツール本文を出典付きの索引へ圧縮し、診断抜粋と会話本文を優先。原文は保存したまま必要時に照合する。
+- 会話ごとのまとまりを保って分割し、正規化失敗を対象範囲の不足として明示する。
+- Raw照合でUnicode区切り文字を物理行の改行と誤認しないよう修正。
 
 ## [0.30.0] - 2026-10-12
 

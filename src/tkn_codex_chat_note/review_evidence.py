@@ -14,6 +14,7 @@ from .config import AppConfig
 from .media_inputs import describe_embedded_images
 from .references import resolve_store_ref
 from .review_model import REVIEW_VERSION, Period, ReviewDraft, overlapping_weeks, period_for
+from .review_preparation import PREPARATION_VERSION, routine_index, tool_excerpt
 from .runtime import PipelineError
 from .storage import read_json
 
@@ -59,9 +60,11 @@ class EvidenceSet:
         self.monthly_inputs = list(dict.fromkeys([*self.monthly_inputs, *other.monthly_inputs]))
 
     def input_records(self) -> list[dict[str, Any]]:
-        return [{k: v for k, v in self.evidence[id].items()
+        return [{**{k: v for k, v in self.evidence[id].items()
                  if k in {"id", "text", "kind", "basis", "actor", "label", "timestamps", "caveat", "nextCheck",
-                          "category", "intelligenceKind"}}
+                          "category", "intelligenceKind", "threadId"}},
+                 "timestamps": list(dict.fromkeys([self.evidence[id]["timestamps"][0],
+                                                    self.evidence[id]["timestamps"][-1]]))}
                 for id in self.selected]
 
 
@@ -90,6 +93,10 @@ def canonical_evidence(config: AppConfig, period: Period) -> EvidenceSet:
         catalog = checked_json(path)
         result.sources.append({"sourceId": source.source_id, "catalogPath": str(path),
                                "catalogAsOf": catalog.get("asOf"), "catalogSha256": digest(catalog)})
+        preparation: dict[str, Any] = {
+            "policy": PREPARATION_VERSION, "routineToolRecords": 0, "diagnosticToolRecords": 0,
+        }
+        result.sources[-1]["preparation"] = preparation
         descriptor = read_json(source.data_root / "store.json")
         for entry in catalog.get("threads", []):
             if (entry.get("sourceId") != source.source_id
@@ -116,10 +123,24 @@ def canonical_evidence(config: AppConfig, period: Period) -> EvidenceSet:
                 selected = [e for e in events if period.contains(e.get("timestamp", ""))]
                 if not selected:
                     continue
+                if entry.get("status") == "failed":
+                    result.gaps.append(f"{source.source_id}/{entry['threadId']}: failed normalization "
+                                       f"({entry.get('reason')}); ambiguous evidence excluded")
+                    continue
+                routine = []
                 for e in selected:
                     # Retain dialogue/actions/results and explicit interruptions, not duplicated completions.
                     if (e["kind"] not in {"user_message", "assistant_message", "tool_call", "tool_result"}
                             and e.get("name") != "turn_aborted"):
+                        continue
+                    if e["kind"] in {"tool_call", "tool_result"}:
+                        excerpt, signal = tool_excerpt(e)
+                        if not signal:
+                            routine.append(e)
+                            continue
+                        result.add(_unit(source, entry, canonical, [e], excerpt, kind="canonical-excerpt",
+                                         actor=e.get("actor", "tool"), label="tool-diagnostic"))
+                        preparation["diagnosticToolRecords"] += 1
                         continue
                     text = describe_embedded_images(e.get("text", "")).text
                     if len(text) > 6000:
@@ -127,11 +148,18 @@ def canonical_evidence(config: AppConfig, period: Period) -> EvidenceSet:
                         result.gaps.append(f"{source.source_id}/{entry['threadId']}/{e['localId']}: excerpt truncated")
                     result.add(_unit(source, entry, canonical, [e], text, kind="canonical-excerpt",
                                      actor=e.get("actor", "unknown"), label=e["kind"]))
+                if routine:
+                    result.add(_unit(source, entry, canonical, routine, routine_index(routine),
+                                     kind="canonical-excerpt", actor="tool", label="routine-tool-index"))
+                    preparation["routineToolRecords"] += len(routine)
+                    result.gaps.append(f"{source.source_id}/{entry['threadId']}: routine tool bodies compacted; "
+                                       "diagnostic excerpts are bounded; use Raw for verification")
                 if saved.get("diagnostics", {}).get("invalidLines"):
                     result.gaps.append(f"{source.source_id}/{entry['threadId']}: invalid original log lines")
             except (OSError, ValueError, KeyError, PipelineError) as exc:
                 result.gaps.append(f"{source.source_id}/{entry.get('threadId', 'unknown')}: {exc}")
-    result.selected.sort(key=lambda id: (result.evidence[id]["timestamps"], id))
+    # Keep one conversation together where possible; unrelated chats can interleave in wall-clock time.
+    result.selected.sort(key=lambda id: (result.evidence[id]["threadId"], result.evidence[id]["timestamps"], id))
     result.gaps = sorted(set(result.gaps))
     return result
 
@@ -232,7 +260,7 @@ def raw_supplement(config: AppConfig, evidence: EvidenceSet, ids: list[str], per
                 content = snapshot.read_bytes()
                 if sha256(content).hexdigest() != expected_hash:
                     raise PipelineError("Raw snapshot hash mismatch")
-                record = json.loads(content.decode("utf-8-sig").splitlines()[int(anchor[1:])-1])
+                record = json.loads(content.decode("utf-8-sig").split("\n")[int(anchor[1:])-1])
                 text = describe_embedded_images(json.dumps(record, ensure_ascii=False)).text
                 cap = min(6000, remaining)
                 if len(text) > cap:

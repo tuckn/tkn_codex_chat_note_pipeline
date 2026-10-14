@@ -1,6 +1,6 @@
 # Data contract: chat evidence and calendar reviews
 
-CLI 0.30.0 · config 9.0.0 · storage 5 · catalog/provenance 1.0.0 · Review Note 1.0.0
+CLI 0.33.1 · config 9.0.0 · storage 5 · catalog/provenance 1.0.0 · Review Note 1.0.0
 
 This is the file interface for consumers of captured Codex conversations and calendar
 reviews. For operation, see the [README](../../README.md); for review content, see the

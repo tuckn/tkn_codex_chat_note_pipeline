@@ -153,7 +153,8 @@ def _build(config: AppConfig, period: Period, generator: ReviewGenerator, index:
                      "weeklyInputs": evidence.weekly_inputs, "monthlyInputs": evidence.monthly_inputs,
                      "gaps": sorted(set(evidence.gaps))},
         "generation": {"profile": config.generation.active_profile, "provider": config.provider,
-                       "model": config.model, "settingsSha256": generator.signature},
+                       "model": config.model, "settingsSha256": generator.signature,
+                       "qualityAudit": generator.quality_report},
     }
     for field, category in (("intelligenceCandidates", "intelligence-candidate"), ("aiImprovements", "ai-improvement")):
         value[field] = [{"id": "C" + digest([value["id"], item])[:24], "status": "candidate", **item}

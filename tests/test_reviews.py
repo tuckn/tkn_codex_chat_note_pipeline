@@ -76,6 +76,12 @@ class FakeGenerator:
     def __call__(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         self.prompts.append(prompt)
         data = json.loads(prompt.split("BEGIN_REVIEW_INPUT_JSON\n", 1)[1].split("\nEND_REVIEW_INPUT_JSON", 1)[0])
+        if "auditUnits" in data:
+            return {"decisions": [{"itemId": u["id"], "action": "keep", "replacements": [],
+                                   "reason": "Supported by supplied source."} for u in data["auditUnits"]]}
+        if "findings" in data:
+            return {"decisions": [{"findingId": f["id"], "action": "omit", "targetId": "",
+                                   "reason": "Redundant fixture finding."} for f in data["findings"]]}
         if "items" in data:
             return {"items": data["items"], "rawRequests": []}
         if "draft" in data:
@@ -131,7 +137,7 @@ def test_repeat_is_noop_and_later_append_does_not_rebuild_closed_week(tmp_path: 
     before = path.read_bytes()
     seed(config, [*entries, ("2026-06-02T00:00:00Z", "New question")])
     second = weekly(config, model)
-    assert second["results"][0]["status"] == "current" and len(model.prompts) == 1
+    assert second["results"][0]["status"] == "current" and len(model.prompts) == 3
     assert before == path.read_bytes()
     assert validate_review(path)["ok"]
 
@@ -143,7 +149,7 @@ def test_changed_historical_event_rebuilds(tmp_path: Path) -> None:
     weekly(config, model)
     seed(config, [("2026-05-19T00:00:00Z", "Corrected question")])
     assert weekly(config, model)["generatedCount"] == 1
-    assert len(model.prompts) == 2
+    assert len(model.prompts) == 6
 
 
 def test_edited_and_reviewed_outputs_are_preserved(tmp_path: Path) -> None:
@@ -156,7 +162,7 @@ def test_edited_and_reviewed_outputs_are_preserved(tmp_path: Path) -> None:
     assert weekly(config, model)["results"][0]["status"] == "preserved"
     blocked = weekly(config, model, force=True)
     assert blocked["results"][0]["status"] == "blocked"
-    assert len(model.prompts) == 1
+    assert len(model.prompts) == 3
     assert weekly(config, model, allow_edited=True, force=True)["generatedCount"] == 1
     assert any("Human annotation" in p.read_text(encoding="utf-8")
                for p in (config.review_state_root / "backups").rglob("*.md"))
@@ -171,7 +177,7 @@ def test_raw_requests_resolve_hash_verified_originals(tmp_path: Path) -> None:
     model = FakeGenerator(request_raw=True)
     result = weekly(config, model)
     assert result["ok"], result
-    assert len(model.prompts) == 2 and '"type": "response_item"' in model.prompts[1].replace('\\"', '"')
+    assert len(model.prompts) == 4 and '"type": "response_item"' in model.prompts[1].replace('\\"', '"')
     doc = json.loads(Path(result["results"][0]["jsonPath"]).read_text(encoding="utf-8"))
     assert doc["items"][0]["evidenceIds"][0].startswith("R")
     assert any(e.get("rawLine") == 1 for e in doc["evidence"])
@@ -195,7 +201,7 @@ def test_raw_uses_cited_snapshot_even_when_same_locator_has_new_version(tmp_path
                                            ref="raw:/codex/windows/sessions/thread.jsonl", kind="raw")
     model = FakeGenerator(request_raw=True)
     result = weekly(config, model)
-    assert result["ok"] and len(model.prompts) == 2
+    assert result["ok"] and len(model.prompts) == 4
     assert "Original wording" in model.prompts[1]
     assert "Later rewritten wording" not in model.prompts[1]
 
@@ -226,7 +232,8 @@ def test_fallback_and_raw_pass_replace_embedded_images_with_metadata(tmp_path: P
     result = weekly(config, model)
     assert result["ok"]
     assert all(encoded not in prompt for prompt in model.prompts)
-    assert all("visual content was not inspected" in prompt for prompt in model.prompts)
+    assert all("visual content was not inspected" in prompt for prompt in model.prompts[:2])
+    assert "Images have NOT been" in model.prompts[-1]
 
 
 def test_month_uses_weekly_items_and_filters_boundary_evidence(tmp_path: Path) -> None:
@@ -293,19 +300,19 @@ def test_year_raw_request_traverses_month_and_week_and_reuses_unchanged_inputs(t
     model = FakeGenerator(request_raw=True)
     args = {"kind": "yearly", "day": date(2026, 1, 1), "as_of": date(2027, 1, 5), "generate": model}
     first = run_reviews(config, **args)  # type: ignore[arg-type]
-    assert first["ok"] and len(model.prompts) == 2, first
+    assert first["ok"] and len(model.prompts) == 4, first
     assert "Original question for annual verification" in model.prompts[1]
     doc = json.loads(Path(first["results"][0]["jsonPath"]).read_text(encoding="utf-8"))
     assert doc["items"][0]["evidenceIds"][0].startswith("R")
     assert validate_review(Path(first["results"][0]["jsonPath"]))["ok"]
     assert run_reviews(config, **args)["results"][0]["status"] == "current"  # type: ignore[arg-type]
-    assert len(model.prompts) == 2
+    assert len(model.prompts) == 4
     path = Path(month["results"][0]["jsonPath"])
     monthly = json.loads(path.read_text(encoding="utf-8"))
     monthly["items"][0]["text"] = "Revised monthly interpretation."
     atomic_write_json(path, monthly)
     assert run_reviews(config, **args)["generatedCount"] == 1  # type: ignore[arg-type]
-    assert len(model.prompts) == 4
+    assert len(model.prompts) == 6  # identical final findings reuse composition and audit checkpoints
 
 
 def test_budget_resume_reuses_completed_stages(tmp_path: Path) -> None:
@@ -338,7 +345,7 @@ def test_interrupted_pair_commit_recovers_without_inference(tmp_path: Path, monk
     monkeypatch.setattr(reviews, "atomic_write_bytes", original)
     recovered = weekly(config, model)
     assert recovered["ok"] and recovered["results"][0]["status"] == "current"
-    assert len(model.prompts) == 1
+    assert len(model.prompts) == 3
 
 
 def test_calendar_start_no_implicit_backfill_and_offline_catchup(tmp_path: Path) -> None:
@@ -397,11 +404,13 @@ def test_intelligence_and_improvement_candidates_keep_status_and_citations(tmp_p
 
     def generate(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
         base = FakeGenerator()(prompt, schema)
+        if "decisions" in base:
+            return base
         source = base["items"][0]
         base["items"] = [
             {**source, "category": "intelligence-candidate", "intelligenceKind": "knowledge", "basis": "inferred",
              "text": "Locate existing imports before repeating the import.", "nextCheck": "Try on one new import."},
-            {**source, "category": "ai-improvement", "basis": "proposed",
+            {**source, "category": "ai-improvement", "basis": "proposed", "intelligenceKind": "none",
              "text": "Supply an index of existing results.", "nextCheck": "Check whether repeated imports decrease."},
         ]
         return base
@@ -466,3 +475,124 @@ def test_scheduled_due_run_only_captures_normalizes_and_reviews(
     assert result["ok"]
     assert [c["mode"] for c in calls] == ["clone"]
     assert "limit" not in calls[0]
+
+
+def test_review_repair_resumes_without_repeating_evidence(tmp_path: Path) -> None:
+    from tkn_codex_chat_note.review_generation import ReviewBudgetStop, ReviewGenerator
+
+    config = config_for(tmp_path, max_calls=1).enabled_source_configs()[0]
+    period = period_for("weekly", date(2026, 5, 19))
+    bad = {"items": [{**item("e1", category="insights"), "nextCheck": "Verify across chats."}],
+           "rawRequests": []}
+    first = ReviewGenerator(config, "first", generate=lambda *_: bad)
+    with pytest.raises(ReviewBudgetStop):
+        first._call("review", period, {"evidence": "large original input"}, {"e1"})
+    assert first.calls == 1
+    prompts = []
+
+    def repair(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+        prompts.append(prompt)
+        return {"items": [{**bad["items"][0], "basis": "inferred"}], "rawRequests": []}
+
+    second = ReviewGenerator(config, "second", generate=repair)
+    result = second._call("review", period, {"evidence": "large original input"}, {"e1"})
+    assert result.items[0].basis == "inferred"
+    assert second.calls == 1
+    assert "Stage: repair" in prompts[0]
+    assert "large original input" not in prompts[0]
+    assert not list(second.cache_root.glob("*.pending.json"))
+    second._call("review", period, {"evidence": "large original input"}, {"e1"})
+    assert second.cache_hits == 1
+
+
+def test_repair_does_not_accept_unavailable_citations(tmp_path: Path) -> None:
+    from tkn_codex_chat_note.review_generation import ReviewGenerator
+
+    config = config_for(tmp_path).enabled_source_configs()[0]
+    generator = ReviewGenerator(config, "bad", generate=lambda *_: {"items": [item("invented")], "rawRequests": []})
+    with pytest.raises(ValueError, match="unavailable evidence"):
+        generator._call("review", period_for("weekly", date(2026, 5, 19)), {}, {"e1"})
+    assert generator.calls == 2
+    assert not [p for p in generator.cache_root.glob("*.json") if not p.name.endswith(".pending.json")]
+
+
+@pytest.mark.parametrize("kind,day,as_of", [
+    ("weekly", date(2026, 5, 19), date(2026, 6, 1)),
+    ("monthly", date(2026, 5, 1), date(2026, 6, 1)),
+    ("yearly", date(2026, 1, 1), date(2027, 1, 1)),
+])
+def test_all_periods_have_a_final_editorial_pass(tmp_path: Path, kind: Any, day: date, as_of: date) -> None:
+    config = config_for(tmp_path)
+    seed(config, [("2026-05-19T00:00:00Z", "A small but distinct question")])
+    model = FakeGenerator()
+    result = run_reviews(config, kind=kind, day=day, as_of=as_of, generate=model)
+    assert result["generatedCount"] == 1
+    assert len(model.prompts) == 3
+    assert "Stage: compose" in model.prompts[-2]
+    assert "Preserve distinct small questions" in model.prompts[-2]
+    assert "do not concatenate monthly overviews" in model.prompts[-2]
+    assert "Stage: evidence-check" in model.prompts[-1]
+    assert "Stage: review" in model.prompts[0]
+
+
+def test_editorial_change_reuses_extraction_but_rebuilds_final_output(tmp_path: Path) -> None:
+    from tkn_codex_chat_note.review_generation import ReviewGenerator
+
+    config = config_for(tmp_path).enabled_source_configs()[0]
+    seed(config, [("2026-05-19T00:00:00Z", "Keep the recorded question")])
+    period = period_for("weekly", date(2026, 5, 19))
+    first = ReviewGenerator(config, "first", generate=FakeGenerator())
+    first.build(period, period_evidence(config, period))
+    second = ReviewGenerator(config, "second", generate=FakeGenerator())
+    second.synthesis += "\nA revised editorial instruction."
+    second.build(period, period_evidence(config, period))
+    assert second.cache_hits == 2  # extraction and unchanged audit reused
+    assert second.calls == 1  # final composition only
+    third = ReviewGenerator(config, "third", generate=FakeGenerator())
+    third.synthesis = second.synthesis
+    third.build(period, period_evidence(config, period))
+    assert third.cache_hits == 3 and third.calls == 0
+
+
+def test_editorial_pass_resumes_after_budget_without_repeating_extraction(tmp_path: Path) -> None:
+    config = config_for(tmp_path, max_calls=1)
+    seed(config, [("2026-05-19T00:00:00Z", "Keep this question")])
+    first = weekly(config, FakeGenerator())
+    assert first["results"][0]["status"] == "deferred"
+    assert not list(config.review_data_root.rglob("*.md"))
+    model = FakeGenerator()
+    second = weekly(config, model)
+    assert second["results"][0]["status"] == "deferred" and second["cacheHits"] == 1
+    assert not list(config.review_data_root.rglob("*.md"))
+    assert len(model.prompts) == 1 and "Stage: compose" in model.prompts[0]
+    third = weekly(config, FakeGenerator())
+    assert third["generatedCount"] == 1 and third["cacheHits"] == 2
+
+
+@pytest.mark.parametrize("language", ["ja", "en"])
+def test_editorial_render_keeps_citations_and_tables_without_raw_appendix(tmp_path: Path, language: str) -> None:
+    from tkn_codex_chat_note.review_render import render_review
+
+    config = config_for(tmp_path, language=language)
+    seed(config, [("2026-05-19T00:00:00Z", "PRIVATE_FULL_SOURCE_SENTINEL")])
+    result = weekly(config, FakeGenerator())
+    value = json.loads(Path(result["results"][0]["jsonPath"]).read_text(encoding="utf-8"))
+    id = value["items"][0]["evidenceIds"][0]
+    value["items"] = [item(id, text="A | B\n<literal>"), item(id, category="activities")]
+    text = render_review(value, tmp_path / "review.json", language)
+    assert "A &#124; B<br>&lt;literal&gt;" in text
+    assert "PRIVATE_FULL_SOURCE_SENTINEL" not in text
+    assert text.count("### S001") == 1 and "### S002" not in text
+    assert text.count("[S001](#s001)") == 2
+    assert "review.json" in text
+    assert value["evidence"][0]["text"] == "PRIVATE_FULL_SOURCE_SENTINEL"
+
+
+def test_editorial_pass_cannot_introduce_unknown_evidence(tmp_path: Path) -> None:
+    from tkn_codex_chat_note.review_generation import ReviewGenerator
+
+    config = config_for(tmp_path).enabled_source_configs()[0]
+    generator = ReviewGenerator(config, "invalid", generate=lambda *_: {"items": [item("absent")], "rawRequests": []})
+    with pytest.raises(ValueError, match="unavailable evidence"):
+        generator.synthesize(period_for("weekly", date(2026, 5, 19)),
+                             [ReviewDraft.model_validate({"items": [item("known")], "rawRequests": []})])

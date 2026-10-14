@@ -6,16 +6,33 @@ import json
 import time
 from collections.abc import Callable
 from importlib.resources import files
+from itertools import groupby
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
+
+from pydantic import BaseModel
 
 from .api_inference import ApiClient
 from .config import AppConfig
 from .inference import invoke_structured
 from .review_evidence import EvidenceSet, digest, raw_supplement
 from .review_model import REVIEW_VERSION, Period, ReviewDraft
+from .review_quality import (
+    EVIDENCE_CONTEXT_VERSION,
+    QUALITY_VERSION,
+    CoverageResult,
+    EvidenceBudgetError,
+    EvidenceResult,
+    audit_review,
+    check_editorial,
+    editorial_limits,
+)
+from .review_render import RENDER_VERSION
+from .review_transport import evidence_aliases, map_evidence_ids
 from .runtime import PipelineError, atomic_write_json
 from .usage_records import UsageJournal
+
+T = TypeVar("T", bound=BaseModel)
 
 Generator = Callable[[str, dict[str, Any]], dict[str, Any]]
 
@@ -35,6 +52,11 @@ class ReviewGenerator:
         self.cache_hits = 0
         self.deadline = time.monotonic() + config.runtime_minutes * 60
         self.instructions = files("tkn_codex_chat_note").joinpath("resources/review-prompt.md").read_text("utf-8")
+        self.synthesis = (files("tkn_codex_chat_note")
+                          .joinpath("resources/review-synthesis-prompt.md").read_text("utf-8"))
+        self.quality_policy = (files("tkn_codex_chat_note")
+                               .joinpath("resources/review-quality-prompt.md").read_text("utf-8"))
+        self.quality_report: dict[str, Any] = {}
         self.schema = ReviewDraft.model_json_schema()
         source = config.enabled_source_configs()[0]
         self.pipeline_config = source.inference_config()
@@ -51,7 +73,14 @@ class ReviewGenerator:
                                  "provider": config.provider, "model": config.model,
                                  "options": options,
                                  "effort": config.reasoning_effort})
-        self.cache_root = config.cache_root / "reviews" / self.signature
+        # Extraction checkpoints remain reusable when only editorial policy changes.
+        self.extraction_signature = self.signature
+        self.cache_root = config.cache_root / "reviews" / self.extraction_signature
+        self.signature = digest({"extraction": self.extraction_signature, "synthesis": self.synthesis,
+                                 "renderer": RENDER_VERSION, "quality": self.quality_policy,
+                                 "qualityVersion": QUALITY_VERSION, "evidenceContextVersion": EVIDENCE_CONTEXT_VERSION,
+                                 "qualitySchemas": [CoverageResult.model_json_schema(),
+                                                    EvidenceResult.model_json_schema()]})
         self.journal = UsageJournal(config.review_state_root / "usage" / run_id,
                                     {"runId": run_id, "command": "review-notes", "sourceId": config.source_id,
                                      "generationProfile": config.generation.active_profile, "noteStatus": "unfinished"})
@@ -62,7 +91,10 @@ class ReviewGenerator:
             self.api.close()
 
     def _call(self, stage: str, period: Period, payload: dict[str, Any], ids: set[str]) -> ReviewDraft:
-        prompt = (self.instructions + f"\nStage: {stage}\nLanguage: {self.settings.language}\n"
+        instructions = self.synthesis if stage in {"merge", "compose"} else self.instructions
+        if stage == "compose":
+            payload = {**payload, "editorialLimits": editorial_limits(self.settings.language)}
+        prompt = (instructions + f"\nStage: {stage}\nLanguage: {self.settings.language}\n"
                   + "Period: " + json.dumps(period.document()) + "\nBEGIN_REVIEW_INPUT_JSON\n"
                   + json.dumps(payload, ensure_ascii=False) + "\nEND_REVIEW_INPUT_JSON")
         if len(prompt) > self.settings.input_characters:
@@ -75,50 +107,160 @@ class ReviewGenerator:
                     raise ValueError("invalid cache digest")
                 draft = ReviewDraft.model_validate(saved["draft"])
                 draft.validate_sources(ids)
+                if stage == "compose":
+                    check_editorial(draft, self.settings.language)
                 self.cache_hits += 1
                 return draft
             except (ValueError, KeyError):
                 pass
+        pending = path.with_suffix(".pending.json")
+        value = None
+        if pending.is_file() and not self.force:
+            saved = json.loads(pending.read_text("utf-8"))
+            if saved.get("sha256") == digest(saved.get("draft")):
+                value = saved["draft"]
+        if value is None:
+            value = self._invoke(stage, prompt)
+            atomic_write_json(pending, {"draft": value, "sha256": digest(value)})
+        try:
+            draft = ReviewDraft.model_validate(value)
+            draft.validate_sources(ids)
+            if stage == "compose":
+                check_editorial(draft, self.settings.language)
+        except ValueError as exc:
+            # Repair only the returned draft, not the expensive original evidence batch.
+            # Retain it across budget stops so the next invocation can resume the repair.
+            repair = (instructions + "\nStage: repair\nRepair the supplied draft to satisfy the contract. "
+                      "Preserve claims and uncertainty; do not invent evidence or silently discard findings. "
+                      "Use only availableEvidenceIds.\nBEGIN_REVIEW_INPUT_JSON\n"
+                      + json.dumps({"draft": value, "validationError": str(exc)[:4000],
+                                    "availableEvidenceIds": sorted(ids),
+                                    "editorialLimits": payload.get("editorialLimits")}, ensure_ascii=False)
+                      + "\nEND_REVIEW_INPUT_JSON")
+            value = self._invoke("repair", repair)
+            draft = ReviewDraft.model_validate(value)
+            draft.validate_sources(ids)
+            if stage == "compose":
+                check_editorial(draft, self.settings.language)
+        atomic_write_json(path, {"draft": draft.model_dump(), "sha256": digest(draft.model_dump())})
+        pending.unlink(missing_ok=True)
+        return draft
+
+    def _quality_call(self, stage: str, period: Period, payload: dict[str, Any],
+                      contract: type[T], validate: Callable[[T], None]) -> T:
+        schema = contract.model_json_schema()
+        aliases = evidence_aliases(payload) if stage in {"evidence-check", "overview-check"} else {}
+        canonical = {alias: id for id, alias in aliases.items()}
+        prompt = (self.quality_policy + f"\nStage: {stage}\nLanguage: {self.settings.language}\n"
+                  + "Period: " + json.dumps(period.document()) + "\nBEGIN_REVIEW_INPUT_JSON\n"
+                  + json.dumps(map_evidence_ids(payload, aliases), ensure_ascii=False) + "\nEND_REVIEW_INPUT_JSON")
+        identity = {"prompt": prompt, "schema": schema, "version": QUALITY_VERSION}
+        if aliases:
+            identity["evidenceAliases"] = aliases
+        path = self.cache_root / (digest(identity) + ".json")
+        if path.is_file() and not self.force:
+            try:
+                saved = json.loads(path.read_text("utf-8"))
+                if saved["sha256"] != digest(saved["result"]):
+                    raise ValueError("invalid audit cache digest")
+                result = contract.model_validate(saved["result"])
+                validate(result)
+                self.cache_hits += 1
+                return result
+            except (ValueError, KeyError):
+                pass
+        pending = path.with_suffix(".pending.json")
+        value = None
+        if pending.is_file() and not self.force:
+            saved = json.loads(pending.read_text("utf-8"))
+            if saved.get("sha256") == digest(saved.get("result")):
+                value = saved["result"]
+        if value is None:
+            value = map_evidence_ids(self._invoke(stage, prompt, schema), canonical)
+            atomic_write_json(pending, {"result": value, "sha256": digest(value), "evidenceAliases": aliases})
+        try:
+            result = contract.model_validate(value)
+            validate(result)
+        except ValueError as exc:
+            repair_input, repair_value = payload, value
+            repair_ids: set[str] | None = None
+            if isinstance(exc, EvidenceBudgetError) and "evidence" in payload:
+                repair_ids = exc.item_ids
+                units = [u for u in payload["auditUnits"] if u["id"] in repair_ids]
+                allowed = {id for u in units for id in u["evidenceIds"]}
+                repair_input = {**payload, "auditUnits": units,
+                                "evidence": [e for e in payload["evidence"] if e["id"] in allowed]}
+                repair_value = {"decisions": [d for d in value["decisions"] if d["itemId"] in repair_ids]}
+            repair = (self.quality_policy + "\nStage: audit-repair\nRepair only the supplied decisions. "
+                      "Do not add unsupported claims. Every input ID must be accounted for exactly once.\n"
+                      "BEGIN_REVIEW_INPUT_JSON\n" + json.dumps(map_evidence_ids({"result": repair_value,
+                      "validationError": str(exc)[:3000],
+                      "originalInput": repair_input}, aliases), ensure_ascii=False) + "\nEND_REVIEW_INPUT_JSON")
+            # Repair includes the sources; an oversized repair stops without publishing unchecked text.
+            repaired = map_evidence_ids(self._invoke("audit-repair", repair, schema), canonical)
+            if repair_ids is not None:
+                patch = EvidenceResult.model_validate(repaired)
+                ids = [d.itemId for d in patch.decisions]
+                if set(ids) != repair_ids or len(ids) != len(repair_ids):
+                    raise ValueError("targeted repair must account for the supplied items exactly once") from exc
+                replacements = {d.itemId: d.model_dump() for d in patch.decisions}
+                value = {"decisions": [replacements.get(d["itemId"], d) for d in value["decisions"]]}
+            else:
+                value = repaired
+            result = contract.model_validate(value)
+            validate(result)
+        atomic_write_json(path, {"result": result.model_dump(), "sha256": digest(result.model_dump()),
+                                 "evidenceAliases": aliases})
+        pending.unlink(missing_ok=True)
+        return result
+
+    def _invoke(self, stage: str, prompt: str, schema: dict[str, Any] | None = None) -> dict[str, Any]:
+        schema = self.schema if schema is None else schema
+        if len(prompt) > self.settings.input_characters:
+            raise PipelineError("review stage exceeds reviews.input_characters; increase that bound or reduce input")
         if self.calls >= self.settings.max_calls or time.monotonic() >= self.deadline:
-            raise ReviewBudgetStop("review call/time budget reached; validated stages are cached for the next run")
+            raise ReviewBudgetStop("review call/time budget reached; completed responses are cached for the next run")
         self.calls += 1
         timeout = min(self.config.model_timeout_seconds, max(1, int(self.deadline - time.monotonic())))
         if self.generate:
-            value = self.generate(prompt, self.schema)
-        elif self.config.provider == "azure-openai" or self.pipeline_config.inference_options.get("limits"):
+            return self.generate(prompt, schema)
+        if self.config.provider == "azure-openai" or self.pipeline_config.inference_options.get("limits"):
             if self.api is None:
                 self.api = ApiClient(self.pipeline_config)
                 self.api.observer = self.journal
             self.api.stage = "review-" + stage
-            value = self.api.invoke(prompt, self.schema, timeout=timeout)
-        else:
-            value = invoke_structured(self.pipeline_config, prompt, self.schema, cwd=Path.cwd(), timeout=timeout,
-                                      usage_observer=self.journal)
-        draft = ReviewDraft.model_validate(value)
-        draft.validate_sources(ids)
-        atomic_write_json(path, {"draft": draft.model_dump(), "sha256": digest(draft.model_dump())})
-        return draft
+            return self.api.invoke(prompt, schema, timeout=timeout)
+        return invoke_structured(self.pipeline_config, prompt, schema, cwd=Path.cwd(), timeout=timeout,
+                                 usage_observer=self.journal)
 
-    def _batches(self, records: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-        ceiling = self.settings.input_characters - len(self.instructions) - 2200
+    def _batches(self, records: list[dict[str, Any]], *, synthesis: bool = False) -> list[list[dict[str, Any]]]:
+        instructions = self.synthesis if synthesis else self.instructions
+        ceiling = self.settings.input_characters - len(instructions) - 2200
         batches: list[list[dict[str, Any]]] = []
         current: list[dict[str, Any]] = []
         size = 0
-        for record in records:
-            amount = len(json.dumps(record, ensure_ascii=False)) + 2
-            if amount > ceiling:
-                raise PipelineError("one review evidence item exceeds the configured input bound")
-            if current and size + amount > ceiling:
+        for _, group in groupby(records, key=lambda r: r.get("threadId")):
+            chunk = list(group)
+            amounts = [len(json.dumps(record, ensure_ascii=False)) + 2 for record in chunk]
+            # A conversation that fits in one call should not be split by an earlier conversation.
+            if current and sum(amounts) <= ceiling and size + sum(amounts) > ceiling:
                 batches.append(current)
                 current, size = [], 0
-            current.append(record)
-            size += amount
+            for record, amount in zip(chunk, amounts, strict=True):
+                if amount > ceiling:
+                    raise PipelineError("one review evidence item exceeds the configured input bound")
+                if current and size + amount > ceiling:
+                    batches.append(current)
+                    current, size = [], 0
+                current.append(record)
+                size += amount
         if current:
             batches.append(current)
         return batches
 
     def build(self, period: Period, evidence: EvidenceSet) -> ReviewDraft:
         self.journal.context.update(threadId=period.kind + "/" + period.key, taskTitle=period.key + " review")
+        self.quality_report = {}
         drafts: list[ReviewDraft] = []
         batches = self._batches(evidence.input_records())
         for number, batch in enumerate(batches, 1):
@@ -148,24 +290,30 @@ class ReviewGenerator:
             drafts.append(draft)
         if not drafts:
             return ReviewDraft(items=[], rawRequests=[])
-        # Bounded hierarchical merge also permits full-year reviews without a single giant prompt.
+        draft = self.synthesize(period, drafts)
+        return audit_review(self, period, draft, [i for d in drafts for i in d.items], evidence)
+
+    def synthesize(self, period: Period, drafts: list[ReviewDraft]) -> ReviewDraft:
+        """Edit validated findings into one period review, including a single input draft."""
+        self.journal.context.update(threadId=period.kind + "/" + period.key, taskTitle=period.key + " review")
+        # Intermediate merges preserve distinct findings; only the final pass edits for readers.
         for _ in range(6):
-            if len(drafts) == 1:
-                if not drafts[0].items:
-                    raise PipelineError("model returned no review items for nonempty evidence")
-                self.journal.finish("generated")
-                return drafts[0]
             items = [i.model_dump() for d in drafts for i in d.items]
             if not items:
                 raise PipelineError("model returned no review items for nonempty evidence")
-            batches = self._batches(items)
-            merged = [self._call("merge", period, {"items": batch, "rawRequestsAllowed": False},
+            batches = self._batches(items, synthesis=True)
+            stage = "compose" if len(batches) == 1 else "merge"
+            merged = [self._call(stage, period, {"items": batch, "rawRequestsAllowed": False},
                                  {id for item in batch for id in item["evidenceIds"]}) for batch in batches]
             if any(d.rawRequests for d in merged):
                 raise PipelineError("merge stages must preserve uncertainty instead of requesting new Raw")
+            if any(not d.items for d in merged):
+                raise PipelineError("model returned no review items for nonempty evidence")
+            if stage == "compose":
+                return merged[0]
             old_size = len(json.dumps(items, ensure_ascii=False))
             new_size = len(json.dumps([i.model_dump() for d in merged for i in d.items], ensure_ascii=False))
-            if len(merged) > 1 and new_size >= old_size:
+            if new_size >= old_size:
                 raise PipelineError("review merge did not shrink; increase reviews.input_characters")
             drafts = merged
         raise PipelineError("review merge depth exceeded; cached stages are retained")

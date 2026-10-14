@@ -267,13 +267,15 @@ def test_review_records_usage_and_repeated_build_does_not_double_count(tmp_path,
     report = run_reviews(cfg, **options)
     assert report["ok"] and report["generatedCount"] == 1, report
     records = collect_usage(cfg)["records"]
-    assert len(records) == 1
+    assert len(records) == 3  # extraction, composition and source audit
+    assert sum(r["inputTokens"] for r in records) == 3000
+    assert all(r["noteStatus"] == "generated" for r in records)
     assert records[0]["inputTokens"] == 1000
     assert records[0]["noteStatus"] == "generated"
     assert records[0]["sourceId"] == cfg.source_id
     assert run_pipeline(cfg, mode="pull")["complete"]
     assert run_reviews(cfg, **options)["modelCalls"] == 0
-    assert len(collect_usage(cfg)["records"]) == 1
+    assert len(collect_usage(cfg)["records"]) == 3
 
 
 def save_report(cfg, row, entry, **extra):

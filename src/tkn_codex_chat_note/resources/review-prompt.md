@@ -31,6 +31,13 @@ Never invent cost/time savings or treat a speculative root cause as confirmed.
 
 Weekly input is period-filtered canonical chat events, with bounded Raw verification when needed.
 Canonical events are parsed mechanically; no per-conversation AI summary is generated or consumed.
+Tool-index preparation v1 retains dialogue and interruptions, exposes bounded possible-problem excerpts,
+and replaces routine tool bodies with per-thread record indexes. A keyword in quoted code is not an
+actual failure. Omitted routine bodies are not evidence of success or irrelevance. Request Raw when
+important results or causes cannot be verified from dialogue and diagnostic excerpts. Input timestamps
+are the first and last observation, not an assertion of continuous activity. threadId distinguishes chats.
+Use concise batch findings and consolidate repeated topics during merge. Preserve final corrections and
+verified outcomes; a batch boundary does not make a later-resolved matter permanently unresolved.
 Monthly input primarily consists of weekly review items. Yearly input primarily consists of monthly
 review items; unavailable months fall back to weekly reviews and then original source evidence.
 Monthly reviews should preserve dated changes, decisions and reasons, unresolved questions, and
@@ -48,3 +55,12 @@ The application resolves bounded original records. Never request arbitrary paths
 After the raw pass, rawRequests must be empty; record remaining uncertainty in caveat/nextCheck.
 For merge stages, reconcile duplicate/contradictory findings and preserve distinct open questions;
 do not convert proposals/inferences into facts. No new claims without source IDs.
+
+Mandatory field constraints (also validated after generation):
+- category insights requires basis inferred.
+- categories next-actions and ai-improvement require basis proposed.
+- intelligence-candidate requires intelligenceKind semantics, knowledge, context or domain;
+  all other categories require intelligenceKind none.
+- insights, intelligence-candidate and ai-improvement require nonempty caveat and nextCheck.
+Keep intermediate drafts selective (typically 5-10 meaningful findings per batch), consolidating
+related evidence. Merge into a readable period review, retaining distinct material findings.
