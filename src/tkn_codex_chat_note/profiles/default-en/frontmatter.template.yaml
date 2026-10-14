@@ -1,0 +1,40 @@
+---
+# --- Note ---
+type: chatReview
+schemaVersion: "3.0.0"
+title: $title
+description: $description
+
+# --- Review period (end exclusive) ---
+periodKind: $periodKind
+periodKey: $periodKey
+periodStart: $periodStart
+periodEndExclusive: $periodEndExclusive
+utcOffsetMinutes: $utcOffsetMinutes
+
+# --- Sources and review status ---
+sourceApplication: Codex
+sourceId: $sourceId
+source: $source
+coverageStatus: $coverageStatus
+reviewStatus: $reviewStatus
+
+# --- Content generation ---
+generator: tkn-codex-chat-note
+generationProfile: $generationProfile
+provider: $provider
+requestedModel: $requestedModel
+generatedAt: $generatedAt
+
+# --- Identity and provenance ---
+sourceFingerprint: $sourceFingerprint
+generationSettingsSha256: $generationSettingsSha256
+noteProfile: $noteProfile
+templateVersion: "2.0.0"
+templateSha256: $templateSha256
+
+# --- Note lifecycle ---
+created: $created
+updated: $updated
+noteId: $noteId
+---

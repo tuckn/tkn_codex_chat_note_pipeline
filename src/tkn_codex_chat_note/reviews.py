@@ -15,8 +15,10 @@ from .frontmatter import parse_simple_frontmatter
 from .inference import InferenceExecutionError
 from .provenance import json_bytes
 from .review_evidence import checked_json, digest, period_evidence, review_path
+from .review_frontmatter import presentation_signature
 from .review_generation import Generator, ReviewBudgetStop, ReviewGenerator
 from .review_model import REVIEW_VERSION, Period, PeriodKind, ReviewDraft, closed_periods, period_for
+from .review_profiles import ReviewProfile
 from .review_render import render_review
 from .runtime import PipelineError, atomic_write_bytes, atomic_write_json, now_iso
 from .storage import _root_lock, read_json, validate_source_layout
@@ -95,6 +97,8 @@ def _publish(config: AppConfig, period: Period, value: dict[str, Any], index: di
     outputs = (json_bytes(value), render_review(value, paths[0], config.reviews.language).encode("utf-8"))
     key = period.kind + "/" + period.key
     record = {"inputFingerprint": value["inputFingerprint"], "generatedAt": value["generatedAt"],
+              "presentationSignature": presentation_signature(config.reviews.language),
+              "promptFrameSignature": ReviewProfile(config.reviews.language).request_signature(),
               "hashes": {p.suffix: sha256(b).hexdigest() for p, b in zip(paths, outputs, strict=True)}}
     txid = str(uuid4())
     transaction = {"record": record, "outputs": [
@@ -128,9 +132,21 @@ def _build(config: AppConfig, period: Period, generator: ReviewGenerator, index:
                               "gaps": evidence.gaps,
                               "initialBatchCount": len(generator._batches(evidence.input_records()))}
     hashes_match = bool(saved.get("hashes")) and all(_hash(p) == saved["hashes"].get(p.suffix) for p in paths)
-    if saved.get("inputFingerprint") == fingerprint and hashes_match and not force:
-        return {**result, "status": "current"}
-    if saved.get("inputFingerprint") == fingerprint and all(p.is_file() for p in paths) and not force:
+    frames_changed = saved.get("promptFrameSignature", generator.request_signature) != generator.request_signature
+    if saved.get("inputFingerprint") == fingerprint and hashes_match and not force and not frames_changed:
+        if saved.get("presentationSignature") == presentation_signature(config.reviews.language):
+            return {**result, "status": "current"}
+        try:
+            _protect(paths, saved, allow_edited=False)
+        except PipelineError as exc:
+            return {**result, "status": "preserved", "reason": str(exc)}
+        if dry_run:
+            return {**result, "status": "planned", "reason": "presentation update only; no model calls"}
+        validate_review(paths[0])
+        _publish(config, period, checked_json(paths[0]), index)
+        return {**result, "status": "rendered", "reason": "presentation updated from saved JSON; no model calls"}
+    if (saved.get("inputFingerprint") == fingerprint and all(p.is_file() for p in paths)
+            and not force and not frames_changed):
         return {**result, "status": "preserved", "reason": "manual changes retained; source inputs are unchanged"}
     if not saved.get("pending"):
         try:
@@ -141,10 +157,14 @@ def _build(config: AppConfig, period: Period, generator: ReviewGenerator, index:
         return {**result, "status": "planned"}
     draft = generator.build(period, evidence)
     draft.validate_sources(set(evidence.evidence))
+    generated_at = now_iso()
+    previous = checked_json(paths[0]) if paths[0].is_file() else None
     value: dict[str, Any] = {
+        "created": previous.get("created") if previous is not None else generated_at,
+        "updated": generated_at,
         "schemaVersion": REVIEW_VERSION, "type": "reviewNote", "sourceId": config.source_id,
         "id": str(uuid5(NAMESPACE_URL, str(config.review_data_root.resolve()) + "/" + key)),
-        "period": period.document(), "generatedAt": now_iso(), "reviewStatus": "unreviewed",
+        "period": period.document(), "generatedAt": generated_at, "reviewStatus": "unreviewed",
         "inputFingerprint": fingerprint,
         "items": list({digest(item.model_dump()): item.model_dump() for item in draft.items}.values()),
         "evidence": list(evidence.evidence.values()), "sourceInventory": evidence.sources,
@@ -154,8 +174,11 @@ def _build(config: AppConfig, period: Period, generator: ReviewGenerator, index:
                      "gaps": sorted(set(evidence.gaps))},
         "generation": {"profile": config.generation.active_profile, "provider": config.provider,
                        "model": config.model, "settingsSha256": generator.signature,
-                       "qualityAudit": generator.quality_report},
+                       "qualityAudit": generator.quality_report, "promptTemplatesSha256": generator.request_signature},
     }
+    if previous is not None and all(value[k] == previous.get(k) for k in (
+            "period", "items", "evidence", "sourceInventory", "coverage")):
+        value["updated"] = previous.get("updated", previous["generatedAt"])
     for field, category in (("intelligenceCandidates", "intelligence-candidate"), ("aiImprovements", "ai-improvement")):
         value[field] = [{"id": "C" + digest([value["id"], item])[:24], "status": "candidate", **item}
                         for item in value["items"] if item["category"] == category]
@@ -217,6 +240,7 @@ def _run_source_reviews(config: AppConfig, *, kind: PeriodKind | None = None, da
         report.update(modelCalls=generator.calls, cacheHits=generator.cache_hits,
                       plannedCount=sum(r["status"] == "planned" for r in report["results"]),
                       generatedCount=sum(r["status"] == "generated" for r in report["results"]),
+                      renderedCount=sum(r["status"] == "rendered" for r in report["results"]),
                       pendingPeriods=len(periods) - len(report["results"]))
         report["finishedAt"] = now_iso()
         if not dry_run:
@@ -233,7 +257,8 @@ def _combine_reviews(reports: list[dict[str, Any]]) -> dict[str, Any]:
             "results": [{"sourceId": r["sourceId"], **item} for r in reports for item in r.get("results", [])],
             "reportPaths": [r["reportPath"] for r in reports if r.get("reportPath")],
             **{key: sum(r.get(key, 0) for r in reports)
-               for key in ("modelCalls", "cacheHits", "generatedCount", "plannedCount", "pendingPeriods")}}
+               for key in ("modelCalls", "cacheHits", "generatedCount", "renderedCount",
+                           "plannedCount", "pendingPeriods")}}
 
 
 def run_reviews(config: AppConfig, *, kind: PeriodKind | None = None, day: date | None = None,

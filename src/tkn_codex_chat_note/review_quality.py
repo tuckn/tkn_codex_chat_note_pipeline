@@ -350,8 +350,7 @@ def _audit_overviews(generator: ReviewGenerator, period: Period, units: list[dic
                 "evidence": [{"id": id} for id in allowed]}
         payload = {"auditUnits": [{k: v for k, v in unit.items() if k not in {"evidence", "relatedFindings"}}],
                    "verifiedItems": [i.model_dump() for i in body], "availableEvidenceIds": allowed,
-                   "instruction": "Rewrite only the overview from the source-audited body. "
-                                  "Do not change the body or add new facts. Preserve reported/inferred status."}
+                   "instruction": generator.profile.instruction("overview-body")}
         checked = generator._quality_call("overview-check", period, payload, EvidenceResult,
                                           partial(_check_overview, units={unit["id"]: unit}))
         results.extend(checked.decisions)
@@ -394,9 +393,7 @@ def audit_review(generator: ReviewGenerator, period: Period, draft: ReviewDraft,
     remaining_splits = max(0, editorial_limits(generator.settings.language, final=True)["maxItems"] - len(units))
     for payload in evidence_batches:
         payload["splitBudget"] = {"maxAdditionalRows": remaining_splits,
-                                  "instruction": "Across this batch, sum(max(0, replacement count - 1)) must not "
-                                                 "exceed maxAdditionalRows. Split unrelated topics only; keep "
-                                                 "an activity and its remaining status together in one row."}
+                                  "instruction": generator.profile.instruction("split-batch")}
         supplied_ids = {u["id"] for u in payload["auditUnits"]}
         supplied = {u["id"]: u for u in units if u["id"] in supplied_ids}
         checked = generator._quality_call("evidence-check", period, payload, EvidenceResult,

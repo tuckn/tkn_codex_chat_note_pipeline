@@ -7,6 +7,19 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.38.0 - 2026-10-15
+
+- Classify Markdown as chatReview, identify sourceApplication: Codex independently of generation provider, and place created/updated/noteId last in Frontmatter v3.
+- Record note creation/content-update dates for newly generated JSON; retain unknown legacy creation dates and preserve lifecycle dates for unchanged content or presentation-only changes.
+- Package default-jp/default-en YAML and Markdown templates, schema, generation/audit/repair prompts and request framing; keep source/citation transformation in Python.
+- Preserve existing inference request contents during relocation; track external request-template changes separately from presentation refreshes.
+
+## 0.37.0 - 2026-10-14
+
+- Add grouped, flat review Frontmatter v2 with description, JSON URI, stable noteId and stored generation provenance; preserve date strings and distinguish requested model from confirmed telemetry.
+- Package a shared Frontmatter template and refresh presentation from saved JSON without inference, retaining edited/reviewed notes and backing up previous output.
+- Document review resources versus the retired Session Note profiles; keep JSON v1 and existing review prose unchanged.
+
 ## 0.36.0 - 2026-10-14
 
 - Pack source audits by shared evidence while preserving every selected excerpt, per-item citation scope, and final note order.

@@ -77,8 +77,8 @@ not independent verification. Explanation is not demonstrated learning, silence 
 disinterest, and historical open issues are not automatically current obligations.
 Inference/candidate items require limitations and a next check.
 
-The model response is governed by [review-draft.schema.json](../../src/tkn_codex_chat_note/resources/review-draft.schema.json)
-and [review-prompt.md](../../src/tkn_codex_chat_note/resources/review-prompt.md).
+The model response is governed by [output.schema.json](../../src/tkn_codex_chat_note/profiles/default-jp/output.schema.json)
+and [prompt.md](../../src/tkn_codex_chat_note/profiles/default-jp/prompt.md).
 
 ```shell
 tkn-codex-chat-note review-notes validate "C:\path\to\reviews\weekly\2026\2026-W21.json"
@@ -155,7 +155,7 @@ The final pass uses the same call/time budget and validated cache. A single extr
 one final pass; empty periods need none. Editorial-only changes reuse extraction checkpoints when
 inputs, extraction policy and model settings match. Model/extraction changes invalidate that reuse.
 Editorial policy contributes to the generation fingerprint, and existing reviewed/edited-file protection applies.
-See [review-synthesis-prompt.md](../../src/tkn_codex_chat_note/resources/review-synthesis-prompt.md).
+See [synthesis-prompt.md](../../src/tkn_codex_chat_note/profiles/default-jp/synthesis-prompt.md).
 
 ## Automatic editorial verification (0.33)
 
@@ -199,7 +199,7 @@ batch counts depend on composed findings and cannot be known from the initial dr
 All calls, including unsuccessful/repair attempts, belong in usage accounting when usage is available.
 Token cost includes model/runtime overhead, reasoning and output, not just the excerpt text. Large
 restorations can materially increase cost and span multiple scheduled runs under `max_calls`.
-See [review-quality-prompt.md](../../src/tkn_codex_chat_note/resources/review-quality-prompt.md).
+See [quality-prompt.md](../../src/tkn_codex_chat_note/profiles/default-jp/quality-prompt.md).
 
 ## Concise verification (0.34)
 
@@ -251,3 +251,61 @@ sources cannot collide through identical aliases. qualityAudit.sourceTransmissio
 and packed source occurrences, source text characters, and repeated source text characters. These are
 not token estimates; consult usage for measured consumption. Unchanged extraction and coverage
 prompts continue to reuse their caches.
+
+## Frontmatter and Japanese/English profiles
+
+Markdown uses **type: chatReview / schemaVersion: "3.0.0"**. Authoritative JSON retains its
+internal **type: reviewNote / schemaVersion: "1.0.0"** contract. `periodKind` distinguishes
+weekly, monthly and yearly notes. A chatReview is a source-backed cross-chat reflection used
+as material for the Intelligence Layer; hypotheses/candidates retain their unadopted status.
+
+| Property | Meaning |
+|---|---|
+| type / title / description | chatReview, period title, complete audited overview plus caveats with whitespace collapsed; empty string without an overview |
+| periodKind / periodKey / periodStart / periodEndExclusive / utcOffsetMinutes | Calendar period, exclusive end, integer offset |
+| sourceApplication / sourceId / source | Chat source application (Codex), source environment ID, sibling JSON file URI |
+| coverageStatus / reviewStatus | Input limitations and human review status |
+| generator / generationProfile / provider / requestedModel | CLI and saved generation settings; sourceApplication stays Codex even if Claude summarizes the chat. Requested model is not confirmed telemetry |
+| generatedAt | Latest content-generation execution, preserved for presentation-only updates; may change for explicit regeneration of identical content |
+| sourceFingerprint / generationSettingsSha256 | Stored input and generation identities |
+| noteProfile / templateVersion / templateSha256 | Presentation profile, template version, combined SHA-256 of profile.json and YAML/Markdown templates |
+| created / updated / noteId | Final three properties: initial creation time, content-update time, stable JSON id |
+
+New notes initialize created/updated from the first generation time. Creation time survives
+regeneration. Updated changes when period/items/evidence/sourceInventory/coverage changes;
+identical regeneration and presentation-only edits retain it. Legacy notes without lifecycle
+metadata have bare-key null `created` and use stored generatedAt for `updated`. Do not infer
+creation time from current time or filesystem timestamps. Unknown legacy creation time stays
+unknown on subsequent regeneration. JSON adds optional created/updated metadata for new
+generation and continues to accept old documents.
+
+Dates, timestamps and versions are double-quoted, retaining timezone/fractional precision.
+Windows paths are single-quoted; file URIs use normal string quoting. English comments group
+flat properties. Unknown scalar values use a bare key; empty description uses `""`.
+Detailed citations/audit records remain in JSON.
+
+Resources live in `src/tkn_codex_chat_note/profiles/default-jp/` and `default-en/`, selected
+by `sources.<id>.reviews.language: ja` or `en`:
+
+- `profile.json`: language and period titles.
+- `frontmatter.template.yaml`: property order, classification values and comments; Python quotes dynamic values.
+- `template.md`: Jinja2 Markdown layout, headings, disclaimers, tables, insights and source links.
+- `prompt.md`, `synthesis-prompt.md`, `quality-prompt.md`: extraction, composition and audits.
+- `request.template.md`: request stage/language/period/input framing.
+- `repair-prompt.md`, `audit-repair-prompt.md`: draft/audit repair instructions.
+- `instructions.json`: final Raw-pass, overview and split-budget instructions.
+- `output.schema.json`: model item contract, checked against ReviewDraft's Pydantic schema at initialization.
+
+[Japanese template](../../src/tkn_codex_chat_note/profiles/default-jp/template.md) and
+[English template](../../src/tkn_codex_chat_note/profiles/default-en/template.md) are independent.
+Both preserve the tested English generation policy, with Language specifying the output language;
+localized body text and titles live in their respective profiles. Reinstall with
+`uv tool install . --reinstall` after modifying packaged resources. Bridge's
+`generation.profiles` remains a separate execution-profile setting.
+
+For unchanged inputs/settings, normal review-notes/scheduled-run refreshes stale presentation
+from saved JSON without inference (`rendered`, counted in `renderedCount`). Dry-run only reports
+`planned` with a reason. Existing output is backed up and edited/reviewed notes are retained.
+Presentation updates preserve JSON/lifecycle dates. Policy, framing and auxiliary-instruction
+changes trigger generation updates without reusing altered request caches. This relocation
+preserves request contents and avoids inference solely for changed resource paths.

@@ -74,7 +74,66 @@ JSONの主要フィールドは次のとおりです。
 tkn-codex-chat-note review-notes validate "C:\path\to\reviews\weekly\2026\2026-W21.json"
 ```
 
-検証はJSON構造、期間、引用IDと推移的参照を確認します。原資料全体の真正性・意味的正しさを監査するものではありません。モデルの項目契約は [review-draft.schema.json](../../src/tkn_codex_chat_note/resources/review-draft.schema.json)、生成指針は [review-prompt.md](../../src/tkn_codex_chat_note/resources/review-prompt.md) です。
+検証はJSON構造、期間、引用IDと推移的参照を確認します。原資料全体の真正性・意味的正しさを監査するものではありません。モデルの項目契約は [output.schema.json](../../src/tkn_codex_chat_note/profiles/default-jp/output.schema.json)、生成指針は [prompt.md](../../src/tkn_codex_chat_note/profiles/default-jp/prompt.md) です。
+
+## Frontmatterと日英プロファイル
+
+Markdown Frontmatterは **type: chatReview / schemaVersion: "3.0.0"** です。
+正本JSONは引き続き内部データ契約 **type: reviewNote / schemaVersion: "1.0.0"** を使います。
+週次・月次・年次は `periodKind` で区別します。chatReviewは出典に帰属するチャットの横断的な振り返りであり、
+質問・判断・結果・仮説・候補をIntelligence Layerの材料として扱います。採用済みの知識やpermanentノートという分類ではありません。
+
+| プロパティ | 意味 |
+|---|---|
+| type / title / description | chatReview、期間のタイトル、校正済み概要と留保を空白で連結した説明。概要がなければ空文字 |
+| periodKind / periodKey / periodStart / periodEndExclusive / utcOffsetMinutes | 暦期間。終了日は含まない。UTCオフセットだけは整数 |
+| sourceApplication / sourceId / source | チャットの取得元アプリ（Codex）、PC等のsource ID、同名の正本JSONへのfile URI |
+| coverageStatus / reviewStatus | 入力の不足と、人の確認状態。部分的な記録を完全な履歴とは扱わない |
+| generator / generationProfile / provider / requestedModel | CLI名と保存済みの生成設定。CodexのチャットをClaudeで要約する場合もsourceApplicationはCodex。requestedModelは応答モデルの確定情報ではない |
+| generatedAt | 今回の内容生成を行った日時。表示だけの更新では保持。内容が同じでも明示的な再生成では新しい値になり得る |
+| sourceFingerprint / generationSettingsSha256 | 保存済みの入力・生成条件の識別値 |
+| noteProfile / templateVersion / templateSha256 | 表示に使った日英プロファイル、テンプレート版、profile.json・YAML・Markdownテンプレートの内容をまとめたSHA-256 |
+| created / updated / noteId | **末尾3項目**。初回作成日時、内容更新日時、正本JSONのidを引き継ぐ安定したID |
+
+新規ノートのcreated・updatedは初回内容生成日時で初期化し、createdは再生成でも保持します。
+updatedは項目・根拠・期間・coverage・sourceInventoryが変わる内容更新で更新し、
+同じ内容の再生成、引用符や表示テンプレートだけの変更では保持します。
+日時を記録していなかった旧JSONではcreatedを未設定（`created:`）とし、updatedは保存済みgeneratedAtを使います。
+初回日時を現在時刻やファイルのOS作成時刻で推測しません。以後の再生成でも不明なcreatedは未設定のまま保持します。
+JSONは新規生成時からcreated・updatedを任意の追加メタデータとして保存します。旧JSONも引き続き読み込めます。
+
+日時・日付・バージョンはダブルクォートで囲み、時差・小数秒の字面を保持します。
+Windowsパスはシングルクォート、file URIは通常の文字列です。英語コメントで項目をグループ化します。
+単一値の未設定はコロンのみ、空のdescriptionは `""` です。詳細な出典一覧と校正履歴はJSONに保持します。
+
+ノートの資源は `src/tkn_codex_chat_note/profiles/default-jp/` と `default-en/` にあります。
+設定の `sources.<id>.reviews.language: ja` / `en` が自動で選択します。
+
+| ファイル | 用途 |
+|---|---|
+| profile.json | 出力言語、週・月・年のタイトル |
+| frontmatter.template.yaml | Frontmatterの項目順・分類値・コメント。動的な値の引用符はPythonで処理 |
+| template.md | Markdown全体の見出し・注意文・表・考察・出典を組み立てるJinja2テンプレート |
+| prompt.md | 抽出・原文照合 |
+| synthesis-prompt.md | 最終統合 |
+| quality-prompt.md | 欠落・根拠・概要の校正 |
+| request.template.md | 段階・言語・期間・入力JSONを含むリクエストの枠 |
+| repair-prompt.md / audit-repair-prompt.md | モデル出力／校正出力の修復指示 |
+| instructions.json | 原文の最終照合、概要、行分割の補助指示 |
+| output.schema.json | モデルの項目契約。PydanticのReviewDraftと一致することを起動時に検証 |
+
+[日本語Markdownテンプレート](../../src/tkn_codex_chat_note/profiles/default-jp/template.md)と
+[英語Markdownテンプレート](../../src/tkn_codex_chat_note/profiles/default-en/template.md)を独立して変更できます。
+生成・校正の方針は実績のある英語の指示文を両方に保持し、リクエストのLanguageで出力言語を指定します。
+日英の本文・タイトルはそれぞれのテンプレートで定義します。
+プロファイルはパッケージに同梱する資源です。変更をインストール済みCLIへ反映するには `uv tool install . --reinstall` を使います。
+`generation.profiles` はBridgeの実行設定であり、このノート用profilesとは別です。
+
+入力・生成条件が同じで表示資源だけが古い場合、通常のreview-notes／scheduled-runで保存済みJSONから更新します。
+結果は `rendered`（集計は `renderedCount`）、モデル呼出しは0回です。dry-runは `planned` と理由を返すだけです。
+旧出力をバックアップし、編集済み・確認済みノートは保持します。JSON・日時を表示変更に合わせて書き換えません。
+プロンプト・リクエスト枠・補助指示の変更は生成の更新対象です。変更したリクエストのcacheを流用しません。
+今回は生成方針とリクエストの内容を保って移動し、配置変更による再推論を避けています。
 
 ## 定期実行と再開
 
@@ -123,7 +182,7 @@ Markdownでは共通の留保を冒頭にまとめ、個別の判断に影響す
 空の期間は推論しません。編集指示だけの変更では、モデル・抽出条件・入力が同じなら抽出cacheを再利用します。
 モデルや抽出条件が変わると通常の自動cache再利用はしません。
 生成方針の変更は入力fingerprintに反映され、再生成は既存の編集・確認済みノート保護に従います。
-統合指針は [review-synthesis-prompt.md](../../src/tkn_codex_chat_note/resources/review-synthesis-prompt.md) です。
+統合指針は [synthesis-prompt.md](../../src/tkn_codex_chat_note/profiles/default-jp/synthesis-prompt.md) です。
 
 ## 自動校正（0.33）
 
@@ -142,7 +201,7 @@ Markdownでは共通の留保を冒頭にまとめ、個別の判断に影響す
 JSONの `generation.qualityAudit` に確認方法・件数・抜粋の限界・各判断を保存します。意味の正しさの保証ではありません。`review-notes validate` は従来どおりローカルの構造検証で、モデルを呼びません。この項目のない旧ノートも読めます。
 
 空でないレビューには根拠校正が最低1回増え、完全一致しない抽出項目があれば欠落照合が増え、概要があれば本文との照合が概要1件につき1回増えます。回数は最終案と根拠量に依存するため、dry-runの初期バッチ数だけでは確定しません。取得できた失敗・修復を含む利用量を記録します。本文以外のモデル実行環境の入力、推論・出力も消費するため、復元候補が多いと費用は大きく増えます。`max_calls` により複数回の定期実行にまたがる場合もあります。
-[校正プロンプト](../../src/tkn_codex_chat_note/resources/review-quality-prompt.md)を参照してください。
+[校正プロンプト](../../src/tkn_codex_chat_note/profiles/default-jp/quality-prompt.md)を参照してください。
 
 ## 簡潔さの検証（0.34）
 

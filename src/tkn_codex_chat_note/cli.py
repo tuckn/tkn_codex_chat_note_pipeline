@@ -300,12 +300,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             for entry in review_result.get("results", []):
                 LOGGER.info("%s %s: %s%s", entry["period"]["kind"], entry["period"]["key"], entry["status"],
                             "; " + entry["reason"] if entry.get("reason") else "")
-                if entry.get("notePath") and entry["status"] in {"generated", "planned"}:
+                if entry.get("notePath") and entry["status"] in {"generated", "rendered", "planned"}:
                     LOGGER.info("Review note: %s", entry["notePath"])
                 if entry.get("gaps"):
                     LOGGER.warning("Input limitations: %s; see the review or full run report", len(entry["gaps"]))
-            LOGGER.info("Review notes: generated %s; planned %s; model calls %s; cache hits %s",
-                        review_result.get("generatedCount", 0), review_result.get("plannedCount", 0),
+            LOGGER.info("Review notes: generated %s; rendered %s; planned %s; model calls %s; cache hits %s",
+                        review_result.get("generatedCount", 0), review_result.get("renderedCount", 0),
+                        review_result.get("plannedCount", 0),
                         review_result.get("modelCalls", 0), review_result.get("cacheHits", 0))
             if review_result.get("reportPath"):
                 LOGGER.info("Run report: %s", review_result["reportPath"])

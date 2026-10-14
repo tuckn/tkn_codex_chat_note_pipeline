@@ -1,0 +1,5 @@
+{
+  "raw-pass": "Final Raw pass. Leave rawRequests empty; state unresolved limits.",
+  "overview-body": "Rewrite only the overview from the source-audited body. Do not change the body or add new facts. Preserve reported/inferred status.",
+  "split-batch": "Across this batch, sum(max(0, replacement count - 1)) must not exceed maxAdditionalRows. Split unrelated topics only; keep an activity and its remaining status together in one row."
+}

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
-from importlib.resources import files
 from itertools import groupby
 from pathlib import Path
 from typing import Any, TypeVar
@@ -17,6 +16,7 @@ from .config import AppConfig
 from .inference import invoke_structured
 from .review_evidence import EvidenceSet, digest, raw_supplement
 from .review_model import REVIEW_VERSION, Period, ReviewDraft
+from .review_profiles import ReviewProfile
 from .review_quality import (
     EVIDENCE_CONTEXT_VERSION,
     QUALITY_VERSION,
@@ -51,13 +51,15 @@ class ReviewGenerator:
         self.calls = 0
         self.cache_hits = 0
         self.deadline = time.monotonic() + config.runtime_minutes * 60
-        self.instructions = files("tkn_codex_chat_note").joinpath("resources/review-prompt.md").read_text("utf-8")
-        self.synthesis = (files("tkn_codex_chat_note")
-                          .joinpath("resources/review-synthesis-prompt.md").read_text("utf-8"))
-        self.quality_policy = (files("tkn_codex_chat_note")
-                               .joinpath("resources/review-quality-prompt.md").read_text("utf-8"))
+        self.profile = ReviewProfile(self.settings.language)
+        self.request_signature = self.profile.request_signature()
+        self.instructions = self.profile.text("prompt.md")
+        self.synthesis = self.profile.text("synthesis-prompt.md")
+        self.quality_policy = self.profile.text("quality-prompt.md")
         self.quality_report: dict[str, Any] = {}
-        self.schema = ReviewDraft.model_json_schema()
+        self.schema = self.profile.document("output.schema.json")
+        if self.schema != ReviewDraft.model_json_schema():
+            raise PipelineError("review profile schema differs from the validated ReviewDraft contract")
         source = config.enabled_source_configs()[0]
         self.pipeline_config = source.inference_config()
         options = dict(self.pipeline_config.inference_options)
@@ -94,9 +96,9 @@ class ReviewGenerator:
         instructions = self.synthesis if stage in {"merge", "compose"} else self.instructions
         if stage == "compose":
             payload = {**payload, "editorialLimits": editorial_limits(self.settings.language)}
-        prompt = (instructions + f"\nStage: {stage}\nLanguage: {self.settings.language}\n"
-                  + "Period: " + json.dumps(period.document()) + "\nBEGIN_REVIEW_INPUT_JSON\n"
-                  + json.dumps(payload, ensure_ascii=False) + "\nEND_REVIEW_INPUT_JSON")
+        prompt = self.profile.render("request.template.md", instructions=instructions, stage=stage,
+                                     language=self.settings.language, period_json=json.dumps(period.document()),
+                                     input_json=json.dumps(payload, ensure_ascii=False))
         if len(prompt) > self.settings.input_characters:
             raise PipelineError("review stage exceeds reviews.input_characters; increase that bound or reduce input")
         path = self.cache_root / (digest(prompt) + ".json")
@@ -130,13 +132,10 @@ class ReviewGenerator:
         except ValueError as exc:
             # Repair only the returned draft, not the expensive original evidence batch.
             # Retain it across budget stops so the next invocation can resume the repair.
-            repair = (instructions + "\nStage: repair\nRepair the supplied draft to satisfy the contract. "
-                      "Preserve claims and uncertainty; do not invent evidence or silently discard findings. "
-                      "Use only availableEvidenceIds.\nBEGIN_REVIEW_INPUT_JSON\n"
-                      + json.dumps({"draft": value, "validationError": str(exc)[:4000],
-                                    "availableEvidenceIds": sorted(ids),
-                                    "editorialLimits": payload.get("editorialLimits")}, ensure_ascii=False)
-                      + "\nEND_REVIEW_INPUT_JSON")
+            repair = self.profile.render("repair-prompt.md", instructions=instructions,
+                input_json=json.dumps({"draft": value, "validationError": str(exc)[:4000],
+                                       "availableEvidenceIds": sorted(ids),
+                                       "editorialLimits": payload.get("editorialLimits")}, ensure_ascii=False))
             value = self._invoke("repair", repair)
             draft = ReviewDraft.model_validate(value)
             draft.validate_sources(ids)
@@ -151,9 +150,9 @@ class ReviewGenerator:
         schema = contract.model_json_schema()
         aliases = evidence_aliases(payload) if stage in {"evidence-check", "overview-check"} else {}
         canonical = {alias: id for id, alias in aliases.items()}
-        prompt = (self.quality_policy + f"\nStage: {stage}\nLanguage: {self.settings.language}\n"
-                  + "Period: " + json.dumps(period.document()) + "\nBEGIN_REVIEW_INPUT_JSON\n"
-                  + json.dumps(map_evidence_ids(payload, aliases), ensure_ascii=False) + "\nEND_REVIEW_INPUT_JSON")
+        prompt = self.profile.render("request.template.md", instructions=self.quality_policy, stage=stage,
+                                     language=self.settings.language, period_json=json.dumps(period.document()),
+                                     input_json=json.dumps(map_evidence_ids(payload, aliases), ensure_ascii=False))
         identity = {"prompt": prompt, "schema": schema, "version": QUALITY_VERSION}
         if aliases:
             identity["evidenceAliases"] = aliases
@@ -191,11 +190,9 @@ class ReviewGenerator:
                 repair_input = {**payload, "auditUnits": units,
                                 "evidence": [e for e in payload["evidence"] if e["id"] in allowed]}
                 repair_value = {"decisions": [d for d in value["decisions"] if d["itemId"] in repair_ids]}
-            repair = (self.quality_policy + "\nStage: audit-repair\nRepair only the supplied decisions. "
-                      "Do not add unsupported claims. Every input ID must be accounted for exactly once.\n"
-                      "BEGIN_REVIEW_INPUT_JSON\n" + json.dumps(map_evidence_ids({"result": repair_value,
-                      "validationError": str(exc)[:3000],
-                      "originalInput": repair_input}, aliases), ensure_ascii=False) + "\nEND_REVIEW_INPUT_JSON")
+            repair = self.profile.render("audit-repair-prompt.md", instructions=self.quality_policy,
+                input_json=json.dumps(map_evidence_ids({"result": repair_value,
+                    "validationError": str(exc)[:3000], "originalInput": repair_input}, aliases), ensure_ascii=False))
             # Repair includes the sources; an oversized repair stops without publishing unchecked text.
             repaired = map_evidence_ids(self._invoke("audit-repair", repair, schema), canonical)
             if repair_ids is not None:
@@ -283,7 +280,7 @@ class ReviewGenerator:
                 payload = {"draft": draft.model_dump(), "rawEvidence": supplement.input_records(),
                            "requestedEvidence": [e for e in batch if e["id"] in allowed],
                            "availableEvidenceIds": sorted(ids), "gaps": supplement.gaps,
-                           "instruction": "Final Raw pass. Leave rawRequests empty; state unresolved limits."}
+                           "instruction": self.profile.instruction("raw-pass")}
                 draft = self._call("raw-check", period, payload, ids)
                 if draft.rawRequests:
                     raise PipelineError("review requested additional Raw after the bounded Raw pass")

@@ -427,10 +427,12 @@ def test_intelligence_and_improvement_candidates_keep_status_and_citations(tmp_p
         validate_review(path)
 
 
-def test_generated_schema_resource_matches_contract() -> None:
+@pytest.mark.parametrize("profile", ["default-jp", "default-en"])
+def test_generated_schema_resource_matches_contract(profile: str) -> None:
     from importlib.resources import files
 
-    schema = json.loads(files("tkn_codex_chat_note").joinpath("resources/review-draft.schema.json").read_text("utf-8"))
+    resource = files("tkn_codex_chat_note").joinpath("profiles", profile, "output.schema.json")
+    schema = json.loads(resource.read_text("utf-8"))
     assert schema == ReviewDraft.model_json_schema()
 
 

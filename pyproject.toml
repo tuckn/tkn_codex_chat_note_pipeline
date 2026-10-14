@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tkn-codex-chat-note-pipeline"
-version = "0.36.0"
+version = "0.38.0"
 description = "Preserve Codex chat evidence and generate source-backed calendar review notes."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,6 +13,7 @@ authors = [{ name = "Tuckn" }]
 dependencies = [
   "pydantic>=2.10,<3",
   "PyYAML>=6,<7",
+  "Jinja2>=3.1,<4",
   "tkn-genai-bridge @ https://github.com/tuckn/tkn_genai_bridge/archive/9cf534e47159901c3bb05bb802695fad746cc338.zip",
   "httpx>=0.28,<1",
   "tiktoken>=0.12,<1",
