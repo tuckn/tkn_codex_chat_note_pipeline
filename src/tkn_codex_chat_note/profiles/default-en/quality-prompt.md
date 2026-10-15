@@ -98,3 +98,21 @@ correction, keep the same final requirement and implementation uncertainty in th
 Do not introduce facts exclusive to the old overview, consult missing sources, edit the body, or
 recount all rows. Write a short connected overview whose themes and states agree with the body,
 with its interpretation qualified. Obey the allocated prose budget and return category overview only.
+
+Reusable question/learning content (required when supported):
+For questions/learning, text should preserve the actual answer or explanation takeaway in 1-2
+short sentences when it is useful for later decisions, alongside the question and demonstrated
+understanding state. "Asked about X" or "received an explanation" alone loses reusable meaning.
+Use the existing text field; do not add columns or invent knowledge from the topic name. Cite
+supplied answer/explanation evidence as well as the question. If an answer is unavailable, say
+that its content is unconfirmed and request bounded Raw when appropriate; never supply a new
+answer from general model knowledge. Receiving an explanation does not prove understanding.
+Keep this content through monthly/yearly synthesis without upgrading its confidence or scope.
+Administration-only app context (including external_codex_apps_open_page) is not a question,
+answer, event or usable support. Do not cite it or use it as a conversation title.
+
+For coverage-check, naming the question's topic is not coverage of its explanation takeaway.
+Restore a supported reusable explanation concisely into the existing question/learning row.
+For evidence-check, verify that the row retains what the supplied answer actually explains,
+not merely that an answer was received. Cite the answer's evidence and retain uncertainty
+about the user's understanding. Obey the existing replacement/restoration budgets.

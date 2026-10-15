@@ -12,12 +12,12 @@
 | {{ headers|join(' | ') }} |
 | {{ ('---|' * (headers|length)).rstrip('|')|replace('|', ' | ') }} |
 {%- for item in rows %}
-| {{ (item.title ~ (' (' ~ item.intelligenceKind ~ ')' if candidate else ''))|cell }} | {{ item.text|cell }} {{ item.refs }} | {% if headers|length == 4 %}{{ item.caveat|cell or '—' }} | {{ item.nextCheck|cell or '—' }}{% else %}{{ (item.caveat ~ ((' ' if item.caveat else '') ~ "確認案：" ~ item.nextCheck if item.nextCheck else ''))|cell or '—' }}{% endif %} |
+| {{ (item.title ~ (' (' ~ item.intelligenceKind ~ ')' if candidate else ''))|cell }} | {{ item.text|cell }} {{ item.refs }}{% if item.uncitableEvidenceIds %} (引用対象外の管理用イベントを除外。主張の根拠は要確認。){% endif %} | {% if headers|length == 4 %}{{ item.caveat|cell or '—' }} | {{ item.nextCheck|cell or '—' }}{% else %}{{ (item.caveat ~ ((' ' if item.caveat else '') ~ "確認案：" ~ item.nextCheck if item.nextCheck else ''))|cell or '—' }}{% endif %} |
 {%- endfor %}
 {% endif %}
 {%- endmacro -%}
 {%- macro overview_block(item) -%}
-{{ item.text }} {{ item.refs }}{% if item.caveat %}
+{{ item.text }} {{ item.refs }}{% if item.uncitableEvidenceIds %} (引用対象外の管理用イベントを除外。主張の根拠は要確認。){% endif %}{% if item.caveat %}
 
 {{ item.caveat }}{% endif %}{% if item.nextCheck %}
 
@@ -26,7 +26,7 @@
 {%- macro insight_block(item) -%}
 ### {{ item.title }}
 
-{{ item.text }} {{ item.refs }}
+{{ item.text }} {{ item.refs }}{% if item.uncitableEvidenceIds %} (引用対象外の管理用イベントを除外。主張の根拠は要確認。){% endif %}
 
 {{ item.caveat }}
 
@@ -37,7 +37,13 @@
 
 入力の根拠単位：{{ coverage.inputCount }}件、週次：{{ coverage.weeklyInputs|length }}件、月次：{{ coverage.get('monthlyInputs', [])|length }}件。対象範囲：{{ coverage.status }}。
 {% if coverage.gaps %}
-入力の不足・省略に関する記録が{{ coverage.gaps|length }}件あります。詳細はJSONに保存しています。
+収録範囲の制約は{{ coverage.gaps|length }}件の記録です。会話の欠落数ではありません。
+
+| 制約の種類 | 記録数 | 読み取りへの影響 |
+| --- | --- | --- |
+{% for group in coverage_groups -%}
+| {{ presentation.coverageKinds[group.kind][0] }} | {{ group.count }} | {{ presentation.coverageKinds[group.kind][1] }} |
+{% endfor %}
 {% endif %}
 {% for gap in important_gaps -%}
 - {{ gap|cell }}
@@ -53,6 +59,21 @@
 
 [出典文書](<{{ source.path }}>)
 {% endif %}
+<details>
+<summary>根拠発言を確認 ({{ source.records|length }})</summary>
+
+{% for citation in source.citations -%}
+<a id="{{ citation.anchor }}"></a> **引用 {{ citation.number }}**: {% for record in citation.records %}[{{ record.label }}](#{{ record.anchor }}){% if not loop.last %}, {% endif %}{% endfor %}
+
+{% endfor -%}
+| 根拠ID | 日時 | 発言者 | 短い抜粋 | 原文位置 |
+| --- | --- | --- | --- | --- |
+{% for record in source.records -%}
+| <a id="{{ record.anchor }}"></a>{{ record.label }} · {{ record.id }} | {{ record.times|join(' / ')|cell }} | {{ presentation.actors.get(record.actor, record.actor)|cell }} | {{ record.quote|cell }} | {{ record.locations|cell or '—' }} |
+{% endfor %}
+抜粋は最大160文字。根拠IDに対応する全内容・参照先はJSONに保持しています。
+
+</details>
 {%- endmacro -%}
 {%- set ns = namespace(blocks=[frontmatter, '# ' ~ title, period.start ~ ' — ' ~ period_end ~ ' (UTC offset ' ~ offset ~ ' minutes)', "保存済みの記録に基づくレビューです。生活・活動全体の網羅性を示すものではありません。当時の未解決事項を現在のタスクとはみなしません。Intelligence候補と改善案は採用前の内容です。"]) -%}
 {%- for item in overview -%}{%- do ns.blocks.append(overview_block(item)) -%}{%- endfor -%}

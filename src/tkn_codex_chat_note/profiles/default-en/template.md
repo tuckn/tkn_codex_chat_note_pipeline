@@ -12,12 +12,12 @@
 | {{ headers|join(' | ') }} |
 | {{ ('---|' * (headers|length)).rstrip('|')|replace('|', ' | ') }} |
 {%- for item in rows %}
-| {{ (item.title ~ (' (' ~ item.intelligenceKind ~ ')' if candidate else ''))|cell }} | {{ item.text|cell }} {{ item.refs }} | {% if headers|length == 4 %}{{ item.caveat|cell or '—' }} | {{ item.nextCheck|cell or '—' }}{% else %}{{ (item.caveat ~ ((' ' if item.caveat else '') ~ "Check: " ~ item.nextCheck if item.nextCheck else ''))|cell or '—' }}{% endif %} |
+| {{ (item.title ~ (' (' ~ item.intelligenceKind ~ ')' if candidate else ''))|cell }} | {{ item.text|cell }} {{ item.refs }}{% if item.uncitableEvidenceIds %} (Administrative references excluded; verify support for the claim.){% endif %} | {% if headers|length == 4 %}{{ item.caveat|cell or '—' }} | {{ item.nextCheck|cell or '—' }}{% else %}{{ (item.caveat ~ ((' ' if item.caveat else '') ~ "Check: " ~ item.nextCheck if item.nextCheck else ''))|cell or '—' }}{% endif %} |
 {%- endfor %}
 {% endif %}
 {%- endmacro -%}
 {%- macro overview_block(item) -%}
-{{ item.text }} {{ item.refs }}{% if item.caveat %}
+{{ item.text }} {{ item.refs }}{% if item.uncitableEvidenceIds %} (Administrative references excluded; verify support for the claim.){% endif %}{% if item.caveat %}
 
 {{ item.caveat }}{% endif %}{% if item.nextCheck %}
 
@@ -26,7 +26,7 @@ Check: {{ item.nextCheck }}{% endif %}
 {%- macro insight_block(item) -%}
 ### {{ item.title }}
 
-{{ item.text }} {{ item.refs }}
+{{ item.text }} {{ item.refs }}{% if item.uncitableEvidenceIds %} (Administrative references excluded; verify support for the claim.){% endif %}
 
 {{ item.caveat }}
 
@@ -37,7 +37,13 @@ Check: {{ item.nextCheck }}{% endif %}
 
 Input evidence units: {{ coverage.inputCount }}; weekly reviews: {{ coverage.weeklyInputs|length }}; monthly reviews: {{ coverage.get('monthlyInputs', [])|length }}; status: {{ coverage.status }}.
 {% if coverage.gaps %}
-There are {{ coverage.gaps|length }} recorded coverage limitations; see JSON for all details.
+There are {{ coverage.gaps|length }} limitation records, not missing conversations.
+
+| Limitation kind | Records | Effect on interpretation |
+| --- | --- | --- |
+{% for group in coverage_groups -%}
+| {{ presentation.coverageKinds[group.kind][0] }} | {{ group.count }} | {{ presentation.coverageKinds[group.kind][1] }} |
+{% endfor %}
 {% endif %}
 {% for gap in important_gaps -%}
 - {{ gap|cell }}
@@ -53,6 +59,21 @@ Source labels group citations by document; exact evidence IDs, snippets, timesta
 
 [Source document](<{{ source.path }}>)
 {% endif %}
+<details>
+<summary>Inspect cited messages ({{ source.records|length }})</summary>
+
+{% for citation in source.citations -%}
+<a id="{{ citation.anchor }}"></a> **Citation {{ citation.number }}**: {% for record in citation.records %}[{{ record.label }}](#{{ record.anchor }}){% if not loop.last %}, {% endif %}{% endfor %}
+
+{% endfor -%}
+| Evidence ID | Time | Speaker | Short excerpt | Original location |
+| --- | --- | --- | --- | --- |
+{% for record in source.records -%}
+| <a id="{{ record.anchor }}"></a>{{ record.label }} · {{ record.id }} | {{ record.times|join(' / ')|cell }} | {{ presentation.actors.get(record.actor, record.actor)|cell }} | {{ record.quote|cell }} | {{ record.locations|cell or '—' }} |
+{% endfor %}
+Excerpts are limited to 160 characters. JSON retains full evidence text and exact references.
+
+</details>
 {%- endmacro -%}
 {%- set ns = namespace(blocks=[frontmatter, '# ' ~ title, period.start ~ ' — ' ~ period_end ~ ' (UTC offset ' ~ offset ~ ' minutes)', "This review covers saved records, not a complete measure of life or work. Historical open issues are not necessarily current tasks. Intelligence candidates and improvements are unadopted proposals."]) -%}
 {%- for item in overview -%}{%- do ns.blocks.append(overview_block(item)) -%}{%- endfor -%}

@@ -10,11 +10,14 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from .chat_logs import clean_user_text
+from .chat_titles import conversation_title, load_chat_titles
 from .config import AppConfig
 from .media_inputs import describe_embedded_images
 from .references import resolve_store_ref
 from .review_model import REVIEW_VERSION, Period, ReviewDraft, overlapping_weeks, period_for
 from .review_preparation import PREPARATION_VERSION, routine_index, tool_excerpt
+from .review_sources import citable_evidence
 from .runtime import PipelineError
 from .storage import read_json
 
@@ -48,7 +51,7 @@ class EvidenceSet:
 
     def add(self, value: dict[str, Any], *, select: bool = True) -> None:
         self.evidence[value["id"]] = value
-        if select and value["id"] not in self.selected:
+        if select and citable_evidence(value) and value["id"] not in self.selected:
             self.selected.append(value["id"])
 
     def merge(self, other: EvidenceSet) -> None:
@@ -91,6 +94,7 @@ def canonical_evidence(config: AppConfig, period: Period) -> EvidenceSet:
             result.gaps.append(f"source {source.source_id}: catalog missing; run pull after raw ingest")
             continue
         catalog = checked_json(path)
+        titles = load_chat_titles(source.codex_home / "session_index.jsonl")
         result.sources.append({"sourceId": source.source_id, "catalogPath": str(path),
                                "catalogAsOf": catalog.get("asOf"), "catalogSha256": digest(catalog)})
         preparation: dict[str, Any] = {
@@ -127,6 +131,8 @@ def canonical_evidence(config: AppConfig, period: Period) -> EvidenceSet:
                     result.gaps.append(f"{source.source_id}/{entry['threadId']}: failed normalization "
                                        f"({entry.get('reason')}); ambiguous evidence excluded")
                     continue
+                entry = {**entry, "title": conversation_title(titles.get(entry["threadId"], entry.get("title", "")),
+                         (e.get("text", "") for e in events if e.get("actor") == "user"), entry["threadId"])}
                 routine = []
                 for e in selected:
                     # Retain dialogue/actions/results and explicit interruptions, not duplicated completions.
@@ -142,7 +148,10 @@ def canonical_evidence(config: AppConfig, period: Period) -> EvidenceSet:
                                          actor=e.get("actor", "tool"), label="tool-diagnostic"))
                         preparation["diagnosticToolRecords"] += 1
                         continue
-                    text = describe_embedded_images(e.get("text", "")).text
+                    cleaned = clean_user_text(e.get("text", "")) if e.get("actor") == "user" else e.get("text", "")
+                    if not cleaned.strip():
+                        continue
+                    text = describe_embedded_images(cleaned).text
                     if len(text) > 6000:
                         text = text[:6000] + "\n[Source excerpt truncated; request Raw for context.]"
                         result.gaps.append(f"{source.source_id}/{entry['threadId']}/{e['localId']}: excerpt truncated")
@@ -188,7 +197,11 @@ def period_evidence(config: AppConfig, period: Period) -> EvidenceSet:
             result.gaps.extend(f"{child.key}: {gap}" for gap in saved.get("coverage", {}).get("gaps", []))
             covered: set[str] = set()
             for item in draft.items:
-                refs = [evidence[id] for id in item.evidenceIds]
+                supports = [id for id in item.evidenceIds if citable_evidence(evidence[id])]
+                if not supports:
+                    result.gaps.append(f"{child.key}: item excluded; no citable evidence")
+                    continue
+                refs = [evidence[id] for id in supports]
                 times = sorted({t for ref in refs for t in ref["timestamps"]})
                 if not times or not all(period.contains(t) for t in times):
                     continue
@@ -198,9 +211,9 @@ def period_evidence(config: AppConfig, period: Period) -> EvidenceSet:
                         "text": item.title + ": " + item.text, "basis": item.basis,
                         "caveat": item.caveat, "nextCheck": item.nextCheck,
                         "category": item.category, "intelligenceKind": item.intelligenceKind,
-                        "timestamps": times, path_field: str(path), "supports": item.evidenceIds}
+                        "timestamps": times, path_field: str(path), "supports": supports}
                 result.add(unit)
-                covered.update(item.evidenceIds)
+                covered.update(supports)
             # Keep transitive provenance off the model input. Boundary fragments use their dated
             # source evidence, not the whole weekly narrative or an invented proportional allocation.
             for id, ref in evidence.items():
@@ -250,6 +263,8 @@ def raw_supplement(config: AppConfig, evidence: EvidenceSet, ids: list[str], per
                 event = events[i]
                 if not period.contains(event.get("timestamp", "")):
                     continue
+                if event.get("actor") == "user" and not clean_user_text(event.get("text", "")):
+                    continue
                 raw_ref, _, anchor = event["rawRef"].rpartition("#")
                 expected_hash = capture_hashes.get(raw_ref, "")
                 if not re.fullmatch(r"[0-9a-f]{64}", expected_hash) or not re.fullmatch(r"L\d+", anchor):
@@ -269,6 +284,7 @@ def raw_supplement(config: AppConfig, evidence: EvidenceSet, ids: list[str], per
                 remaining -= len(text)
                 unit = {**ref, "id": "R" + digest([ref["threadId"], event["localId"], text])[:24],
                         "kind": "raw-excerpt", "text": text, "timestamps": [event["timestamp"]],
+                        "actor": event.get("actor", "unknown"), "label": event.get("kind", "raw_record"),
                         "rawSnapshotPath": str(snapshot), "rawSha256": expected_hash,
                         "rawLine": int(anchor[1:]), "requestedFor": id,
                         "events": [{k: event.get(k, "") for k in ("id", "localId", "timestamp", "rawRef")}]}

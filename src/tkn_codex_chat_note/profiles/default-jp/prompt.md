@@ -64,3 +64,15 @@ Mandatory field constraints (also validated after generation):
 - insights, intelligence-candidate and ai-improvement require nonempty caveat and nextCheck.
 Keep intermediate drafts selective (typically 5-10 meaningful findings per batch), consolidating
 related evidence. Merge into a readable period review, retaining distinct material findings.
+
+Reusable question/learning content (required when supported):
+For questions/learning, text should preserve the actual answer or explanation takeaway in 1-2
+short sentences when it is useful for later decisions, alongside the question and demonstrated
+understanding state. "Asked about X" or "received an explanation" alone loses reusable meaning.
+Use the existing text field; do not add columns or invent knowledge from the topic name. Cite
+supplied answer/explanation evidence as well as the question. If an answer is unavailable, say
+that its content is unconfirmed and request bounded Raw when appropriate; never supply a new
+answer from general model knowledge. Receiving an explanation does not prove understanding.
+Keep this content through monthly/yearly synthesis without upgrading its confidence or scope.
+Administration-only app context (including external_codex_apps_open_page) is not a question,
+answer, event or usable support. Do not cite it or use it as a conversation title.

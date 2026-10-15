@@ -13,7 +13,7 @@ from .review_profiles import ReviewProfile
 
 
 def presentation_signature(language: str = "ja") -> str:
-    return sha256(("formatter:3\n" + ReviewProfile(language).presentation_signature()).encode("utf-8")).hexdigest()
+    return sha256(("formatter:4\n" + ReviewProfile(language).presentation_signature()).encode("utf-8")).hexdigest()
 
 
 def _scalar(value: str | int | None) -> str:

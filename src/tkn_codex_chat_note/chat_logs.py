@@ -122,6 +122,10 @@ def content_to_text(content: Any) -> str:
 
 
 def clean_user_text(text: str) -> str:
+    # Standalone app context is transport metadata, preserved only in Raw.
+    # Strip leading blocks only: quoted examples and actual requests stay intact.
+    text = re.sub(r"\A\s*(?:<external_codex_apps_open_page>.*?</external_codex_apps_open_page>\s*)+",
+                  "", text, flags=re.DOTALL)
     for marker in ("## My request for Codex:", "## My request for Codex"):
         if marker in text:
             return text.split(marker, 1)[1].strip()

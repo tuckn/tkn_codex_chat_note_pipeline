@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .review_evidence import EvidenceSet, digest
 from .review_model import Period, ReviewDraft, ReviewItem
+from .review_sources import citable_evidence
 from .review_transport import evidence_aliases, map_evidence_ids
 from .runtime import PipelineError
 
@@ -249,7 +250,7 @@ def audit_units(draft: ReviewDraft, evidence: EvidenceSet,
                 related: dict[str, list[dict[str, Any]]] | None = None) -> list[dict[str, Any]]:
     by_thread: dict[str, list[str]] = defaultdict(list)
     for id, e in evidence.evidence.items():
-        if e.get("threadId") and e.get("actor") in {"user", "assistant"}:
+        if e.get("threadId") and e.get("actor") in {"user", "assistant"} and citable_evidence(e):
             by_thread[e["threadId"]].append(id)
     for ids in by_thread.values():
         ids.sort(key=lambda id: (evidence.evidence[id]["timestamps"][-1], id))

@@ -572,22 +572,24 @@ def test_editorial_pass_resumes_after_budget_without_repeating_extraction(tmp_pa
 
 
 @pytest.mark.parametrize("language", ["ja", "en"])
-def test_editorial_render_keeps_citations_and_tables_without_raw_appendix(tmp_path: Path, language: str) -> None:
+def test_editorial_render_keeps_citations_tables_and_bounded_source_quotes(tmp_path: Path, language: str) -> None:
     from tkn_codex_chat_note.review_render import render_review
 
     config = config_for(tmp_path, language=language)
-    seed(config, [("2026-05-19T00:00:00Z", "PRIVATE_FULL_SOURCE_SENTINEL")])
+    source_text = "PRIVATE_FULL_SOURCE_SENTINEL " + "X" * 400
+    seed(config, [("2026-05-19T00:00:00Z", source_text)])
     result = weekly(config, FakeGenerator())
     value = json.loads(Path(result["results"][0]["jsonPath"]).read_text(encoding="utf-8"))
     id = value["items"][0]["evidenceIds"][0]
     value["items"] = [item(id, text="A | B\n<literal>"), item(id, category="activities")]
     text = render_review(value, tmp_path / "review.json", language)
     assert "A &#124; B<br>&lt;literal&gt;" in text
-    assert "PRIVATE_FULL_SOURCE_SENTINEL" not in text
+    assert source_text not in text
+    assert "PRIVATE_FULL_SOURCE_SENTINEL" in text and "<details>" in text
     assert text.count("### S001") == 1 and "### S002" not in text
-    assert text.count("[S001](#s001)") == 2
+    assert text.count("[S001](#s001-c1)") == 2
     assert "review.json" in text
-    assert value["evidence"][0]["text"] == "PRIVATE_FULL_SOURCE_SENTINEL"
+    assert value["evidence"][0]["text"] == source_text
 
 
 def test_editorial_pass_cannot_introduce_unknown_evidence(tmp_path: Path) -> None:

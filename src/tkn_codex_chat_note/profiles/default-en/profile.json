@@ -4,5 +4,57 @@
     "weekly": "Weekly review",
     "monthly": "Monthly review",
     "yearly": "Yearly review"
+  },
+  "coverageKinds": {
+    "tool-compaction": [
+      "Routine tool bodies compacted",
+      "Bodies became indexes; this is not a count of missing chats. Use Raw to verify results."
+    ],
+    "excerpt-truncation": [
+      "Excerpts truncated",
+      "Text outside the excerpt is unverified; absence in an excerpt is not evidence of absence."
+    ],
+    "raw-character-limit": [
+      "Raw character limit",
+      "Some requested original text was not retrieved; affected claims need verification."
+    ],
+    "raw-request-limit": [
+      "Raw request limit",
+      "Some requested checks were deferred when selecting original records."
+    ],
+    "normalization-failure": [
+      "Normalization failed",
+      "Ambiguous events were excluded from review input."
+    ],
+    "invalid-log-lines": [
+      "Invalid original log lines",
+      "Content of invalid lines could not be read."
+    ],
+    "missing-review": [
+      "Lower-period review unavailable",
+      "Available lower-level sources supplied fallback evidence."
+    ],
+    "raw-unavailable": [
+      "Original reference unavailable",
+      "Retrieval or verification failed; original wording remains unchecked."
+    ],
+    "missing-catalog": [
+      "Catalog unavailable",
+      "Normalized chats for that source were not available."
+    ],
+    "other": [
+      "Other limitations",
+      "See coverage.gaps in JSON for the recorded details."
+    ],
+    "uncitable-evidence": [
+      "No citable support",
+      "Lower-review items supported only by administrative events were excluded."
+    ]
+  },
+  "actors": {
+    "user": "User",
+    "assistant": "Assistant",
+    "tool": "Tool",
+    "unknown": "Unrecorded"
   }
 }

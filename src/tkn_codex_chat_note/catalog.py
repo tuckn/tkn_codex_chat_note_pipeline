@@ -18,6 +18,7 @@ from .chat_logs import (
     path_is_within,
     read_thread_source,
 )
+from .chat_titles import conversation_title, load_chat_titles
 from .config import AppConfig
 from .histories import combine_histories
 from .provenance import ProvenanceStore, immutable_bytes, json_bytes
@@ -33,7 +34,7 @@ from .storage import read_json
 
 CATALOG_SCHEMA_VERSION = "1.0.0"
 EVENT_SCHEMA_VERSION = "1.0.0"
-PARSER_VERSION = "2"
+PARSER_VERSION = "3"
 
 
 def thread_key(thread_id: str) -> str:
@@ -201,6 +202,7 @@ def discover(config: AppConfig, provenance: ProvenanceStore, *, run_id: str) -> 
             groups.setdefault(source.thread_log.id, []).append((item, source))
         except (OSError, ValueError) as exc:
             failures.append({"stage": "normalize", "sourceRef": item.source_ref, "error": str(exc)})
+    titles = load_chat_titles(config.codex_home / "session_index.jsonl")
     entries: list[dict[str, Any]] = []
     evidence: dict[str, list[dict[str, Any]]] = {}
     for thread_id, versions in sorted(groups.items()):
@@ -238,7 +240,8 @@ def discover(config: AppConfig, provenance: ProvenanceStore, *, run_id: str) -> 
             sourceCaptureSha256=item.capture_sha256,
             lastEventAt=source.last_event_at,
             startedAt=log.timestamp,
-            title=(log.user_messages[0].text[:100] if log.user_messages else "Codex conversation"),
+            title=conversation_title(titles.get(thread_id, ""), (m.text for m in log.user_messages), thread_id),
+            titleSource="session-index" if thread_id in titles else "message-fallback",
         )
         source_diagnostics = [{"sourceRef": raw.source_ref, **_diagnostics(raw.source_path)} for raw, _ in versions]
         diagnostics = {

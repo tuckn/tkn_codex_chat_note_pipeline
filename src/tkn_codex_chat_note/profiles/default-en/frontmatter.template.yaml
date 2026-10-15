@@ -30,7 +30,7 @@ generatedAt: $generatedAt
 sourceFingerprint: $sourceFingerprint
 generationSettingsSha256: $generationSettingsSha256
 noteProfile: $noteProfile
-templateVersion: "2.0.0"
+templateVersion: "2.1.0"
 templateSha256: $templateSha256
 
 # --- Note lifecycle ---

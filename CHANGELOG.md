@@ -7,6 +7,13 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.39.0 - 2026-10-15
+
+- Prefer actual chat names from the local session index, with meaningful request-text fallbacks; exclude standalone app-page metadata from normalization, review inputs and bounded Raw neighbors.
+- Link each item to its exact evidence subset and expose bounded, deduplicated source excerpts, speakers, original timestamps and event positions in collapsed source details.
+- Retain supported reusable explanation takeaways in question/learning text through extraction, synthesis and audits without adding a model stage or changing main-body layout.
+- Group coverage limitations by kind and interpretation instead of conflating compaction, truncation, retrieval limits and normalization failures; retain all original diagnostics.
+
 ## 0.38.0 - 2026-10-15
 
 - Classify Markdown as chatReview, identify sourceApplication: Codex independently of generation provider, and place created/updated/noteId last in Frontmatter v3.

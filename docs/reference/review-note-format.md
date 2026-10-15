@@ -309,3 +309,47 @@ from saved JSON without inference (`rendered`, counted in `renderedCount`). Dry-
 Presentation updates preserve JSON/lifecycle dates. Policy, framing and auxiliary-instruction
 changes trigger generation updates without reusing altered request caches. This relocation
 preserves request contents and avoids inference solely for changed resource paths.
+
+## Source navigation, question takeaways and coverage limits
+
+The existing section order and table columns remain unchanged. Display names, citation navigation
+and limitation groups are prepared mechanically without an additional model call.
+
+### Names and citable sources
+
+The local source's `session_index.jsonl` thread_name takes precedence over a first-message label.
+When unavailable or administrative, a real request supplies a verbatim prefix of at most 100
+characters. Catalog titleSource records session-index/message-fallback. Names are display metadata,
+not evidence supporting claims.
+
+Standalone external_codex_apps_open_page events are excluded from normalization, legacy canonical
+review inputs and bounded Raw neighbors. Real requests after a context block and quoted tag examples
+are retained. Raw originals remain unchanged. Lower-period items without citable support are excluded
+with a recorded limitation. Legacy administrative references are excluded from display with an explicit
+support-check notice; neither the claim nor its authoritative JSON is silently corrected.
+
+Each `[S001]` points to the exact cited-message subset for that item. Different subsets within the same
+chat have distinct anchors. Collapsed source details map these subsets to evidence IDs, speakers,
+original timestamp strings, excerpts capped at 160 characters and original event locations. Each
+excerpt is stored once in the view even if cited repeatedly. Timestamp offset/fractional precision
+is preserved. Large multi-event indexes show their first/last locations and timestamps; JSON retains
+full positions/content. These endpoints do not assert continuous work. Detailed source text increases
+the Markdown file's size while existing main-body prose limits stay in force.
+
+### Reusable question/learning takeaways
+
+The existing text field retains the question, demonstrated understanding state and 1-2 short sentences
+of a reusable explanation when supported. Cite answer/explanation evidence as well as the question.
+Receiving an explanation is not demonstrated understanding/application. Missing explanation remains
+unconfirmed; do not fill it from general model knowledge. Both language profiles apply this policy
+to extraction, composition and audits, including monthly/yearly synthesis. There is no new inference
+stage; existing item/prose ceilings remain. Additional instruction and takeaway tokens depend on the run.
+
+### Limitation groups
+
+Coverage lists record counts and interpretation for routine tool compaction, excerpt truncation,
+Raw character/request limits, normalization failure, invalid original lines, missing lower reviews,
+catalog/Raw retrieval failures, uncitable evidence and other limitations. Counts are gap records,
+not missing chats, independent failures or affected conclusions. Inherited period-prefixed diagnostics
+are classified too; unknown formats remain in Other. Full diagnostics stay in JSON and displayed
+counts sum to the number of original gap records.
