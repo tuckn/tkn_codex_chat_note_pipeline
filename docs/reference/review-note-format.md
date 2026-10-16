@@ -254,6 +254,8 @@ prompts continue to reuse their caches.
 
 ## Frontmatter and Japanese/English profiles
 
+The Frontmatter title and H1 identify the source, for example `Weekly Codex chat review — 2026-W18` (also monthly/yearly). Opening summaries sit under H2 Overview; general notices and overview qualifications/checks appear under Coverage and sources → Interpretation notes.
+
 Markdown uses **type: chatReview / schemaVersion: "3.1.0"**. Authoritative JSON retains its
 internal **type: reviewNote / schemaVersion: "1.0.0"** contract. `periodKind` distinguishes
 weekly, monthly and yearly notes. A chatReview is a source-backed cross-chat reflection used

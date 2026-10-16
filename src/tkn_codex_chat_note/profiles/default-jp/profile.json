@@ -1,9 +1,9 @@
 {
   "language": "ja",
   "periodTitles": {
-    "weekly": "週次レビュー",
-    "monthly": "月次レビュー",
-    "yearly": "年次レビュー"
+    "weekly": "Codexチャットの週次レビュー",
+    "monthly": "Codexチャットの月次レビュー",
+    "yearly": "Codexチャットの年次レビュー"
   },
   "coverageKinds": {
     "tool-compaction": [

@@ -78,6 +78,8 @@ tkn-codex-chat-note review-notes validate "C:\path\to\reviews\weekly\2026\2026-W
 
 ## Frontmatterと日英プロファイル
 
+タイトルと本文のH1は `Codexチャットの週次レビュー — 2026-W18` のように取得元を示します（月次・年次も同様）。冒頭の概要はH2「概要」にまとめ、一般的な注意事項と概要の留保・確認案は末尾の「対象範囲と出典 → 読み取り上の注意」に配置します。
+
 Markdown Frontmatterは **type: chatReview / schemaVersion: "3.1.0"** です。
 正本JSONは引き続き内部データ契約 **type: reviewNote / schemaVersion: "1.0.0"** を使います。
 週次・月次・年次は `periodKind` で区別します。chatReviewは出典に帰属するチャットの横断的な振り返りであり、

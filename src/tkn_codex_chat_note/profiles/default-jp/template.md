@@ -17,11 +17,7 @@
 {% endif %}
 {%- endmacro -%}
 {%- macro overview_block(item) -%}
-{{ item.text }} {{ item.refs }}{% if item.uncitableEvidenceIds %} (引用対象外の管理用イベントを除外。主張の根拠は要確認。){% endif %}{% if item.caveat %}
-
-{{ item.caveat }}{% endif %}{% if item.nextCheck %}
-
-確認案：{{ item.nextCheck }}{% endif %}
+{{ item.text }} {{ item.refs }}
 {%- endmacro -%}
 {%- macro insight_block(item) -%}
 ### {{ item.title }}
@@ -34,6 +30,19 @@
 {%- endmacro -%}
 {%- macro coverage_block() -%}
 ## 対象範囲と出典
+
+### 読み取り上の注意
+
+保存済みの記録に基づくレビューです。生活・活動全体の網羅性を示すものではありません。当時の未解決事項を現在のタスクとはみなしません。Intelligence候補と改善案は採用前の内容です。
+{% for item in overview %}
+{% if item.uncitableEvidenceIds %}引用対象外の管理用イベントを除外。概要の主張の根拠は要確認。
+{% endif %}
+{% if item.caveat %}{{ item.caveat }}
+{% endif %}
+{% if item.nextCheck %}確認案：{{ item.nextCheck }}
+{% endif %}
+{% endfor %}
+### 収録範囲
 
 入力の根拠単位：{{ coverage.inputCount }}件、週次：{{ coverage.weeklyInputs|length }}件、月次：{{ coverage.get('monthlyInputs', [])|length }}件。対象範囲：{{ coverage.status }}。
 {% if comparison %}
@@ -78,7 +87,8 @@
 
 </details>
 {%- endmacro -%}
-{%- set ns = namespace(blocks=[frontmatter, '# ' ~ title, period.start ~ ' — ' ~ period_end ~ ' (UTC offset ' ~ offset ~ ' minutes)', "保存済みの記録に基づくレビューです。生活・活動全体の網羅性を示すものではありません。当時の未解決事項を現在のタスクとはみなしません。Intelligence候補と改善案は採用前の内容です。"]) -%}
+{%- set ns = namespace(blocks=[frontmatter, '# ' ~ title, period.start ~ ' — ' ~ period_end ~ ' (UTC offset ' ~ offset ~ ' minutes)']) -%}
+{%- if overview or not items -%}{%- do ns.blocks.append('## 概要') -%}{%- endif -%}
 {%- for item in overview -%}{%- do ns.blocks.append(overview_block(item)) -%}{%- endfor -%}
 {%- for rows, heading, headers, candidate in tables -%}
 {%- if rows -%}{%- do ns.blocks.append(table(rows, heading, headers, candidate)|trim) -%}{%- endif -%}

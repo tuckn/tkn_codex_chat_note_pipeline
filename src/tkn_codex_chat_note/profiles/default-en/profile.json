@@ -1,9 +1,9 @@
 {
   "language": "en",
   "periodTitles": {
-    "weekly": "Weekly review",
-    "monthly": "Monthly review",
-    "yearly": "Yearly review"
+    "weekly": "Weekly Codex chat review",
+    "monthly": "Monthly Codex chat review",
+    "yearly": "Yearly Codex chat review"
   },
   "coverageKinds": {
     "tool-compaction": [

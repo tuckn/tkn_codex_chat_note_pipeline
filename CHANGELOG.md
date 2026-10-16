@@ -7,6 +7,11 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.40.2 - 2026-10-16
+
+- Identify Codex chats in Japanese/English review titles for every period.
+- Add an Overview heading and collect general notices plus overview qualifications/checks under Coverage and sources, separating them from the opening summary without inference.
+
 ## 0.40.1 - 2026-10-16
 
 - Add flat Frontmatter v3.1 properties for previous-period availability, period/source, model-input reference status, selected-item count and distinct cited-item count.

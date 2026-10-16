@@ -17,11 +17,7 @@
 {% endif %}
 {%- endmacro -%}
 {%- macro overview_block(item) -%}
-{{ item.text }} {{ item.refs }}{% if item.uncitableEvidenceIds %} (Administrative references excluded; verify support for the claim.){% endif %}{% if item.caveat %}
-
-{{ item.caveat }}{% endif %}{% if item.nextCheck %}
-
-Check: {{ item.nextCheck }}{% endif %}
+{{ item.text }} {{ item.refs }}
 {%- endmacro -%}
 {%- macro insight_block(item) -%}
 ### {{ item.title }}
@@ -34,6 +30,19 @@ Check: {{ item.nextCheck }}{% endif %}
 {%- endmacro -%}
 {%- macro coverage_block() -%}
 ## Coverage and sources
+
+### Interpretation notes
+
+This review covers saved records, not a complete measure of life or work. Historical open issues are not necessarily current tasks. Intelligence candidates and improvements are unadopted proposals.
+{% for item in overview %}
+{% if item.uncitableEvidenceIds %}Administrative references excluded; verify support for the overview.
+{% endif %}
+{% if item.caveat %}{{ item.caveat }}
+{% endif %}
+{% if item.nextCheck %}Check: {{ item.nextCheck }}
+{% endif %}
+{% endfor %}
+### Recorded coverage
 
 Input evidence units: {{ coverage.inputCount }}; weekly reviews: {{ coverage.weeklyInputs|length }}; monthly reviews: {{ coverage.get('monthlyInputs', [])|length }}; status: {{ coverage.status }}.
 {% if comparison %}
@@ -78,7 +87,8 @@ Excerpts are limited to 160 characters. JSON retains full evidence text and exac
 
 </details>
 {%- endmacro -%}
-{%- set ns = namespace(blocks=[frontmatter, '# ' ~ title, period.start ~ ' — ' ~ period_end ~ ' (UTC offset ' ~ offset ~ ' minutes)', "This review covers saved records, not a complete measure of life or work. Historical open issues are not necessarily current tasks. Intelligence candidates and improvements are unadopted proposals."]) -%}
+{%- set ns = namespace(blocks=[frontmatter, '# ' ~ title, period.start ~ ' — ' ~ period_end ~ ' (UTC offset ' ~ offset ~ ' minutes)']) -%}
+{%- if overview or not items -%}{%- do ns.blocks.append('## Overview') -%}{%- endif -%}
 {%- for item in overview -%}{%- do ns.blocks.append(overview_block(item)) -%}{%- endfor -%}
 {%- for rows, heading, headers, candidate in tables -%}
 {%- if rows -%}{%- do ns.blocks.append(table(rows, heading, headers, candidate)|trim) -%}{%- endif -%}
