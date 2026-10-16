@@ -113,7 +113,8 @@ class EvidenceResult(BaseModel):
             outputs = d.replacements if d.action == "replace" else (
                 [ReviewItem.model_validate(unit["item"])] if d.action == "keep" and "item" in unit else [])
             for item in outputs:
-                ReviewDraft(items=[item], rawRequests=[]).validate_sources(allowed)
+                ReviewDraft(items=[item], rawRequests=[]).validate_sources(
+                    allowed, current_ids={e["id"] for e in unit["evidence"] if e.get("kind") != "previous-review"})
 
 
 def _check_coverage(result: CoverageResult, *, findings: set[str], targets: set[str],
@@ -241,7 +242,8 @@ def _snippet(e: dict[str, Any], limit: int = EXCERPT_LIMIT) -> dict[str, Any]:
     truncated = len(text) > limit
     if truncated:
         text = text[:limit // 2] + "\n[... omitted middle ...]\n" + text[-limit // 2:]
-    return {**{k: e[k] for k in ("id", "actor", "basis", "kind", "threadId", "timestamps", "supports") if k in e},
+    return {**{k: e[k] for k in ("id", "actor", "basis", "kind", "threadId", "timestamps", "supports",
+                                                "scope", "period", "caveat", "nextCheck") if k in e},
             "text": text, "truncated": truncated, "originalCharacters": len(e["text"])}
 
 
@@ -348,7 +350,8 @@ def _audit_overviews(generator: ReviewGenerator, period: Period, units: list[dic
     results: list[EvidenceDecision] = []
     for original in units:
         unit = {**original, "restoreFindings": [], "requireReplacement": True,
-                "evidence": [{"id": id} for id in allowed]}
+                "evidence": [{"id": id, "kind": "previous-review" if id in generator.previous_evidence else "current"}
+                             for id in allowed]}
         payload = {"auditUnits": [{k: v for k, v in unit.items() if k not in {"evidence", "relatedFindings"}}],
                    "verifiedItems": [i.model_dump() for i in body], "availableEvidenceIds": allowed,
                    "instruction": generator.profile.instruction("overview-body")}
@@ -418,7 +421,8 @@ def audit_review(generator: ReviewGenerator, period: Period, draft: ReviewDraft,
     # Exact duplicates can arise when multiple findings restore one semantic theme.
     output = list({digest(i.model_dump()): i for i in output}.values())
     final = ReviewDraft(items=output, rawRequests=[])
-    final.validate_sources(set(evidence.evidence))
+    final.validate_sources(set(evidence.evidence),
+                           current_ids=set(evidence.evidence) - generator.previous_evidence.keys())
     check_editorial(final, generator.settings.language, final=True)
     generator.quality_report = {
         "version": QUALITY_VERSION, "status": "completed", "method": "model-assisted-source-audit",

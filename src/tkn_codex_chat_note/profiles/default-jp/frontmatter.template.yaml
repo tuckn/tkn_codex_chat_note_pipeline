@@ -1,7 +1,7 @@
 ---
 # --- Note ---
 type: chatReview
-schemaVersion: "3.0.0"
+schemaVersion: "3.1.0"
 title: $title
 description: $description
 
@@ -19,6 +19,14 @@ source: $source
 coverageStatus: $coverageStatus
 reviewStatus: $reviewStatus
 
+# --- Previous review comparison ---
+previousReviewStatus: $previousReviewStatus
+previousReviewPeriod: $previousReviewPeriod
+previousReviewSource: $previousReviewSource
+previousReviewReferenced: $previousReviewReferenced
+previousReviewSelectedItemCount: $previousReviewSelectedItemCount
+previousReviewCitedItemCount: $previousReviewCitedItemCount
+
 # --- Content generation ---
 generator: tkn-codex-chat-note
 generationProfile: $generationProfile
@@ -30,7 +38,7 @@ generatedAt: $generatedAt
 sourceFingerprint: $sourceFingerprint
 generationSettingsSha256: $generationSettingsSha256
 noteProfile: $noteProfile
-templateVersion: "2.1.0"
+templateVersion: "2.3.0"
 templateSha256: $templateSha256
 
 # --- Note lifecycle ---

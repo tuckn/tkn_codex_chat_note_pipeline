@@ -29,7 +29,8 @@ def render_review(value: dict[str, Any], json_path: Path, language: str) -> str:
     return profile.render("template.md", frontmatter=render_frontmatter(value, json_path, title, language),
                           title=title, period=p, period_end=(date.fromisoformat(p["endExclusive"])
                           - timedelta(days=1)).isoformat(), offset=f"{p['utcOffsetMinutes']:+d}",
-                          coverage=value["coverage"], coverage_groups=coverage_groups(value["coverage"]["gaps"]),
+                          comparison=value.get("comparison"), coverage=value["coverage"],
+                          coverage_groups=coverage_groups(value["coverage"]["gaps"]),
                           items=items, sources=sources, json_path=json_path.as_posix(),
                           presentation=profile.document("profile.json"),
                           important_gaps=[g[:300] + ("…" if len(g) > 300 else "")

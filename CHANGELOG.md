@@ -7,6 +7,18 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.40.1 - 2026-10-16
+
+- Add flat Frontmatter v3.1 properties for previous-period availability, period/source, model-input reference status, selected-item count and distinct cited-item count.
+- Derive metadata from saved comparison snapshots; keep legacy unknown states explicit and refresh existing Markdown without inference or content/date changes.
+
+## 0.40.0 - 2026-10-15
+
+- Compare current findings with up to six related items from the immediately preceding weekly/monthly/yearly JSON, enabled by reviews.previous_period.
+- Keep historical snapshots and citations separate from current-period evidence; require current evidence for every item and preserve historical proposals, uncertainty and dates.
+- Select context without inference and add it only to existing composition/audit stages; reuse extraction caches when the previous review changes.
+- Avoid recursive historical carryover and re-aggregate current dated supports for lower-period rows containing comparisons. Retain the existing Markdown sections and prose limits.
+
 ## 0.39.0 - 2026-10-15
 
 - Prefer actual chat names from the local session index, with meaningful request-text fallbacks; exclude standalone app-page metadata from normalization, review inputs and bounded Raw neighbors.

@@ -14,6 +14,7 @@ from .config import AppConfig
 from .frontmatter import parse_simple_frontmatter
 from .inference import InferenceExecutionError
 from .provenance import json_bytes
+from .review_comparison import load_previous, validate_comparison
 from .review_evidence import checked_json, digest, period_evidence, review_path
 from .review_frontmatter import presentation_signature
 from .review_generation import Generator, ReviewBudgetStop, ReviewGenerator
@@ -123,13 +124,15 @@ def _build(config: AppConfig, period: Period, generator: ReviewGenerator, index:
     key = period.kind + "/" + period.key
     saved = index["reviews"].get(key, {})
     evidence = period_evidence(config, period)
+    previous_context = load_previous(config, period)
     fingerprint = digest({"period": period.document(), "generation": generator.signature,
                           "inputs": evidence.input_records(), "gaps": evidence.gaps,
+                          "comparison": previous_context.metadata,
                           "sources": sorted(s.source_id for s in config.enabled_source_configs())})
     result: dict[str, Any] = {"period": period.document(), "jsonPath": str(paths[0]),
                               "notePath": str(paths[1]), "inputCount": len(evidence.selected),
                               "weeklyInputs": evidence.weekly_inputs, "monthlyInputs": evidence.monthly_inputs,
-                              "gaps": evidence.gaps,
+                              "gaps": evidence.gaps, "comparison": previous_context.metadata,
                               "initialBatchCount": len(generator._batches(evidence.input_records()))}
     hashes_match = bool(saved.get("hashes")) and all(_hash(p) == saved["hashes"].get(p.suffix) for p in paths)
     frames_changed = saved.get("promptFrameSignature", generator.request_signature) != generator.request_signature
@@ -155,8 +158,9 @@ def _build(config: AppConfig, period: Period, generator: ReviewGenerator, index:
             return {**result, "status": "blocked", "reason": str(exc)}
     if dry_run:
         return {**result, "status": "planned"}
-    draft = generator.build(period, evidence)
-    draft.validate_sources(set(evidence.evidence))
+    draft = generator.build(period, evidence, previous_context)
+    draft.validate_sources(set(evidence.evidence) | generator.previous_evidence.keys(),
+                           current_ids=set(evidence.evidence))
     generated_at = now_iso()
     previous = checked_json(paths[0]) if paths[0].is_file() else None
     value: dict[str, Any] = {
@@ -168,6 +172,7 @@ def _build(config: AppConfig, period: Period, generator: ReviewGenerator, index:
         "inputFingerprint": fingerprint,
         "items": list({digest(item.model_dump()): item.model_dump() for item in draft.items}.values()),
         "evidence": list(evidence.evidence.values()), "sourceInventory": evidence.sources,
+        "comparison": previous_context.document(),
         "coverage": {"status": "partial" if evidence.gaps else "observed-records",
                      "completeHistory": False, "inputCount": len(evidence.selected),
                      "weeklyInputs": evidence.weekly_inputs, "monthlyInputs": evidence.monthly_inputs,
@@ -177,13 +182,14 @@ def _build(config: AppConfig, period: Period, generator: ReviewGenerator, index:
                        "qualityAudit": generator.quality_report, "promptTemplatesSha256": generator.request_signature},
     }
     if previous is not None and all(value[k] == previous.get(k) for k in (
-            "period", "items", "evidence", "sourceInventory", "coverage")):
+            "period", "items", "evidence", "sourceInventory", "coverage", "comparison")):
         value["updated"] = previous.get("updated", previous["generatedAt"])
     for field, category in (("intelligenceCandidates", "intelligence-candidate"), ("aiImprovements", "ai-improvement")):
         value[field] = [{"id": "C" + digest([value["id"], item])[:24], "status": "candidate", **item}
                         for item in value["items"] if item["category"] == category]
     _publish(config, period, value, index)
-    return {**result, "status": "generated", "gaps": value["coverage"]["gaps"]}
+    return {**result, "status": "generated", "gaps": value["coverage"]["gaps"],
+            "comparison": {k: v for k, v in value["comparison"].items() if k != "evidence"}}
 
 
 def _run_source_reviews(config: AppConfig, *, kind: PeriodKind | None = None, day: date | None = None,
@@ -291,7 +297,8 @@ def _validate_review(path: Path) -> dict[str, Any]:
     if len(evidence) != len(value["evidence"]):
         raise PipelineError("duplicate review evidence IDs")
     draft = ReviewDraft.model_validate({"items": value["items"], "rawRequests": []})
-    draft.validate_sources(set(evidence))
+    historical = validate_comparison(value, period)
+    draft.validate_sources(set(evidence) | historical.keys(), current_ids=set(evidence))
     for e in evidence.values():
         if not e["timestamps"] or not all(period.contains(t) for t in e["timestamps"]):
             raise PipelineError("review evidence lies outside the period")

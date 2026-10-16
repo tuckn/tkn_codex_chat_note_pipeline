@@ -254,7 +254,7 @@ prompts continue to reuse their caches.
 
 ## Frontmatter and Japanese/English profiles
 
-Markdown uses **type: chatReview / schemaVersion: "3.0.0"**. Authoritative JSON retains its
+Markdown uses **type: chatReview / schemaVersion: "3.1.0"**. Authoritative JSON retains its
 internal **type: reviewNote / schemaVersion: "1.0.0"** contract. `periodKind` distinguishes
 weekly, monthly and yearly notes. A chatReview is a source-backed cross-chat reflection used
 as material for the Intelligence Layer; hypotheses/candidates retain their unadopted status.
@@ -265,6 +265,9 @@ as material for the Intelligence Layer; hypotheses/candidates retain their unado
 | periodKind / periodKey / periodStart / periodEndExclusive / utcOffsetMinutes | Calendar period, exclusive end, integer offset |
 | sourceApplication / sourceId / source | Chat source application (Codex), source environment ID, sibling JSON file URI |
 | coverageStatus / reviewStatus | Input limitations and human review status |
+| previousReviewStatus / previousReviewReferenced | Recorded status and YAML boolean: referenced means candidates were supplied to composition; no-related-items means available but no candidates; missing, unavailable and disabled describe why none were sent; unknown means legacy JSON has no history. The legacy boolean is null |
+| previousReviewPeriod / previousReviewSource | Previous week/month/year key and file URI of the recorded previous JSON; derived from the saved generation snapshot |
+| previousReviewSelectedItemCount / previousReviewCitedItemCount | Candidates supplied to composition and distinct historical items cited in the final review. Selected candidates may have zero final citations. Counts are null for unknown legacy history |
 | generator / generationProfile / provider / requestedModel | CLI and saved generation settings; sourceApplication stays Codex even if Claude summarizes the chat. Requested model is not confirmed telemetry |
 | generatedAt | Latest content-generation execution, preserved for presentation-only updates; may change for explicit regeneration of identical content |
 | sourceFingerprint / generationSettingsSha256 | Stored input and generation identities |
@@ -353,3 +356,13 @@ catalog/Raw retrieval failures, uncitable evidence and other limitations. Counts
 not missing chats, independent failures or affected conclusions. Inherited period-prefixed diagnostics
 are classified too; unknown formats remain in Other. Full diagnostics stay in JSON and displayed
 counts sum to the number of original gap records.
+
+## Adjacent-period comparison
+
+Weekly reviews may consult the previous week, monthly reviews the previous month, and yearly reviews the previous year, for the same source only. `reviews.previous_period` defaults to true. After current-period extraction, deterministic conversation/topic overlap selects at most six complete JSON items within 6,000 characters (less for small input budgets). Existing composition and audits decide whether a comparison is meaningful. Full Markdown, historical audits and recursively older comparisons are not sent.
+
+Historical snapshots live in `comparison.evidence`, retaining period, basis, caveats, original item and source hash. A comparison cites both historical and current evidence and names the historical period. Every output item must still have current-period evidence; historical data never enters the current `evidence` array or input count. Existing Markdown sections and prose budgets remain; source and coverage details identify the comparison context.
+
+Silence does not establish that an old task continues, finishes or is cancelled, or that a proposed improvement worked. Repeated summaries do not prove independent recurrence. Items already comparing older periods are not carried recursively; monthly/yearly aggregation uses their dated current supports instead of promoting mixed historical narratives. Missing, disabled or invalid previous reviews are recorded separately and do not count as missing current conversations.
+
+There is no dedicated model stage. Comparison instructions are sent only when candidates exist. Changed composition can still trigger existing coverage checks, additional audit batches or repairs. Previous JSON changes invalidate composition while preserving current extraction caches. Markdown-only manual edits are not comparison inputs.

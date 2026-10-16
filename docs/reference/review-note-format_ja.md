@@ -78,7 +78,7 @@ tkn-codex-chat-note review-notes validate "C:\path\to\reviews\weekly\2026\2026-W
 
 ## Frontmatterと日英プロファイル
 
-Markdown Frontmatterは **type: chatReview / schemaVersion: "3.0.0"** です。
+Markdown Frontmatterは **type: chatReview / schemaVersion: "3.1.0"** です。
 正本JSONは引き続き内部データ契約 **type: reviewNote / schemaVersion: "1.0.0"** を使います。
 週次・月次・年次は `periodKind` で区別します。chatReviewは出典に帰属するチャットの横断的な振り返りであり、
 質問・判断・結果・仮説・候補をIntelligence Layerの材料として扱います。採用済みの知識やpermanentノートという分類ではありません。
@@ -89,6 +89,9 @@ Markdown Frontmatterは **type: chatReview / schemaVersion: "3.0.0"** です。
 | periodKind / periodKey / periodStart / periodEndExclusive / utcOffsetMinutes | 暦期間。終了日は含まない。UTCオフセットだけは整数 |
 | sourceApplication / sourceId / source | チャットの取得元アプリ（Codex）、PC等のsource ID、同名の正本JSONへのfile URI |
 | coverageStatus / reviewStatus | 入力の不足と、人の確認状態。部分的な記録を完全な履歴とは扱わない |
+| previousReviewStatus / previousReviewReferenced | 前期間の参照状況と真偽値。referenced=関連候補を統合モデルへ渡した、no-related-items=利用可能だが候補なし、missing=ノートなし、unavailable=検証不可、disabled=無効、unknown=旧JSONに履歴なし。履歴なしの真偽値は未設定 |
+| previousReviewPeriod / previousReviewSource | 比較対象の週・月・年のIDと、保存された前期間JSONのfile URI。生成時の記録を使う |
+| previousReviewSelectedItemCount / previousReviewCitedItemCount | 統合へ渡した候補数と、最終ノートで引用した前期間項目の重複を除いた数。候補を送っても引用0件の場合がある。履歴なしは未設定 |
 | generator / generationProfile / provider / requestedModel | CLI名と保存済みの生成設定。CodexのチャットをClaudeで要約する場合もsourceApplicationはCodex。requestedModelは応答モデルの確定情報ではない |
 | generatedAt | 今回の内容生成を行った日時。表示だけの更新では保持。内容が同じでも明示的な再生成では新しい値になり得る |
 | sourceFingerprint / generationSettingsSha256 | 保存済みの入力・生成条件の識別値 |
@@ -285,3 +288,13 @@ JSONのqualityAudit.sourceTransmissionには、従来順と今回の構成の送
 件数はcoverage.gapsの記録数であり、会話の欠落数・独立した失敗回数・影響した判断の数ではありません。
 下位レビューから引き継いだ日付prefix付きの制約も分類し、未知の形式はその他に残します。
 全診断はJSONに保持し、表示上の内訳の合計と全記録数が一致するようにします。
+
+## 直前の期間との比較
+
+週次は前週、月次は前月、年次は前年の同じsourceのJSONだけを比較候補にします。`reviews.previous_period` は既定でtrueです。今期の抽出後、会話IDまたは具体的な語句の重なりで候補を絞り、最大6件・6,000文字（小さい入力予算ではさらに縮小）を既存の最終統合に渡します。候補の採用判断は統合と校正で行います。JSONの項目を使い、Markdown全文や過去の校正記録は送りません。
+
+過去の項目は `comparison.evidence` に期間・推測／提案の区別・留保・元ノートのハッシュとともに保存します。本文から比較する際は過去と今期の両方を引用し、過去の期間を明記します。今期の `evidence` と入力数には混ぜず、各本文項目には今期の根拠を必須とします。出典欄と対象範囲欄で比較資料と分かるよう表示し、既存の章構成・文字数予算を維持します。
+
+過去の未解決事項や改善案は、今期に記録がなければ自動継続・完了としません。繰り返し要約を独立した再発事例とは数えません。さらに古い比較を含む項目は再帰的に持ち越さず、月次・年次に集約するときも、そのような下位ノートの混合記述の代わりに日付付きの今期根拠を使います。元ノートを検証できない場合や関連候補がない場合は今期だけで生成し、比較の利用可否を別に記録します。比較なしは今期の欠落件数には数えません。
+
+比較専用のモデル呼出しは追加しません。比較プロンプトは候補がある場合だけ送信します。統合結果の変更で既存の収録確認・分割・修復回数が増える可能性はあります。前期間JSONの変更は再生成判定に反映し、今期の抽出キャッシュは再利用します。人がMarkdownだけを編集した内容は比較入力に反映されません。

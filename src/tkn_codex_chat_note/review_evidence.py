@@ -190,14 +190,20 @@ def period_evidence(config: AppConfig, period: Period) -> EvidenceSet:
                 raise ValueError(f"{child.kind} review belongs to a different source")
             evidence = {e["id"]: e for e in saved["evidence"]}
             draft = ReviewDraft.model_validate({"items": saved["items"], "rawRequests": []})
-            draft.validate_sources(set(evidence))
+            from .review_comparison import validate_comparison
+            historical = validate_comparison(saved, child)
+            draft.validate_sources(set(evidence) | historical.keys(), current_ids=set(evidence))
             inputs = result.monthly_inputs if child.kind == "monthly" else result.weekly_inputs
             inputs.append(str(path))
             result.sources.append({path_field: str(path), "sha256": sha256(path.read_bytes()).hexdigest()})
             result.gaps.extend(f"{child.key}: {gap}" for gap in saved.get("coverage", {}).get("gaps", []))
             covered: set[str] = set()
+            comparison_fallback: set[str] = set()
             for item in draft.items:
-                supports = [id for id in item.evidenceIds if citable_evidence(evidence[id])]
+                supports = [id for id in item.evidenceIds if id in evidence and citable_evidence(evidence[id])]
+                if historical.keys() & set(item.evidenceIds):
+                    comparison_fallback.update(supports)
+                    continue
                 if not supports:
                     result.gaps.append(f"{child.key}: item excluded; no citable evidence")
                     continue
@@ -219,7 +225,7 @@ def period_evidence(config: AppConfig, period: Period) -> EvidenceSet:
             for id, ref in evidence.items():
                 if ref["timestamps"] and all(period.contains(t) for t in ref["timestamps"]):
                     boundary = child.start < period.start or child.end > period.end
-                    result.add(ref, select=boundary and id not in covered)
+                    result.add(ref, select=(boundary and id not in covered) or id in comparison_fallback)
         except (OSError, ValueError, KeyError, PipelineError) as exc:
             fragment = Period(child.kind, max(child.start, period.start), min(child.end, period.end), period.offset)
             fallback = "weekly" if child.kind == "monthly" else "source"

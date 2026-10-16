@@ -56,5 +56,11 @@
     "assistant": "Assistant",
     "tool": "Tool",
     "unknown": "Unrecorded"
+  },
+  "comparisonStatus": {
+    "available": "available",
+    "missing": "no previous review",
+    "unavailable": "previous review could not be validated",
+    "disabled": "disabled"
   }
 }

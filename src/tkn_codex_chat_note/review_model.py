@@ -118,8 +118,10 @@ class ReviewDraft(BaseModel):
     items: list[ReviewItem]
     rawRequests: list[RawRequest]
 
-    def validate_sources(self, ids: set[str]) -> None:
+    def validate_sources(self, ids: set[str], *, current_ids: set[str] | None = None) -> None:
         cited = {e for item in self.items for e in item.evidenceIds}
         cited.update(request.evidenceId for request in self.rawRequests)
         if missing := cited - ids:
             raise ValueError("review cites unavailable evidence: " + ", ".join(sorted(missing)))
+        if current_ids is not None and any(not current_ids.intersection(item.evidenceIds) for item in self.items):
+            raise ValueError("every review item requires current-period evidence; comparison alone is insufficient")

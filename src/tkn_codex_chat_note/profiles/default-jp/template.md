@@ -36,6 +36,9 @@
 ## 対象範囲と出典
 
 入力の根拠単位：{{ coverage.inputCount }}件、週次：{{ coverage.weeklyInputs|length }}件、月次：{{ coverage.get('monthlyInputs', [])|length }}件。対象範囲：{{ coverage.status }}。
+{% if comparison %}
+前期間の比較：{{ comparison.period.key }} · {{ presentation.comparisonStatus.get(comparison.status, comparison.status) }}。関連候補{{ comparison.selectedCount }}件。比較資料は今回の出来事・収録数に含めません。
+{% endif %}
 {% if coverage.gaps %}
 収録範囲の制約は{{ coverage.gaps|length }}件の記録です。会話の欠落数ではありません。
 
@@ -55,7 +58,7 @@
 {%- macro source_block(source) -%}
 ### {{ source.label }}
 
-{{ source.name|cell }} · {{ source.span }}{% if source.path %}
+{{ source.name|cell }} · {{ source.span }}{% if source.historical %} · 前期間の比較資料{% endif %}{% if source.path %}
 
 [出典文書](<{{ source.path }}>)
 {% endif %}

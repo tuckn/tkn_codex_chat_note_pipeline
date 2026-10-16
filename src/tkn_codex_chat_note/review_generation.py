@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from itertools import groupby
 from pathlib import Path
 from typing import Any, TypeVar
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 from .api_inference import ApiClient
 from .config import AppConfig
 from .inference import invoke_structured
+from .review_comparison import COMPARISON_VERSION, PreviousContext
 from .review_evidence import EvidenceSet, digest, raw_supplement
 from .review_model import REVIEW_VERSION, Period, ReviewDraft
 from .review_profiles import ReviewProfile
@@ -56,7 +58,9 @@ class ReviewGenerator:
         self.instructions = self.profile.text("prompt.md")
         self.synthesis = self.profile.text("synthesis-prompt.md")
         self.quality_policy = self.profile.text("quality-prompt.md")
+        self.comparison_policy = self.profile.text("comparison-prompt.md")
         self.quality_report: dict[str, Any] = {}
+        self.previous_evidence: dict[str, dict[str, Any]] = {}
         self.schema = self.profile.document("output.schema.json")
         if self.schema != ReviewDraft.model_json_schema():
             raise PipelineError("review profile schema differs from the validated ReviewDraft contract")
@@ -80,7 +84,9 @@ class ReviewGenerator:
         self.cache_root = config.cache_root / "reviews" / self.extraction_signature
         self.signature = digest({"extraction": self.extraction_signature, "synthesis": self.synthesis,
                                  "renderer": RENDER_VERSION, "quality": self.quality_policy,
-                                 "qualityVersion": QUALITY_VERSION, "evidenceContextVersion": EVIDENCE_CONTEXT_VERSION,
+                                 "comparisonVersion": COMPARISON_VERSION, "comparisonPolicy": self.comparison_policy,
+                                 "qualityVersion": QUALITY_VERSION,
+                                 "evidenceContextVersion": EVIDENCE_CONTEXT_VERSION,
                                  "qualitySchemas": [CoverageResult.model_json_schema(),
                                                     EvidenceResult.model_json_schema()]})
         self.journal = UsageJournal(config.review_state_root / "usage" / run_id,
@@ -94,6 +100,8 @@ class ReviewGenerator:
 
     def _call(self, stage: str, period: Period, payload: dict[str, Any], ids: set[str]) -> ReviewDraft:
         instructions = self.synthesis if stage in {"merge", "compose"} else self.instructions
+        if stage == "compose" and self.previous_evidence:
+            instructions += "\n" + self.comparison_policy
         if stage == "compose":
             payload = {**payload, "editorialLimits": editorial_limits(self.settings.language)}
         prompt = self.profile.render("request.template.md", instructions=instructions, stage=stage,
@@ -108,7 +116,7 @@ class ReviewGenerator:
                 if saved.get("sha256") != digest(saved["draft"]):
                     raise ValueError("invalid cache digest")
                 draft = ReviewDraft.model_validate(saved["draft"])
-                draft.validate_sources(ids)
+                draft.validate_sources(ids, current_ids=ids - self.previous_evidence.keys())
                 if stage == "compose":
                     check_editorial(draft, self.settings.language)
                 self.cache_hits += 1
@@ -126,7 +134,7 @@ class ReviewGenerator:
             atomic_write_json(pending, {"draft": value, "sha256": digest(value)})
         try:
             draft = ReviewDraft.model_validate(value)
-            draft.validate_sources(ids)
+            draft.validate_sources(ids, current_ids=ids - self.previous_evidence.keys())
             if stage == "compose":
                 check_editorial(draft, self.settings.language)
         except ValueError as exc:
@@ -138,7 +146,7 @@ class ReviewGenerator:
                                        "editorialLimits": payload.get("editorialLimits")}, ensure_ascii=False))
             value = self._invoke("repair", repair)
             draft = ReviewDraft.model_validate(value)
-            draft.validate_sources(ids)
+            draft.validate_sources(ids, current_ids=ids - self.previous_evidence.keys())
             if stage == "compose":
                 check_editorial(draft, self.settings.language)
         atomic_write_json(path, {"draft": draft.model_dump(), "sha256": digest(draft.model_dump())})
@@ -230,9 +238,10 @@ class ReviewGenerator:
         return invoke_structured(self.pipeline_config, prompt, schema, cwd=Path.cwd(), timeout=timeout,
                                  usage_observer=self.journal)
 
-    def _batches(self, records: list[dict[str, Any]], *, synthesis: bool = False) -> list[list[dict[str, Any]]]:
+    def _batches(self, records: list[dict[str, Any]], *, synthesis: bool = False,
+                 reserve: int = 0) -> list[list[dict[str, Any]]]:
         instructions = self.synthesis if synthesis else self.instructions
-        ceiling = self.settings.input_characters - len(instructions) - 2200
+        ceiling = self.settings.input_characters - len(instructions) - 2200 - reserve
         batches: list[list[dict[str, Any]]] = []
         current: list[dict[str, Any]] = []
         size = 0
@@ -255,9 +264,11 @@ class ReviewGenerator:
             batches.append(current)
         return batches
 
-    def build(self, period: Period, evidence: EvidenceSet) -> ReviewDraft:
+    def build(self, period: Period, evidence: EvidenceSet, previous: PreviousContext | None = None) -> ReviewDraft:
         self.journal.context.update(threadId=period.kind + "/" + period.key, taskTitle=period.key + " review")
         self.quality_report = {}
+        self.previous_evidence = {}
+        self.quality_policy = self.profile.text("quality-prompt.md")
         drafts: list[ReviewDraft] = []
         batches = self._batches(evidence.input_records())
         for number, batch in enumerate(batches, 1):
@@ -287,8 +298,15 @@ class ReviewGenerator:
             drafts.append(draft)
         if not drafts:
             return ReviewDraft(items=[], rawRequests=[])
+        findings = [i for d in drafts for i in d.items]
+        if previous is not None:
+            previous.select(findings, evidence, max(0, self.settings.input_characters // 8))
+            self.previous_evidence = {e["id"]: e for e in previous.selected}
         draft = self.synthesize(period, drafts)
-        return audit_review(self, period, draft, [i for d in drafts for i in d.items], evidence)
+        if self.previous_evidence:
+            self.quality_policy += "\n" + self.comparison_policy
+        audit_evidence = replace(evidence, evidence={**evidence.evidence, **self.previous_evidence})
+        return audit_review(self, period, draft, findings, audit_evidence)
 
     def synthesize(self, period: Period, drafts: list[ReviewDraft]) -> ReviewDraft:
         """Edit validated findings into one period review, including a single input draft."""
@@ -298,10 +316,18 @@ class ReviewGenerator:
             items = [i.model_dump() for d in drafts for i in d.items]
             if not items:
                 raise PipelineError("model returned no review items for nonempty evidence")
-            batches = self._batches(items, synthesis=True)
+            context = [{k: v for k, v in e.items() if k in {
+                "id", "kind", "scope", "period", "text", "basis", "caveat", "nextCheck"}}
+                for e in self.previous_evidence.values()]
+            reserve = (len(json.dumps(context, ensure_ascii=False))
+                       + len(self.comparison_policy) + 100) if context else 0
+            batches = self._batches(items, synthesis=True, reserve=reserve)
             stage = "compose" if len(batches) == 1 else "merge"
-            merged = [self._call(stage, period, {"items": batch, "rawRequestsAllowed": False},
-                                 {id for item in batch for id in item["evidenceIds"]}) for batch in batches]
+            comparison = context if stage == "compose" else []
+            merged = [self._call(stage, period, {"items": batch, "rawRequestsAllowed": False,
+                                                 "previousContext": comparison},
+                                 {id for item in batch for id in item["evidenceIds"]}
+                                 | {e["id"] for e in comparison}) for batch in batches]
             if any(d.rawRequests for d in merged):
                 raise PipelineError("merge stages must preserve uncertainty instead of requesting new Raw")
             if any(not d.items for d in merged):

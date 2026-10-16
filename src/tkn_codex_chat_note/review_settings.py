@@ -14,6 +14,7 @@ class ReviewSettings(BaseModel):
     language: Literal["ja", "en"] = "ja"
     utc_offset_minutes: int = Field(default=540, ge=-720, le=840)
     start_date: date | None = None
+    previous_period: bool = True
     max_calls: int = Field(default=12, ge=1)
     input_characters: int = Field(default=50000, ge=8000)
     raw_characters: int = Field(default=16000, ge=1000)

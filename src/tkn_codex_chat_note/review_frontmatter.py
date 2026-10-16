@@ -13,12 +13,14 @@ from .review_profiles import ReviewProfile
 
 
 def presentation_signature(language: str = "ja") -> str:
-    return sha256(("formatter:4\n" + ReviewProfile(language).presentation_signature()).encode("utf-8")).hexdigest()
+    return sha256(("formatter:6\n" + ReviewProfile(language).presentation_signature()).encode("utf-8")).hexdigest()
 
 
-def _scalar(value: str | int | None) -> str:
+def _scalar(value: str | int | bool | None) -> str:
     if value is None:
         return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
     if re.match(r"^(?:[A-Za-z]:[\\/]|\\\\)", value):
@@ -26,6 +28,30 @@ def _scalar(value: str | int | None) -> str:
     # Quoting every dynamic string preserves dates, precision, YAML-like values
     # and literal newlines without allowing metadata to introduce new YAML keys.
     return json.dumps(value, ensure_ascii=False)
+
+
+def _comparison_metadata(value: dict[str, Any]) -> dict[str, str | int | bool | None]:
+    comparison = value.get("comparison")
+    fields: dict[str, str | int | bool | None] = {
+        "previousReviewStatus": "unknown", "previousReviewPeriod": None, "previousReviewSource": None,
+        "previousReviewReferenced": None, "previousReviewSelectedItemCount": None,
+        "previousReviewCitedItemCount": None,
+    }
+    if comparison is None:
+        return fields  # Older JSON does not establish whether a prior review was consulted.
+    selected = comparison["selectedCount"]
+    status = comparison["status"]
+    ids = {e["id"] for e in comparison["evidence"]}
+    cited = {id for item in value["items"] for id in item.get("evidenceIds", []) if id in ids}
+    fields.update(
+        previousReviewStatus=("referenced" if selected else "no-related-items") if status == "available" else status,
+        previousReviewPeriod=comparison["period"]["key"],
+        previousReviewSource=Path(comparison["notePath"]).absolute().as_uri() if comparison.get("notePath") else None,
+        previousReviewReferenced=selected > 0,
+        previousReviewSelectedItemCount=selected,
+        previousReviewCitedItemCount=len(cited),
+    )
+    return fields
 
 
 def render_frontmatter(value: dict[str, Any], json_path: Path, title: str, language: str = "ja") -> str:
@@ -38,7 +64,7 @@ def render_frontmatter(value: dict[str, Any], json_path: Path, title: str, langu
     profile = ReviewProfile(language)
     template = profile.text("frontmatter.template.yaml")
     fields = {
-        "title": title, "description": description,
+        "title": title, "description": description, **_comparison_metadata(value),
         "periodKind": p["kind"], "periodKey": p["key"], "periodStart": p["start"],
         "periodEndExclusive": p["endExclusive"], "utcOffsetMinutes": p["utcOffsetMinutes"],
         "sourceId": value["sourceId"], "source": json_path.absolute().as_uri(),

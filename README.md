@@ -51,7 +51,7 @@ Raw取得・正規化は機械処理です。生成AIを使うのはレビュー
 
 校正は追加のモデル呼出しを伴います。空の期間は0回、それ以外は根拠校正が最低1回、完全一致しない抽出項目があれば欠落照合も1回以上、概要があれば本文との照合が概要1件につき1回増えます。実際の回数は本文と引用の量で増えます。共通の根拠を持つ項目は同じ校正リクエストへまとめ、原文を削らず重複送信を減らします。送信時のみ根拠IDを短縮し、検証・保存前に元のIDへ戻します。確認済みcacheも再利用しますが、呼出しごとのモデル側の入力や推論・出力トークンも増えるため、最初の数回は利用量レポートで確認してください。
 
-Frontmatterは `type: chatReview` とし、概要、期間、取得元 `sourceApplication: Codex`、正本JSONへの参照、生成設定をまとめます。
+Frontmatterは `type: chatReview` とし、概要、期間、取得元 `sourceApplication: Codex`、正本JSONへの参照、生成設定をまとめます。前週・前月・前年の参照状況は `previousReviewStatus`・`previousReviewReferenced`、モデルに渡した候補数と最終引用数は `previousReviewSelectedItemCount`・`previousReviewCitedItemCount` で確認できます。
 末尾は `created`・`updated`・`noteId` です。日英のテンプレート・プロンプト・schemaは `profiles/default-jp`・`default-en` に同梱します。
 表示テンプレートだけの変更は、次回実行時に保存済みJSONからモデル呼出しなしで反映します。
 編集済み・確認済みのノートは保持します。[Frontmatterと日英プロファイル](docs/reference/review-note-format_ja.md#frontmatterと日英プロファイル)を参照してください。
@@ -167,6 +167,8 @@ tkn-codex-chat-note --source my-pc review-notes build --period monthly
 tkn-codex-chat-note --source my-pc review-notes build --period yearly
 tkn-codex-chat-note review-notes due
 ```
+
+直前の同種ノート（週次なら前週、月次なら前月、年次なら前年）がある場合、今回の内容と関連する最大6項目を比較資料として参照します。今回の出典を必須とし、過去の未解決事項は自動で持ち越しません。`sources.<id>.reviews.previous_period: false` で無効化できます。既存の統合・校正に資料を加える方式で、専用のモデル呼出しはありませんが、入力量や校正の分割・修復回数は増える場合があります。
 
 省略時は直近の締まった期間です。`--date YYYY-MM-DD` で対象期間内の日付を指定できます。未確定期間は生成しません。`--source` を省略すると有効なsourceをそれぞれ処理します。手動の `review-notes` は保存済みcatalogを使用するため、必要なら先に `pull` してください。
 

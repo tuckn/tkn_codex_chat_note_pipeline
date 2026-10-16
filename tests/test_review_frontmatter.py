@@ -30,7 +30,7 @@ def test_flat_metadata_preserves_dates_types_and_identity(tmp_path, kind, stamp)
     text = render_frontmatter(value, tmp_path / "review.json", 'Title: "test" # literal\n---\ninjected: yes')
     header = yaml.safe_load(text.split("---\n", 1)[1].rsplit("\n---", 1)[0])
     assert header["type"] == "chatReview" and "type: chatReview\n" in text
-    assert header["schemaVersion"] == "3.0.0" and 'schemaVersion: "3.0.0"' in text
+    assert header["schemaVersion"] == "3.1.0" and 'schemaVersion: "3.1.0"' in text
     assert header["noteId"] == value["id"] and "id" not in header
     assert header["generatedAt"] == stamp and f'generatedAt: "{stamp}"' in text
     assert header["periodStart"] == value["period"]["start"]
@@ -169,3 +169,43 @@ def test_external_markdown_template_controls_output_without_model_calls(tmp_path
     assert "Template edit marker" in path.with_suffix(".md").read_text("utf-8")
     assert path.read_bytes() == before_json
     assert weekly(cfg, model)["results"][0]["status"] == "current"
+
+
+@pytest.mark.parametrize("language", ["ja", "en"])
+@pytest.mark.parametrize(("status", "selected", "cited", "expected"), [
+    (None, 0, 0, "unknown"),
+    ("missing", 0, 0, "missing"),
+    ("disabled", 0, 0, "disabled"),
+    ("unavailable", 0, 0, "unavailable"),
+    ("available", 0, 0, "no-related-items"),
+    ("available", 2, 0, "referenced"),
+    ("available", 2, 1, "referenced"),
+])
+def test_previous_review_metadata_records_model_input_and_distinct_citations(
+        tmp_path, language, status, selected, cited, expected):
+    value = {
+        "id": "stable-id", "sourceId": "example", "generatedAt": "2026-10-15T12:00:00Z",
+        "period": period_for("weekly", date(2026, 5, 19)).document(),
+        "coverage": {"status": "partial"}, "reviewStatus": "unreviewed", "inputFingerprint": "abc",
+        "items": [{"category": "activities", "evidenceIds": ["current", *(["P1", "P1"] if cited else [])]},
+                  {"category": "overview", "text": "Summary", "evidenceIds": ["P1"] if cited else ["current"]}],
+    }
+    # Read only the saved snapshot, even if the original comparison file is no longer available.
+    prior = tmp_path / "missing-prior.json"
+    if status is not None:
+        value["comparison"] = {"status": status, "selectedCount": selected,
+                               "period": {"key": "2026-W20"},
+                               "evidence": [{"id": f"P{n+1}"} for n in range(selected)]}
+        if status == "available":
+            value["comparison"]["notePath"] = str(prior)
+    text = render_frontmatter(value, tmp_path / "review.json", "Review", language)
+    header = yaml.safe_load(text.split("---\n", 1)[1].rsplit("\n---", 1)[0])
+    assert header["previousReviewStatus"] == expected
+    assert header["previousReviewReferenced"] is (None if status is None else selected > 0)
+    assert header["previousReviewSelectedItemCount"] == (None if status is None else selected)
+    assert header["previousReviewCitedItemCount"] == (None if status is None else cited)
+    assert header["previousReviewPeriod"] == (None if status is None else "2026-W20")
+    assert header["previousReviewSource"] == (prior.as_uri() if status == "available" else None)
+    assert "previousReviewReferenced: true\n" in text if selected else "previousReviewReferenced: true" not in text
+    assert list(header)[-3:] == ["created", "updated", "noteId"]
+    assert not prior.exists()

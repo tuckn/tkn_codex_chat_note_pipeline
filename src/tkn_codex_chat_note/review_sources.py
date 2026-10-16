@@ -64,7 +64,7 @@ def coverage_groups(gaps: list[str]) -> list[dict[str, Any]]:
 
 
 def citation_view(value: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    evidence = {e["id"]: e for e in value["evidence"]}
+    evidence = {e["id"]: e for e in [*value["evidence"], *value.get("comparison", {}).get("evidence", [])]}
     groups: dict[str, dict[str, Any]] = {}
     labels: dict[str, str] = {}
     zone = timezone(timedelta(minutes=value["period"]["utcOffsetMinutes"]))
@@ -89,6 +89,7 @@ def citation_view(value: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dic
                 group["records"][id] = {"id": id, "label": f"E{len(group['records']) + 1:03d}",
                     "anchor": group["label"].lower() + f"-e{len(group['records']) + 1:03d}",
                     "times": list(dict.fromkeys(times if len(times) <= 2 else [times[0], times[-1]])), "actor": actor,
+                    "historical": e.get("kind") == "previous-review",
                     "quote": quote[:160] + ("…" if len(quote) > 160 else ""),
                     "locations": (", ".join(a for a in anchors if a) if len(anchors) <= 6
                                   else f"{anchors[0]} … {anchors[-1]} [{len(anchors)}]")}
@@ -125,6 +126,7 @@ def citation_view(value: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dic
         sources.append({"label": group["label"],
             "name": conversation_title(title, requests, str(originals[0].get("threadId", "")))
                     if thread_ids else title or Path(key).stem,
+            "historical": any(e.get("kind") == "previous-review" for e in originals),
             "span": dates[0] + (" — " + dates[-1] if len(dates) > 1 else ""),
             "path": Path(key).as_posix() if key not in evidence else "",
             "citations": list(group["citations"].values()), "records": list(group["records"].values())})

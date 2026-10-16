@@ -36,6 +36,9 @@ Check: {{ item.nextCheck }}{% endif %}
 ## Coverage and sources
 
 Input evidence units: {{ coverage.inputCount }}; weekly reviews: {{ coverage.weeklyInputs|length }}; monthly reviews: {{ coverage.get('monthlyInputs', [])|length }}; status: {{ coverage.status }}.
+{% if comparison %}
+Previous-period comparison: {{ comparison.period.key }} · {{ presentation.comparisonStatus.get(comparison.status, comparison.status) }}. {{ comparison.selectedCount }} related candidates; historical context is excluded from current event/input counts.
+{% endif %}
 {% if coverage.gaps %}
 There are {{ coverage.gaps|length }} limitation records, not missing conversations.
 
@@ -55,7 +58,7 @@ Source labels group citations by document; exact evidence IDs, snippets, timesta
 {%- macro source_block(source) -%}
 ### {{ source.label }}
 
-{{ source.name|cell }} · {{ source.span }}{% if source.path %}
+{{ source.name|cell }} · {{ source.span }}{% if source.historical %} · Previous-period context{% endif %}{% if source.path %}
 
 [Source document](<{{ source.path }}>)
 {% endif %}

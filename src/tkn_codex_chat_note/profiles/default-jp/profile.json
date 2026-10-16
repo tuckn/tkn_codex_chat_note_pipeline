@@ -56,5 +56,11 @@
     "assistant": "アシスタント",
     "tool": "ツール",
     "unknown": "未記録"
+  },
+  "comparisonStatus": {
+    "available": "参照可能",
+    "missing": "前期間ノートなし",
+    "unavailable": "前期間ノートを検証できず参照なし",
+    "disabled": "参照無効"
   }
 }
