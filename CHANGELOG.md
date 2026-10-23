@@ -7,6 +7,10 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.41.0 - 2026-10-24
+
+- Add `review-notes due --all-history` to discover the first saved source event and build closed weekly, monthly and yearly periods without configuring dates.
+
 ## 0.40.2 - 2026-10-16
 
 - Identify Codex chats in Japanese/English review titles for every period.

@@ -166,6 +166,8 @@ tkn-codex-chat-note --source my-pc review-notes build --period weekly
 tkn-codex-chat-note --source my-pc review-notes build --period monthly
 tkn-codex-chat-note --source my-pc review-notes build --period yearly
 tkn-codex-chat-note review-notes due
+# 設定に期間を指定せず、保存済みの全履歴から終了済み期間を生成
+tkn-codex-chat-note --source my-pc review-notes due --all-history
 ```
 
 直前の同種ノート（週次なら前週、月次なら前月、年次なら前年）がある場合、今回の内容と関連する最大6項目を比較資料として参照します。今回の出典を必須とし、過去の未解決事項は自動で持ち越しません。`sources.<id>.reviews.previous_period: false` で無効化できます。既存の統合・校正に資料を加える方式で、専用のモデル呼出しはありませんが、入力量や校正の分割・修復回数は増える場合があります。
@@ -214,3 +216,5 @@ uv build
 ```
 
 テストは一時ディレクトリと合成ログを使用します。実データや実モデルでの生成品質評価は別に行ってください。
+
+`due --all-history` はsourceごとの保存済みcanonical eventsの最古日時を、設定されたタイムゾーンで開始日に変換します。`start_date` と初回実行日より優先され、実行日（または `--as-of`）までの終了済み週・月・年が対象です。進行中の期間は対象外です。catalogがなければ先に `pull` が必要です。日付のある記録がなければ対象は0件です。`--dry-run` で書き込み・推論なしに確認でき、上限で中断した場合は同じコマンドの再実行で続行できます。

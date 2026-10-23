@@ -111,6 +111,8 @@ def build_parser() -> argparse.ArgumentParser:
     review_build.add_argument("--date", type=date.fromisoformat, help="A date inside the requested closed period")
     review_due = review_sub.add_parser(
         "due", help="Catch up closed periods since sources.<id>.reviews.start_date or first run")
+    review_due.add_argument("--all-history", action="store_true",
+                            help="Start at the earliest saved event, ignoring configured start_date and first run")
     _add_build_options(review_due)
     review_due.add_argument("--as-of", type=date.fromisoformat, help="Calendar date to evaluate (default: today)")
     review_validate = review_sub.add_parser("validate", help="Validate review JSON, periods and source IDs offline")
@@ -293,7 +295,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 result = run_reviews(config, kind=getattr(args, "period", None), day=getattr(args, "date", None),
                                      as_of=getattr(args, "as_of", None), dry_run=args.dry_run,
-                                     force=args.force, allow_edited=args.allow_edited)
+                                     force=args.force, allow_edited=args.allow_edited,
+                                     all_history=getattr(args, "all_history", False))
             if args.full_output:
                 _emit(result)
             review_result = result.get("reviews", result)

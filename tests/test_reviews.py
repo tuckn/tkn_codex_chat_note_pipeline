@@ -600,3 +600,44 @@ def test_editorial_pass_cannot_introduce_unknown_evidence(tmp_path: Path) -> Non
     with pytest.raises(ValueError, match="unavailable evidence"):
         generator.synthesize(period_for("weekly", date(2026, 5, 19)),
                              [ReviewDraft.model_validate({"items": [item("known")], "rawRequests": []})])
+
+
+@pytest.mark.parametrize("configured_start", [None, date(2026, 5, 1)])
+def test_all_history_ignores_start_and_uses_local_event_date(tmp_path: Path, configured_start: date | None) -> None:
+    config = config_for(tmp_path, start_date=configured_start)
+    seed(config, [("2025-12-31T15:00:00Z", "First local day of 2026"),
+                  ("2026-05-19T00:00:00Z", "Later")])
+    source = config.enabled_source_configs()[0]
+    atomic_write_json(source.review_state_root / "index.json",
+                      {"schemaVersion": "1.0.0", "startedOn": "2026-05-01", "reviews": {}})
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    result = run_reviews(config, all_history=True, as_of=date(2026, 6, 1), dry_run=True)
+    periods = [r["period"] for r in result["results"]]
+    assert any(p["kind"] == "weekly" and p["key"] == "2026-W01" for p in periods)
+    assert any(p["kind"] == "monthly" and p["key"] == "2026-01" for p in periods)
+    assert not any(p["kind"] == "yearly" for p in periods)
+    assert all(p["endExclusive"] <= "2026-06-01" for p in periods)
+    assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    regular = run_reviews(config, as_of=date(2026, 6, 1), dry_run=True)
+    assert len(regular["results"]) < len(periods)
+
+
+def test_all_history_partial_year_is_selected(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    seed(config, [("2025-12-15T00:00:00Z", "Only December")])
+    result = run_reviews(config, all_history=True, as_of=date(2026, 1, 1), dry_run=True)
+    assert any(r["period"]["kind"] == "yearly" and r["period"]["key"] == "2025"
+               for r in result["results"])
+
+
+def test_all_history_empty_and_missing_catalog(tmp_path: Path) -> None:
+    config = config_for(tmp_path)
+    with pytest.raises(PipelineError, match="catalog missing"):
+        run_reviews(config, all_history=True, dry_run=True)
+    seed(config, [])
+    assert run_reviews(config, all_history=True, dry_run=True)["results"] == []
+
+
+def test_due_all_history_cli_option() -> None:
+    args = build_parser().parse_args(["--source", "windows", "review-notes", "due", "--all-history", "--dry-run"])
+    assert args.all_history and args.dry_run and args.source == "windows"

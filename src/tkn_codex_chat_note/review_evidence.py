@@ -86,6 +86,34 @@ def _unit(source: AppConfig, entry: dict[str, Any], canonical: Path, events: lis
             "events": [{k: e.get(k, "") for k in ("id", "localId", "timestamp", "rawRef")} for e in events]}
 
 
+def earliest_history_date(config: AppConfig) -> date | None:
+    """Find the first dated canonical event belonging to this source."""
+    catalog_path = config.data_root / "catalog/threads.json"
+    if not catalog_path.is_file():
+        raise PipelineError("catalog missing; run pull before review-notes due --all-history")
+    catalog = checked_json(catalog_path)
+    descriptor = read_json(config.data_root / "store.json")
+    zone = period_for("weekly", date(2000, 1, 1), config.reviews.utc_offset_minutes).zone
+    earliest = None
+    for entry in catalog.get("threads", []):
+        if (entry.get("sourceId") != config.source_id
+                or entry.get("sourceProvider", "codex") != config.source_provider
+                or entry.get("status") in {"excluded", "failed"}):
+            continue
+        path = resolve_store_ref(config.data_root, entry["canonicalRef"], descriptor)
+        saved = checked_json(path, entry["canonicalSha256"])
+        for event in saved["events"]:
+            try:
+                timestamp = datetime.fromisoformat(event.get("timestamp", "").replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                continue
+            if timestamp.tzinfo is None:
+                continue
+            day = timestamp.astimezone(zone).date()
+            earliest = day if earliest is None else min(earliest, day)
+    return earliest
+
+
 def canonical_evidence(config: AppConfig, period: Period) -> EvidenceSet:
     result = EvidenceSet()
     for source in config.enabled_source_configs():
