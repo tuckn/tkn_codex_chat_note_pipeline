@@ -265,6 +265,7 @@ def test_cli_multi_source_show_status_selection_and_compact_output(
     assert "Source: pc-windows" in output.err
     assert main([*args, "--source", "missing", "status"]) == 1
     assert "unknown source_id" in json.loads(capsys.readouterr().out)["error"]
+    assert run_pipeline(config, mode="clone")["ok"]
     assert main([*args, "--source", "pc-windows", "review-notes", "due", "--dry-run", "--full-output"]) == 0
     assert json.loads(capsys.readouterr().out)["sourceId"] == "pc-windows"
 

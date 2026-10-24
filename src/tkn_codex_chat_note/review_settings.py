@@ -13,6 +13,7 @@ class ReviewSettings(BaseModel):
 
     language: Literal["ja", "en"] = "ja"
     utc_offset_minutes: int = Field(default=540, ge=-720, le=840)
+    # Accepted for existing configuration files; due always uses all saved history.
     start_date: date | None = None
     previous_period: bool = True
     max_calls: int = Field(default=12, ge=1)

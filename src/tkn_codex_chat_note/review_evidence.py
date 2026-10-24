@@ -90,7 +90,7 @@ def earliest_history_date(config: AppConfig) -> date | None:
     """Find the first dated canonical event belonging to this source."""
     catalog_path = config.data_root / "catalog/threads.json"
     if not catalog_path.is_file():
-        raise PipelineError("catalog missing; run pull before review-notes due --all-history")
+        raise PipelineError("catalog missing; run pull before review-notes due")
     catalog = checked_json(catalog_path)
     descriptor = read_json(config.data_root / "store.json")
     zone = period_for("weekly", date(2000, 1, 1), config.reviews.utc_offset_minutes).zone

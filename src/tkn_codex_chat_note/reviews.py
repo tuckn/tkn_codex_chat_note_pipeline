@@ -194,8 +194,7 @@ def _build(config: AppConfig, period: Period, generator: ReviewGenerator, index:
 
 def _run_source_reviews(config: AppConfig, *, kind: PeriodKind | None = None, day: date | None = None,
                 as_of: date | None = None, dry_run: bool = False, force: bool = False,
-                allow_edited: bool = False, generate: Generator | None = None,
-                all_history: bool = False) -> dict[str, Any]:
+                allow_edited: bool = False, generate: Generator | None = None) -> dict[str, Any]:
     _validate_roots(config)
     today = as_of or review_today(config)
     if not dry_run:
@@ -210,7 +209,7 @@ def _run_source_reviews(config: AppConfig, *, kind: PeriodKind | None = None, da
     lock = nullcontext() if dry_run else _root_lock(config.review_state_root)
     with lock:
         path = config.review_state_root / "index.json"
-        index = read_json(path, {"schemaVersion": REVIEW_VERSION, "startedOn": today.isoformat(), "reviews": {}})
+        index = read_json(path, {"schemaVersion": REVIEW_VERSION, "reviews": {}})
         if index.get("schemaVersion") != REVIEW_VERSION:
             raise PipelineError("unsupported review state schema")
         _recover(config, index, dry_run=dry_run)
@@ -220,8 +219,7 @@ def _run_source_reviews(config: AppConfig, *, kind: PeriodKind | None = None, da
             if periods[0].end > today:
                 raise PipelineError("only closed periods can be reviewed; choose an earlier --date")
         else:
-            start = (earliest_history_date(config) if all_history else
-                     config.reviews.start_date or date.fromisoformat(index["startedOn"]))
+            start = earliest_history_date(config)
             periods = closed_periods(start, today, config.reviews.utc_offset_minutes) if start else []
         if not dry_run:
             atomic_write_json(path, index)
@@ -271,8 +269,7 @@ def _combine_reviews(reports: list[dict[str, Any]]) -> dict[str, Any]:
 
 def run_reviews(config: AppConfig, *, kind: PeriodKind | None = None, day: date | None = None,
                 as_of: date | None = None, dry_run: bool = False, force: bool = False,
-                allow_edited: bool = False, generate: Generator | None = None,
-                all_history: bool = False) -> dict[str, Any]:
+                allow_edited: bool = False, generate: Generator | None = None) -> dict[str, Any]:
     sources = config.enabled_source_configs()
     validate_source_layout(config)
     for source in sources:
@@ -280,8 +277,7 @@ def run_reviews(config: AppConfig, *, kind: PeriodKind | None = None, day: date 
     reports = []
     for source in sources:
         reports.append(_run_source_reviews(source, kind=kind, day=day, as_of=as_of, dry_run=dry_run,
-                                           force=force, allow_edited=allow_edited, generate=generate,
-                                           all_history=all_history))
+                                           force=force, allow_edited=allow_edited, generate=generate))
     return _combine_reviews(reports)
 
 

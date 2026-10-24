@@ -348,13 +348,19 @@ def test_interrupted_pair_commit_recovers_without_inference(tmp_path: Path, monk
     assert len(model.prompts) == 3
 
 
-def test_calendar_start_no_implicit_backfill_and_offline_catchup(tmp_path: Path) -> None:
-    config = config_for(tmp_path)
+def test_due_backfills_and_catches_up_missed_weeks(tmp_path: Path) -> None:
+    config = config_for(tmp_path, max_calls=100)
+    seed(config, [("2026-10-06T00:00:00Z", "First week"),
+                  ("2026-10-13T00:00:00Z", "Missed week"),
+                  ("2026-10-20T00:00:00Z", "Last closed week")])
     first = run_reviews(config, as_of=date(2026, 10, 12), generate=FakeGenerator())
-    assert first["results"] == []
+    assert first["ok"] and first["complete"] and first["generatedCount"] == 1
     second = run_reviews(config, as_of=date(2026, 10, 26), generate=FakeGenerator())
-    assert [r["period"]["key"] for r in second["results"]] == ["2026-W42", "2026-W43"]
-    assert second["modelCalls"] == 0  # empty inputs never require paid inference
+    assert second["ok"] and second["complete"]
+    assert [(r["period"]["key"], r["status"]) for r in second["results"]] == [
+        ("2026-W41", "current"), ("2026-W42", "generated"), ("2026-W43", "generated")]
+    again = run_reviews(config, as_of=date(2026, 10, 26), generate=FakeGenerator())
+    assert again["generatedCount"] == 0 and again["modelCalls"] == 0
 
 
 def test_open_period_is_rejected(tmp_path: Path) -> None:
@@ -379,6 +385,7 @@ def test_review_config_paths_and_cli_defaults(tmp_path: Path, monkeypatch: pytes
     args = build_parser().parse_args(["review-notes", "build", "--period", "yearly"])
     assert args.period == "yearly" and not args.dry_run
     monkeypatch.chdir(tmp_path)
+    seed(config, [])
     assert main(["--config", str(path), "review-notes", "due", "--dry-run"]) == 0
     assert not config.review_state_root.exists()
 
@@ -387,6 +394,7 @@ def test_scheduled_capture_does_not_generate_before_due(tmp_path: Path, monkeypa
     import tkn_codex_chat_note.pipeline as pipeline
 
     config = config_for(tmp_path)
+    seed(config, [])
     calls: list[str] = []
 
     def run(*_: Any, mode: str, **__: Any) -> dict[str, Any]:
@@ -465,6 +473,7 @@ def test_scheduled_due_run_only_captures_normalizes_and_reviews(
     import tkn_codex_chat_note.reviews as reviews
 
     config = config_for(tmp_path, start_date=date(2026, 5, 18))
+    seed(config, [])
     calls: list[dict[str, Any]] = []
 
     def run(*_: Any, **kwargs: Any) -> dict[str, Any]:
@@ -603,7 +612,7 @@ def test_editorial_pass_cannot_introduce_unknown_evidence(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("configured_start", [None, date(2026, 5, 1)])
-def test_all_history_ignores_start_and_uses_local_event_date(tmp_path: Path, configured_start: date | None) -> None:
+def test_due_ignores_start_and_uses_local_event_date(tmp_path: Path, configured_start: date | None) -> None:
     config = config_for(tmp_path, start_date=configured_start)
     seed(config, [("2025-12-31T15:00:00Z", "First local day of 2026"),
                   ("2026-05-19T00:00:00Z", "Later")])
@@ -611,33 +620,33 @@ def test_all_history_ignores_start_and_uses_local_event_date(tmp_path: Path, con
     atomic_write_json(source.review_state_root / "index.json",
                       {"schemaVersion": "1.0.0", "startedOn": "2026-05-01", "reviews": {}})
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    result = run_reviews(config, all_history=True, as_of=date(2026, 6, 1), dry_run=True)
+    result = run_reviews(config, as_of=date(2026, 6, 1), dry_run=True)
     periods = [r["period"] for r in result["results"]]
     assert any(p["kind"] == "weekly" and p["key"] == "2026-W01" for p in periods)
     assert any(p["kind"] == "monthly" and p["key"] == "2026-01" for p in periods)
     assert not any(p["kind"] == "yearly" for p in periods)
     assert all(p["endExclusive"] <= "2026-06-01" for p in periods)
     assert before == {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-    regular = run_reviews(config, as_of=date(2026, 6, 1), dry_run=True)
-    assert len(regular["results"]) < len(periods)
 
 
-def test_all_history_partial_year_is_selected(tmp_path: Path) -> None:
+def test_due_partial_year_is_selected(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     seed(config, [("2025-12-15T00:00:00Z", "Only December")])
-    result = run_reviews(config, all_history=True, as_of=date(2026, 1, 1), dry_run=True)
+    result = run_reviews(config, as_of=date(2026, 1, 1), dry_run=True)
     assert any(r["period"]["kind"] == "yearly" and r["period"]["key"] == "2025"
                for r in result["results"])
 
 
-def test_all_history_empty_and_missing_catalog(tmp_path: Path) -> None:
+def test_due_empty_and_missing_catalog(tmp_path: Path) -> None:
     config = config_for(tmp_path)
     with pytest.raises(PipelineError, match="catalog missing"):
-        run_reviews(config, all_history=True, dry_run=True)
+        run_reviews(config, dry_run=True)
     seed(config, [])
-    assert run_reviews(config, all_history=True, dry_run=True)["results"] == []
+    assert run_reviews(config, dry_run=True)["results"] == []
 
 
-def test_due_all_history_cli_option() -> None:
-    args = build_parser().parse_args(["--source", "windows", "review-notes", "due", "--all-history", "--dry-run"])
-    assert args.all_history and args.dry_run and args.source == "windows"
+def test_due_cli_rejects_removed_option() -> None:
+    args = build_parser().parse_args(["--source", "windows", "review-notes", "due", "--dry-run"])
+    assert args.dry_run and args.source == "windows"
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["review-notes", "due", "--all-history"])

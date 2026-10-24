@@ -22,7 +22,6 @@ sources:
     reviews:
       language: ja  # ja or en; one content contract
       utc_offset_minutes: 540  # Fixed UTC offset; 540 = Japan. No daylight-saving adjustment.
-      start_date: null  # due starts with periods containing its first actual run; set a date to backfill.
       previous_period: true  # Related items from the immediately preceding same-kind review; false disables.
       max_calls: 12  # One source per review command; includes Raw checks and merges. Cached stages do not count.
       input_characters: 50000  # Per-call prompt ceiling; large periods are batched.

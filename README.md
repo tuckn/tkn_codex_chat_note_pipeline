@@ -100,7 +100,6 @@ sources:
     reviews:
       language: ja
       utc_offset_minutes: 540
-      start_date: null
       max_calls: 12
       input_characters: 50000
       raw_characters: 16000
@@ -132,9 +131,9 @@ tkn-codex-chat-note scheduled-run --dry-run
 tkn-codex-chat-note scheduled-run
 ```
 
-毎回Rawを保存・正規化し、締まった期間のレビューを生成します。初回に管理領域と運用開始日を初期化するので、別途 `clone` は不要です。週次は翌月曜、月次は翌月1日、年次は翌年1月1日以降の実行で生成します。未実行・中断した分は次回に再開します。
+毎回Rawを保存・正規化し、締まった期間のレビューを生成します。初回に管理領域を初期化するので、別途 `clone` は不要です。週次は翌月曜、月次は翌月1日、年次は翌年1月1日以降の実行で生成します。未実行・中断した分は次回に再開します。
 
-`start_date: null` は初回実行日を含む週・月・年から開始し、それ以前の締まった期間を一括生成しません。過去分も対象にする場合は各sourceの `reviews.start_date` を日付に設定します。日次・週次・月次・年次に別々のタスクを登録する必要はありません。
+保存済みの全履歴を起点に、終了済み期間のレビューを確認し、不足分を生成します。初回実行日による制限はありません。日次・週次・月次・年次に別々のタスクを登録する必要はありません。
 
 | Task Schedulerの項目 | 設定例 |
 |---|---|
@@ -167,8 +166,10 @@ tkn-codex-chat-note --source my-pc review-notes build --period monthly
 tkn-codex-chat-note --source my-pc review-notes build --period yearly
 tkn-codex-chat-note review-notes due
 # 設定に期間を指定せず、保存済みの全履歴から終了済み期間を生成
-tkn-codex-chat-note --source my-pc review-notes due --all-history
+tkn-codex-chat-note --source my-pc review-notes due
 ```
+
+`due` はsourceごとの保存済みcanonical eventsの最古日時を、設定されたタイムゾーンで開始日に変換します。既存設定の `start_date` と保存済みの初回実行日は対象範囲を制限しません。実行日（または `--as-of`）までの終了済み週・月・年が対象です。進行中の期間は対象外です。catalogがなければ先に `pull` が必要です。日付のある記録がなければ対象は0件です。`--dry-run` で書き込み・推論なしに確認でき、上限で中断した場合は同じコマンドの再実行で続行できます。
 
 直前の同種ノート（週次なら前週、月次なら前月、年次なら前年）がある場合、今回の内容と関連する最大6項目を比較資料として参照します。今回の出典を必須とし、過去の未解決事項は自動で持ち越しません。`sources.<id>.reviews.previous_period: false` で無効化できます。既存の統合・校正に資料を加える方式で、専用のモデル呼出しはありませんが、入力量や校正の分割・修復回数は増える場合があります。
 
@@ -216,5 +217,3 @@ uv build
 ```
 
 テストは一時ディレクトリと合成ログを使用します。実データや実モデルでの生成品質評価は別に行ってください。
-
-`due --all-history` はsourceごとの保存済みcanonical eventsの最古日時を、設定されたタイムゾーンで開始日に変換します。`start_date` と初回実行日より優先され、実行日（または `--as-of`）までの終了済み週・月・年が対象です。進行中の期間は対象外です。catalogがなければ先に `pull` が必要です。日付のある記録がなければ対象は0件です。`--dry-run` で書き込み・推論なしに確認でき、上限で中断した場合は同じコマンドの再実行で続行できます。
