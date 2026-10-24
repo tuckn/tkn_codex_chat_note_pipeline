@@ -9,7 +9,7 @@ import sys
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, overload
 
 from . import __version__
 from .config import (
@@ -24,6 +24,7 @@ from .raw_capture import RawCaptureError
 from .runtime import PipelineError
 
 LOGGER = logging.getLogger("tkn_codex_chat_note")
+_NamespaceT = TypeVar("_NamespaceT")
 
 
 def _utf8_console() -> None:
@@ -70,13 +71,40 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+class _CommandParser(argparse.ArgumentParser):
+    """Expose shared options at every command level without resetting earlier values."""
+
+    def __init__(self, *, runtime_defaults: bool = False, **kwargs: Any) -> None:
+        super().__init__(argument_default=None if runtime_defaults else argparse.SUPPRESS, **kwargs)
+        _add_runtime_options(self)
+        self.argument_default = None
+
+    @overload
+    def parse_args(self, args: Sequence[str] | None = None,
+                   namespace: None = None) -> argparse.Namespace: ...
+
+    @overload
+    def parse_args(self, args: Sequence[str] | None, namespace: _NamespaceT) -> _NamespaceT: ...
+
+    @overload
+    def parse_args(self, *, namespace: _NamespaceT) -> _NamespaceT: ...
+
+    def parse_args(self, args: Sequence[str] | None = None, namespace: Any = None) -> Any:
+        result = super().parse_args(args, namespace)
+        # argparse checks each parser's groups separately; also reject conflicts across levels.
+        for left, right in (("profile", "provider"), ("quiet", "verbose")):
+            if getattr(result, left, None) and getattr(result, right, None):
+                self.error(f"argument --{right}: not allowed with argument --{left}")
+        return result
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _CommandParser(
+        runtime_defaults=True,
         prog="tkn-codex-chat-note",
         description="Preserve Codex Raw, normalize events, and generate weekly, monthly and yearly reviews.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    _add_runtime_options(parser)
     commands = parser.add_subparsers(dest="command", required=True)
     config = commands.add_parser("config", help="Create or inspect configuration")
     sub = config.add_subparsers(dest="config_command", required=True)

@@ -7,6 +7,11 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.43.0 - 2026-10-24
+
+- Accept shared options before, between or after command names, preserving existing prefix usage and mutual exclusions across command levels.
+- Standardize README examples on command-first option ordering.
+
 ## 0.42.0 - 2026-10-24
 
 - Make `review-notes due` and scheduled reviews catch up all saved history regardless of configured start dates or initial run dates.

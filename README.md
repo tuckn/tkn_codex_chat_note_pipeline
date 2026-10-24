@@ -124,6 +124,8 @@ tkn-codex-chat-note config list --json
 
 ## 3. 実行する
 
+共通オプション（`--source`、`--config`、`--profile` など）はコマンドの後ろに指定できます。従来の前置き形式も使用できます。同じオプションを複数回指定した場合は後の値が優先されます。`--profile` と `--provider`、`--quiet` と `--verbose` は、指定位置にかかわらず併用できません。
+
 ### 3.1. 定期実行
 
 ```shell
@@ -138,7 +140,7 @@ tkn-codex-chat-note scheduled-run
 | Task Schedulerの項目 | 設定例 |
 |---|---|
 | プログラム | インストール済み `tkn-codex-chat-note.exe` の絶対パス |
-| 引数 | `--config "C:/path/to/config.yaml" scheduled-run` |
+| 引数 | `scheduled-run --config "C:/path/to/config.yaml"` |
 | 開始場所 | 設定で意図した作業ディレクトリ |
 | トリガー | 毎日1回（例：03:00） |
 | 実行ユーザー | 生成AIの認証を設定したユーザー |
@@ -160,13 +162,13 @@ tkn-codex-chat-note raw ingest
 ### 3.3. レビューを個別に作る
 
 ```shell
-tkn-codex-chat-note --source my-pc review-notes build --period weekly --dry-run
-tkn-codex-chat-note --source my-pc review-notes build --period weekly
-tkn-codex-chat-note --source my-pc review-notes build --period monthly
-tkn-codex-chat-note --source my-pc review-notes build --period yearly
+tkn-codex-chat-note review-notes build --source my-pc --period weekly --dry-run
+tkn-codex-chat-note review-notes build --source my-pc --period weekly
+tkn-codex-chat-note review-notes build --source my-pc --period monthly
+tkn-codex-chat-note review-notes build --source my-pc --period yearly
 tkn-codex-chat-note review-notes due
 # 設定に期間を指定せず、保存済みの全履歴から終了済み期間を生成
-tkn-codex-chat-note --source my-pc review-notes due
+tkn-codex-chat-note review-notes due --source my-pc
 ```
 
 `due` はsourceごとの保存済みcanonical eventsの最古日時を、設定されたタイムゾーンで開始日に変換します。既存設定の `start_date` と保存済みの初回実行日は対象範囲を制限しません。実行日（または `--as-of`）までの終了済み週・月・年が対象です。進行中の期間は対象外です。catalogがなければ先に `pull` が必要です。日付のある記録がなければ対象は0件です。`--dry-run` で書き込み・推論なしに確認でき、上限で中断した場合は同じコマンドの再実行で続行できます。
