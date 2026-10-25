@@ -7,6 +7,13 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.45.0 - 2026-10-25
+
+- Skip empty weekly, monthly and yearly periods without creating notes; preserve existing empty notes.
+- Count only actual pending work, inspecting remaining periods without inference after generation stops and excluding empty/current periods.
+- Validate saved history before classifying periods as empty; report missing, corrupt or failed source inputs as errors.
+- Report undated source messages separately from pending periods, allowing dated work to continue without claiming full completion.
+
 ## 0.44.0 - 2026-10-25
 
 - Stream review preparation, model call start/response duration, cache reuse and period results during execution.

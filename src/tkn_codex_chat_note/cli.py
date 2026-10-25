@@ -325,9 +325,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.full_output:
                 _emit(result)
             review_result = result.get("reviews", result)
-            LOGGER.info("Review notes: generated %s; rendered %s; planned %s; model calls %s; cache hits %s",
+            LOGGER.info("Review notes: generated %s; rendered %s; planned %s; skipped empty %s; "
+                        "model calls %s; cache hits %s",
                         review_result.get("generatedCount", 0), review_result.get("renderedCount", 0),
-                        review_result.get("plannedCount", 0),
+                        review_result.get("plannedCount", 0), review_result.get("skippedEmptyCount", 0),
                         review_result.get("modelCalls", 0), review_result.get("cacheHits", 0))
             if review_result.get("reportPath"):
                 LOGGER.info("Run report: %s", review_result["reportPath"])
@@ -339,10 +340,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                     LOGGER.info("%s report: %s", stage, stage_result["reportPath"])
             if not result["ok"]:
                 LOGGER.error("Some processing failed or was protected; inspect the run report")
-            if not result["complete"]:
+            if review_result.get("undatedEventCount"):
+                LOGGER.error("%s saved events have no timestamp. Resolve the source history issues listed "
+                             "in the run report; rerunning alone cannot resolve missing timestamps.",
+                             review_result["undatedEventCount"])
+            if not result["complete"] and review_result.get("pendingPeriods", 0):
                 LOGGER.warning("Review generation incomplete; %s pending periods. "
                                "Rerun the same command to resume. Exit code: %s",
                                review_result.get("pendingPeriods", "unknown"), 1 if not result["ok"] else 2)
+            elif not result["complete"] and "pendingPeriods" not in review_result:
+                LOGGER.warning("Review generation incomplete; input processing failed before review planning; "
+                               "inspect the run report. Exit code: %s", 1 if not result["ok"] else 2)
+            elif not result["complete"]:
+                LOGGER.warning("No dated review periods are pending, but unresolved input problems prevent "
+                               "completion; inspect the run report. Exit code: %s", 1 if not result["ok"] else 2)
+            elif result["ok"] and not args.dry_run:
+                LOGGER.info("Review generation complete; no pending periods")
             return 1 if not result["ok"] else 0 if result["complete"] else 2
         if args.command == "build-report":
             from .usage_report import build_usage_report

@@ -86,32 +86,73 @@ def _unit(source: AppConfig, entry: dict[str, Any], canonical: Path, events: lis
             "events": [{k: e.get(k, "") for k in ("id", "localId", "timestamp", "rawRef")} for e in events]}
 
 
-def earliest_history_date(config: AppConfig) -> date | None:
-    """Find the first dated canonical event belonging to this source."""
+@dataclass
+class ReviewHistory:
+    dates: set[date] = field(default_factory=set)
+    undated_events: int = 0
+    issues: list[dict[str, Any]] = field(default_factory=list)
+
+
+def inspect_review_history(config: AppConfig) -> ReviewHistory:
+    """Inventory dated reviewable source events; unreadable history is never treated as empty."""
     catalog_path = config.data_root / "catalog/threads.json"
     if not catalog_path.is_file():
         raise PipelineError("catalog missing; run pull before review-notes due")
-    catalog = checked_json(catalog_path)
-    descriptor = read_json(config.data_root / "store.json")
+    try:
+        catalog = checked_json(catalog_path)
+        entries = catalog["threads"]
+        if not isinstance(entries, list):
+            raise ValueError("catalog threads must be a list")
+        descriptor = checked_json(config.data_root / "store.json")
+    except (OSError, ValueError, KeyError) as exc:
+        raise PipelineError(f"cannot inspect saved history: {exc}") from exc
     zone = period_for("weekly", date(2000, 1, 1), config.reviews.utc_offset_minutes).zone
-    earliest = None
-    for entry in catalog.get("threads", []):
-        if (entry.get("sourceId") != config.source_id
-                or entry.get("sourceProvider", "codex") != config.source_provider
-                or entry.get("status") in {"excluded", "failed"}):
-            continue
-        path = resolve_store_ref(config.data_root, entry["canonicalRef"], descriptor)
-        saved = checked_json(path, entry["canonicalSha256"])
-        for event in saved["events"]:
-            try:
-                timestamp = datetime.fromisoformat(event.get("timestamp", "").replace("Z", "+00:00"))
-            except (ValueError, AttributeError):
+    history = ReviewHistory()
+    for entry in entries:
+        thread_id = entry.get("threadId", "unknown") if isinstance(entry, dict) else "unknown"
+        try:
+            if (entry.get("sourceId") != config.source_id
+                    or entry.get("sourceProvider", "codex") != config.source_provider
+                    or entry.get("status") == "excluded"):
                 continue
-            if timestamp.tzinfo is None:
-                continue
-            day = timestamp.astimezone(zone).date()
-            earliest = day if earliest is None else min(earliest, day)
-    return earliest
+            if entry.get("status") == "failed":
+                raise PipelineError(f"failed normalization: {entry.get('reason', 'unknown reason')}")
+            path = resolve_store_ref(config.data_root, entry["canonicalRef"], descriptor)
+            saved = checked_json(path, entry["canonicalSha256"])
+            events = saved["events"]
+            if not isinstance(events, list):
+                raise ValueError("canonical events must be a list")
+            thread_dates: set[date] = set()
+            undated = 0
+            for event in events:
+                if (event.get("kind") not in {"user_message", "assistant_message", "tool_call", "tool_result"}
+                        and event.get("name") != "turn_aborted"):
+                    continue
+                if event.get("kind") in {"user_message", "assistant_message"}:
+                    text = event.get("text", "")
+                    if event.get("actor") == "user":
+                        text = clean_user_text(text)
+                    if not text.strip():
+                        continue
+                if not event.get("timestamp"):
+                    undated += 1
+                    continue
+                timestamp = datetime.fromisoformat(event["timestamp"].replace("Z", "+00:00"))
+                if timestamp.tzinfo is None:
+                    raise ValueError("reviewable event timestamp has no timezone")
+                thread_dates.add(timestamp.astimezone(zone).date())
+            if not thread_dates and saved.get("diagnostics", {}).get("invalidLines"):
+                raise PipelineError("invalid original log lines; cannot confirm that history is empty")
+            history.dates.update(thread_dates)
+            if undated:
+                history.undated_events += undated
+                history.issues.append({"reason": "undated-events", "threadId": entry["threadId"],
+                                       "eventCount": undated,
+                                       "message": "saved messages have no timestamp; cannot assign a review period"})
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, PipelineError) as exc:
+            raise PipelineError(f"cannot inspect source {config.source_id} chat {thread_id} history; "
+                                f"not classified as empty: {exc}") from exc
+    return history
 
 
 def canonical_evidence(config: AppConfig, period: Period) -> EvidenceSet:

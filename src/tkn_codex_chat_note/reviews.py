@@ -16,7 +16,7 @@ from .frontmatter import parse_simple_frontmatter
 from .inference import InferenceExecutionError
 from .provenance import json_bytes
 from .review_comparison import load_previous, validate_comparison
-from .review_evidence import checked_json, digest, earliest_history_date, period_evidence, review_path
+from .review_evidence import checked_json, digest, inspect_review_history, period_evidence, review_path
 from .review_frontmatter import presentation_signature
 from .review_generation import Generator, ReviewBudgetStop, ReviewGenerator
 from .review_model import REVIEW_VERSION, Period, PeriodKind, ReviewDraft, closed_periods, period_for
@@ -139,6 +139,9 @@ def _build(config: AppConfig, period: Period, generator: ReviewGenerator, index:
     key = period.kind + "/" + period.key
     saved = index["reviews"].get(key, {})
     evidence = period_evidence(config, period)
+    if not evidence.selected:
+        raise PipelineError("saved records exist but no usable review inputs were found; "
+                            "not classified as empty: " + "; ".join(evidence.gaps))
     previous_context = load_previous(config, period)
     fingerprint = digest({"period": period.document(), "generation": generator.signature,
                           "inputs": evidence.input_records(), "gaps": evidence.gaps,
@@ -237,37 +240,55 @@ def _run_source_reviews(config: AppConfig, *, kind: PeriodKind | None = None, da
             if periods[0].end > today:
                 raise PipelineError("only closed periods can be reviewed; choose an earlier --date")
         else:
-            LOGGER.info("Source %s: finding earliest saved event and closed review periods", config.source_id)
-            start = earliest_history_date(config)
-            periods = closed_periods(start, today, config.reviews.utc_offset_minutes) if start else []
+            periods = []
+        LOGGER.info("Source %s: inspecting saved records to identify nonempty review periods", config.source_id)
+        history = inspect_review_history(config)
+        history_dates = history.dates
+        report.update(undatedEventCount=history.undated_events, historyIssues=history.issues)
+        if history.issues:
+            report["ok"] = report["complete"] = False
+            LOGGER.error("Source %s: %s saved events in %s chats have no timestamp; "
+                         "they cannot be assigned to review periods and are not empty history. "
+                         "Dated records will still be processed; full completion requires resolving these issues.",
+                         config.source_id, history.undated_events, len(history.issues))
+        if not kind and history_dates:
+            periods = closed_periods(min(history_dates), today, config.reviews.utc_offset_minutes)
         if not dry_run:
             atomic_write_json(path, index)
-        LOGGER.info("Source %s: checking %s closed review periods", config.source_id, len(periods))
+        LOGGER.info("Source %s: checking %s closed calendar periods; empty periods will be skipped",
+                    config.source_id, len(periods))
         generator = ReviewGenerator(config, run_id, generate=generate, force=force)
+        paused = False
         try:
             for number, p in enumerate(periods, 1):
-                LOGGER.info("[%s/%s] Source %s: %s %s; preparing inputs and checking saved review",
-                            number, len(periods), config.source_id, p.kind, p.key)
+                if not any(p.start <= day < p.end for day in history_dates):
+                    result = {"period": p.document(), "status": "skipped-empty", "inputCount": 0,
+                              "reason": "no reviewable saved records; no note created"}
+                    report["results"].append(result)
+                    _log_result(result)
+                    continue
+                LOGGER.info("[%s/%s] Source %s: %s %s; preparing inputs and checking saved review%s",
+                            number, len(periods), config.source_id, p.kind, p.key,
+                            " (read-only after generation stopped)" if paused else "")
                 try:
-                    result = _build(config, p, generator, index, dry_run=dry_run,
+                    result = _build(config, p, generator, index, dry_run=dry_run or paused,
                                     force=force, allow_edited=allow_edited)
+                    if paused and result["status"] == "planned":
+                        result = {**result, "status": "pending",
+                                  "reason": "saved records need processing; generation stopped earlier in this run"}
                 except (ReviewBudgetStop, ApiBudgetExceeded) as exc:
                     result = {"period": p.document(), "status": "deferred", "reason": str(exc),
                               "generationStop": exc.details}
-                    report["results"].append(result)
-                    _log_result(result)
-                    LOGGER.warning("Source %s: review generation stopped; %s periods remain including this period. "
-                                   "Completed responses are cached; rerun the same command to resume.",
-                                   config.source_id, len(periods) - number + 1)
+                    paused = True
                     report["complete"] = False
-                    break
+                    LOGGER.warning("Source %s: review generation stopped. Checking remaining periods without "
+                                   "model calls to count actual pending work; rerun the same command to resume.",
+                                   config.source_id)
                 except (PipelineError, InferenceExecutionError, OSError, ValueError) as exc:
                     result = {"period": p.document(), "status": "failed", "reason": str(exc)}
-                    report["results"].append(result)
-                    _log_result(result)
                     report["ok"] = report["complete"] = False
-                    # Stop on provider/validation errors; do not repeatedly submit bad requests.
-                    break
+                    # Inspect remaining periods offline, but submit no further requests after an error.
+                    paused = True
                 report["results"].append(result)
                 _log_result(result)
                 if result["status"] == "blocked":
@@ -278,8 +299,9 @@ def _run_source_reviews(config: AppConfig, *, kind: PeriodKind | None = None, da
                       plannedCount=sum(r["status"] == "planned" for r in report["results"]),
                       generatedCount=sum(r["status"] == "generated" for r in report["results"]),
                       renderedCount=sum(r["status"] == "rendered" for r in report["results"]),
-                      pendingPeriods=len(periods) - len(report["results"]) + sum(
-                          r["status"] in {"deferred", "failed", "blocked"} for r in report["results"]))
+                      skippedEmptyCount=sum(r["status"] == "skipped-empty" for r in report["results"]),
+                      pendingPeriods=sum(r["status"] in {"pending", "planned", "deferred", "failed", "blocked"}
+                                         for r in report["results"]))
         report["finishedAt"] = now_iso()
         if not dry_run:
             report["reportPath"] = str(config.review_state_root / "reports" / f"{run_id}.json")
@@ -294,9 +316,11 @@ def _combine_reviews(reports: list[dict[str, Any]]) -> dict[str, Any]:
             "sourceResults": reports,
             "results": [{"sourceId": r["sourceId"], **item} for r in reports for item in r.get("results", [])],
             "reportPaths": [r["reportPath"] for r in reports if r.get("reportPath")],
+            "historyIssues": [{"sourceId": r["sourceId"], **issue}
+                              for r in reports for issue in r.get("historyIssues", [])],
             **{key: sum(r.get(key, 0) for r in reports)
                for key in ("modelCalls", "cacheHits", "generatedCount", "renderedCount",
-                           "plannedCount", "pendingPeriods")}}
+                           "plannedCount", "skippedEmptyCount", "pendingPeriods", "undatedEventCount")}}
 
 
 def run_reviews(config: AppConfig, *, kind: PeriodKind | None = None, day: date | None = None,
