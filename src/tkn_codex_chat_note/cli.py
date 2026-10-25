@@ -325,13 +325,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.full_output:
                 _emit(result)
             review_result = result.get("reviews", result)
-            for entry in review_result.get("results", []):
-                LOGGER.info("%s %s: %s%s", entry["period"]["kind"], entry["period"]["key"], entry["status"],
-                            "; " + entry["reason"] if entry.get("reason") else "")
-                if entry.get("notePath") and entry["status"] in {"generated", "rendered", "planned"}:
-                    LOGGER.info("Review note: %s", entry["notePath"])
-                if entry.get("gaps"):
-                    LOGGER.warning("Input limitations: %s; see the review or full run report", len(entry["gaps"]))
             LOGGER.info("Review notes: generated %s; rendered %s; planned %s; model calls %s; cache hits %s",
                         review_result.get("generatedCount", 0), review_result.get("renderedCount", 0),
                         review_result.get("plannedCount", 0),
@@ -346,6 +339,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     LOGGER.info("%s report: %s", stage, stage_result["reportPath"])
             if not result["ok"]:
                 LOGGER.error("Some processing failed or was protected; inspect the run report")
+            if not result["complete"]:
+                LOGGER.warning("Review generation incomplete; %s pending periods. "
+                               "Rerun the same command to resume. Exit code: %s",
+                               review_result.get("pendingPeriods", "unknown"), 1 if not result["ok"] else 2)
             return 1 if not result["ok"] else 0 if result["complete"] else 2
         if args.command == "build-report":
             from .usage_report import build_usage_report

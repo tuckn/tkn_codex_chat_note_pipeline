@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import nullcontext
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
@@ -23,6 +24,20 @@ from .review_profiles import ReviewProfile
 from .review_render import render_review
 from .runtime import PipelineError, atomic_write_bytes, atomic_write_json, now_iso
 from .storage import _root_lock, read_json, validate_source_layout
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _log_result(result: dict[str, Any]) -> None:
+    status = result["status"]
+    level = (logging.WARNING if status == "deferred" else
+             logging.ERROR if status in {"failed", "blocked"} else logging.INFO)
+    LOGGER.log(level, "%s %s: %s%s", result["period"]["kind"], result["period"]["key"], status,
+               "; " + result["reason"] if result.get("reason") else "")
+    if result.get("notePath") and status in {"generated", "rendered", "planned"}:
+        LOGGER.info("Review note: %s", result["notePath"])
+    if result.get("gaps"):
+        LOGGER.warning("Input limitations: %s; see the review or full run report", len(result["gaps"]))
 
 
 def review_today(config: AppConfig) -> date:
@@ -197,6 +212,9 @@ def _run_source_reviews(config: AppConfig, *, kind: PeriodKind | None = None, da
                 allow_edited: bool = False, generate: Generator | None = None) -> dict[str, Any]:
     _validate_roots(config)
     today = as_of or review_today(config)
+    LOGGER.info("Source %s: %s reviews; model call limit %s; runtime limit %s minutes",
+                config.source_id, "planning" if dry_run else "starting",
+                config.reviews.max_calls, config.runtime_minutes)
     if not dry_run:
         config.review_state_root.mkdir(parents=True, exist_ok=True)
         config.review_data_root.mkdir(parents=True, exist_ok=True)
@@ -219,26 +237,39 @@ def _run_source_reviews(config: AppConfig, *, kind: PeriodKind | None = None, da
             if periods[0].end > today:
                 raise PipelineError("only closed periods can be reviewed; choose an earlier --date")
         else:
+            LOGGER.info("Source %s: finding earliest saved event and closed review periods", config.source_id)
             start = earliest_history_date(config)
             periods = closed_periods(start, today, config.reviews.utc_offset_minutes) if start else []
         if not dry_run:
             atomic_write_json(path, index)
+        LOGGER.info("Source %s: checking %s closed review periods", config.source_id, len(periods))
         generator = ReviewGenerator(config, run_id, generate=generate, force=force)
         try:
-            for p in periods:
+            for number, p in enumerate(periods, 1):
+                LOGGER.info("[%s/%s] Source %s: %s %s; preparing inputs and checking saved review",
+                            number, len(periods), config.source_id, p.kind, p.key)
                 try:
                     result = _build(config, p, generator, index, dry_run=dry_run,
                                     force=force, allow_edited=allow_edited)
                 except (ReviewBudgetStop, ApiBudgetExceeded) as exc:
-                    report["results"].append({"period": p.document(), "status": "deferred", "reason": str(exc)})
+                    result = {"period": p.document(), "status": "deferred", "reason": str(exc),
+                              "generationStop": exc.details}
+                    report["results"].append(result)
+                    _log_result(result)
+                    LOGGER.warning("Source %s: review generation stopped; %s periods remain including this period. "
+                                   "Completed responses are cached; rerun the same command to resume.",
+                                   config.source_id, len(periods) - number + 1)
                     report["complete"] = False
                     break
                 except (PipelineError, InferenceExecutionError, OSError, ValueError) as exc:
-                    report["results"].append({"period": p.document(), "status": "failed", "reason": str(exc)})
+                    result = {"period": p.document(), "status": "failed", "reason": str(exc)}
+                    report["results"].append(result)
+                    _log_result(result)
                     report["ok"] = report["complete"] = False
                     # Stop on provider/validation errors; do not repeatedly submit bad requests.
                     break
                 report["results"].append(result)
+                _log_result(result)
                 if result["status"] == "blocked":
                     report["ok"] = report["complete"] = False
         finally:
@@ -247,7 +278,8 @@ def _run_source_reviews(config: AppConfig, *, kind: PeriodKind | None = None, da
                       plannedCount=sum(r["status"] == "planned" for r in report["results"]),
                       generatedCount=sum(r["status"] == "generated" for r in report["results"]),
                       renderedCount=sum(r["status"] == "rendered" for r in report["results"]),
-                      pendingPeriods=len(periods) - len(report["results"]))
+                      pendingPeriods=len(periods) - len(report["results"]) + sum(
+                          r["status"] in {"deferred", "failed", "blocked"} for r in report["results"]))
         report["finishedAt"] = now_iso()
         if not dry_run:
             report["reportPath"] = str(config.review_state_root / "reports" / f"{run_id}.json")

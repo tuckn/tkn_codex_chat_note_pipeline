@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -34,13 +35,18 @@ from .review_transport import evidence_aliases, map_evidence_ids
 from .runtime import PipelineError, atomic_write_json
 from .usage_records import UsageJournal
 
+LOGGER = logging.getLogger(__name__)
+
 T = TypeVar("T", bound=BaseModel)
 
 Generator = Callable[[str, dict[str, Any]], dict[str, Any]]
 
 
 class ReviewBudgetStop(PipelineError):
-    pass
+    def __init__(self, details: dict[str, Any]) -> None:
+        super().__init__(str(details["message"]))
+        self.details = details
+
 
 
 class ReviewGenerator:
@@ -120,6 +126,7 @@ class ReviewGenerator:
                 if stage == "compose":
                     check_editorial(draft, self.settings.language)
                 self.cache_hits += 1
+                LOGGER.info("%s %s: reusing cached %s response; no model call", period.kind, period.key, stage)
                 return draft
             except (ValueError, KeyError):
                 pass
@@ -173,6 +180,7 @@ class ReviewGenerator:
                 result = contract.model_validate(saved["result"])
                 validate(result)
                 self.cache_hits += 1
+                LOGGER.info("%s %s: reusing cached %s response; no model call", period.kind, period.key, stage)
                 return result
             except (ValueError, KeyError):
                 pass
@@ -223,20 +231,39 @@ class ReviewGenerator:
         schema = self.schema if schema is None else schema
         if len(prompt) > self.settings.input_characters:
             raise PipelineError("review stage exceeds reviews.input_characters; increase that bound or reduce input")
-        if self.calls >= self.settings.max_calls or time.monotonic() >= self.deadline:
-            raise ReviewBudgetStop("review call/time budget reached; completed responses are cached for the next run")
+        if self.calls >= self.settings.max_calls:
+            raise ReviewBudgetStop({
+                "reason": "review-call-budget", "requestCount": self.calls, "maxCalls": self.settings.max_calls,
+                "message": f"Model call limit reached ({self.calls}/{self.settings.max_calls}); "
+                           "stopped before the next model call. Review generation is incomplete.",
+            })
+        started = time.monotonic()
+        if started >= self.deadline:
+            raise ReviewBudgetStop({
+                "reason": "runtime-deadline", "runtimeMinutes": self.config.runtime_minutes,
+                "requestCount": self.calls, "maxCalls": self.settings.max_calls,
+                "message": f"Review runtime limit reached ({self.config.runtime_minutes} minutes); "
+                           "stopped before the next model call. Review generation is incomplete.",
+            })
         self.calls += 1
-        timeout = min(self.config.model_timeout_seconds, max(1, int(self.deadline - time.monotonic())))
+        LOGGER.info("Model call %s/%s: starting %s; source %s; period %s; waiting for response",
+                    self.calls, self.settings.max_calls, stage, self.config.source_id,
+                    self.journal.context.get("threadId", "unspecified"))
+        timeout = min(self.config.model_timeout_seconds, max(1, int(self.deadline - started)))
         if self.generate:
-            return self.generate(prompt, schema)
-        if self.config.provider == "azure-openai" or self.pipeline_config.inference_options.get("limits"):
+            result = self.generate(prompt, schema)
+        elif self.config.provider == "azure-openai" or self.pipeline_config.inference_options.get("limits"):
             if self.api is None:
                 self.api = ApiClient(self.pipeline_config)
                 self.api.observer = self.journal
             self.api.stage = "review-" + stage
-            return self.api.invoke(prompt, schema, timeout=timeout)
-        return invoke_structured(self.pipeline_config, prompt, schema, cwd=Path.cwd(), timeout=timeout,
-                                 usage_observer=self.journal)
+            result = self.api.invoke(prompt, schema, timeout=timeout)
+        else:
+            result = invoke_structured(self.pipeline_config, prompt, schema, cwd=Path.cwd(), timeout=timeout,
+                                       usage_observer=self.journal)
+        LOGGER.info("Model call %s/%s: %s response received (%.1fs)",
+                    self.calls, self.settings.max_calls, stage, time.monotonic() - started)
+        return result
 
     def _batches(self, records: list[dict[str, Any]], *, synthesis: bool = False,
                  reserve: int = 0) -> list[list[dict[str, Any]]]:
