@@ -162,3 +162,85 @@ def test_dry_run_and_cache_do_not_log_model_calls(tmp_path: Path, caplog: pytest
     result = weekly(config, model)
     assert result["cacheHits"] > 0 and result["modelCalls"] == 0
     assert "reusing cached" in caplog.text and "Model call " not in caplog.text
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+@pytest.mark.parametrize("stop", ["budget", "failed", "blocked"])
+def test_undated_error_does_not_hide_independent_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    stop: str, quiet: bool,
+) -> None:
+    import tkn_codex_chat_note.cli as cli
+    import tkn_codex_chat_note.reviews as reviews
+    from tkn_codex_chat_note.runtime import PipelineError
+
+    config = config_for(tmp_path, max_calls=1)
+    seed(config, [("", "Undated message"), ("2026-05-19T00:00:00Z", "Dated message")])
+    monkeypatch.setattr(cli, "load_app_config", lambda **_: config)
+    model = FakeGenerator()
+
+    def generate(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+        if stop == "failed":
+            raise PipelineError("Model execution failed")
+        return model(prompt, schema)
+
+    def run(config: Any, **kwargs: Any) -> dict[str, Any]:
+        return run_reviews(config, generate=generate, **kwargs)
+
+    monkeypatch.setattr(reviews, "run_reviews", run)
+    if stop == "blocked":
+        monkeypatch.setattr(reviews, "_build", lambda config, period, *args, **kwargs: {
+            "period": period.document(), "status": "blocked", "reason": "manually edited review",
+        })
+    args = ["review-notes", "due", "--as-of", "2026-05-25", "--full-output"]
+    assert main(args + (["--quiet"] if quiet else [])) == 1
+    captured = capsys.readouterr()
+    report = json.loads(captured.out)
+    assert report["undatedEventCount"] == report["pendingPeriods"] == 1
+    assert report["results"][0]["status"] == ("deferred" if stop == "budget" else stop)
+    assert captured.err.count("have no timestamp") == 1
+    assert captured.err.count("[ERROR]") == (1 if stop == "budget" else 2)
+    assert "rerunning alone cannot resolve missing timestamps" in captured.err
+    assert "Some processing failed or was protected" not in captured.err
+    if stop == "failed":
+        assert "failed; Model execution failed" in captured.err
+    elif stop == "blocked":
+        assert "blocked; manually edited review" in captured.err
+    elif not quiet:
+        assert "Model call limit reached (1/1)" in captured.err
+    if not quiet:
+        assert "generation incomplete; 1 pending periods" in captured.err
+        assert "Exit code: 1" in captured.err
+
+
+@pytest.mark.parametrize("multiple_sources", [False, True])
+def test_scheduled_capture_failure_remains_visible_with_undated_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    multiple_sources: bool,
+) -> None:
+    import tkn_codex_chat_note.cli as cli
+    import tkn_codex_chat_note.pipeline as pipeline
+
+    config = config_for(tmp_path / "windows")
+    if multiple_sources:
+        seed(config, [("", "Undated message")])
+        config.sources["broken"] = config_for(tmp_path / "broken").sources["windows"]
+    monkeypatch.setattr(cli, "load_app_config", lambda **_: config)
+
+    def capture(source: Any, **kwargs: Any) -> dict[str, Any]:
+        ok = multiple_sources and source.source_id == "windows"
+        return {"ok": ok, "complete": ok, "sourceId": source.source_id,
+                "reportPath": str(tmp_path / (source.source_id + ".json"))}
+
+    monkeypatch.setattr(pipeline, "run_pipeline", capture)
+    assert main(["scheduled-run", "--full-output"]) == 1
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert not result["ok"] and not result["complete"]
+    assert captured.err.count("[ERROR]") == (2 if multiple_sources else 1)
+    assert captured.err.count("have no timestamp") == int(multiple_sources)
+    failed_source = "broken" if multiple_sources else "windows"
+    assert f"Source {failed_source}: capture/normalization failed" in captured.err
+    assert f"capture report: {tmp_path / (failed_source + '.json')}" in captured.err
+    assert "Some processing failed or was protected" not in captured.err
+    assert "Review generation complete" not in captured.err

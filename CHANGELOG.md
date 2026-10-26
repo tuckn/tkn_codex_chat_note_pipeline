@@ -7,6 +7,11 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.45.1 - 2026-10-26
+
+- Report undated history once per source, including resolution guidance; remove duplicate final and misleading generic review errors.
+- Preserve distinct generation/protection errors and identify scheduled capture failures with source-specific reports.
+
 ## 0.45.0 - 2026-10-25
 
 - Skip empty weekly, monthly and yearly periods without creating notes; preserve existing empty notes.

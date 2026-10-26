@@ -13,6 +13,7 @@ from tkn_codex_chat_note.chat_logs import (  # noqa: E402
     normalize_path_text,
     path_is_within,
     read_thread_log,
+    read_thread_source,
 )
 
 
@@ -48,6 +49,14 @@ class ChatLogCompatibilityTests(unittest.TestCase):
             ["The project context was reviewed."],
             [message.text for message in thread_log.assistant_messages],
         )
+
+
+    def test_legacy_event_times_remain_unknown_despite_known_chat_start(self) -> None:
+        source = read_thread_source(FIXTURES / "chat-legacy-thread.jsonl")
+        assert source.thread_log is not None
+        self.assertEqual("2025-08-24T10:45:58.916Z", source.thread_log.timestamp)
+        self.assertEqual(["user_message", "assistant_message"], [event.kind for event in source.events])
+        self.assertEqual(["", ""], [event.timestamp for event in source.events])
 
 
 if __name__ == "__main__":

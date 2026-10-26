@@ -249,7 +249,8 @@ def _run_source_reviews(config: AppConfig, *, kind: PeriodKind | None = None, da
             report["ok"] = report["complete"] = False
             LOGGER.error("Source %s: %s saved events in %s chats have no timestamp; "
                          "they cannot be assigned to review periods and are not empty history. "
-                         "Dated records will still be processed; full completion requires resolving these issues.",
+                         "Dated records will still be processed. Resolve the source history issues listed in the run "
+                         "report; rerunning alone cannot resolve missing timestamps.",
                          config.source_id, history.undated_events, len(history.issues))
         if not kind and history_dates:
             periods = closed_periods(min(history_dates), today, config.reviews.utc_offset_minutes)

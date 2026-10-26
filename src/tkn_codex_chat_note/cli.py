@@ -332,18 +332,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                         review_result.get("modelCalls", 0), review_result.get("cacheHits", 0))
             if review_result.get("reportPath"):
                 LOGGER.info("Run report: %s", review_result["reportPath"])
-            for stage in ("capture",):
-                stage_result = result.get(stage, {})
-                for path in stage_result.get("reportPaths", []):
-                    LOGGER.info("%s report: %s", stage, path)
-                if stage_result.get("reportPath"):
-                    LOGGER.info("%s report: %s", stage, stage_result["reportPath"])
-            if not result["ok"]:
-                LOGGER.error("Some processing failed or was protected; inspect the run report")
-            if review_result.get("undatedEventCount"):
-                LOGGER.error("%s saved events have no timestamp. Resolve the source history issues listed "
-                             "in the run report; rerunning alone cannot resolve missing timestamps.",
-                             review_result["undatedEventCount"])
+            for path in review_result.get("reportPaths", []):
+                LOGGER.info("Run report: %s", path)
+            # Review errors are logged at detection. Capture reports need their own
+            # diagnostic because scheduled capture runs without a progress callback.
+            for source_result in result.get("sourceResults", [result]):
+                capture = source_result.get("capture", {})
+                for path in capture.get("reportPaths", []):
+                    LOGGER.info("capture report: %s", path)
+                if capture.get("reportPath"):
+                    LOGGER.info("capture report: %s", capture["reportPath"])
+                if capture and not capture["ok"]:
+                    LOGGER.error("Source %s: capture/normalization failed; reviews were not started for this "
+                                 "source; inspect the capture report",
+                                 capture.get("sourceId", "unknown"))
             if not result["complete"] and review_result.get("pendingPeriods", 0):
                 LOGGER.warning("Review generation incomplete; %s pending periods. "
                                "Rerun the same command to resume. Exit code: %s",

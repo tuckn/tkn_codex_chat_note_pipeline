@@ -187,6 +187,9 @@ def test_cli_does_not_claim_completion_for_undated_history(
     assert report["pendingPeriods"] == 0 and report["undatedEventCount"] == 1
     assert "No dated review periods are pending" in captured.err
     assert "rerunning alone cannot resolve missing timestamps" in captured.err
+    assert captured.err.count("[ERROR]") == 1
+    assert captured.err.count("have no timestamp") == 1
+    assert "Some processing failed or was protected" not in captured.err
     assert "Review generation complete" not in captured.err
 
 
