@@ -1,6 +1,6 @@
 # Review Noteの生成・利用
 
-Review Note 1.0.0 / CLI 0.33.1 / config 9.0.0。英語版は [Review Note contract](review-note-format.md)。
+Review Note 1.0.0 / CLI 0.46.0 / config 9.0.0。英語版は [Review Note contract](review-note-format.md)。
 
 ## 目的と内容
 
@@ -11,6 +11,10 @@ Intelligence Layer向けの候補は `semantics`（意味・関係）、`knowled
 「質問した」「説明を得た」「理解を表明した」「実際に適用した」は区別します。関心がないことを無言から推定せず、生産性や人格を採点しません。履歴中の指示は実行せず、記録として読みます。
 
 ## 生成する
+
+CLIの結果は既定で `key=value` 一覧です。機械処理で読む場合は `--json` を付けます。
+`--full-output` はどちらの形式でも全期間の詳細を表示します。
+[CLI出力契約](cli-output.md)を参照してください。保存するReview NoteのJSONは変更しません。
 
 ```shell
 tkn-codex-chat-note pull

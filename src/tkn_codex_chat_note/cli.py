@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any, TypeVar, overload
+from typing import Any, NoReturn, TypeVar, overload
 
 from . import __version__
 from .config import (
@@ -18,9 +17,8 @@ from .config import (
     load_app_config,
     resolve_app_config,
 )
-from .config_output import config_lines
 from .console_logging import ColorFormatter, ConsoleFilter, log_success, supports_color
-from .raw_capture import RawCaptureError
+from .output import emit, public_result, with_target_paths
 from .runtime import PipelineError
 
 LOGGER = logging.getLogger("tkn_codex_chat_note")
@@ -36,6 +34,10 @@ def _utf8_console() -> None:
 
 
 def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--json", action="store_true",
+                        help="Print one JSON result instead of the default key=value list")
+    parser.add_argument("--full-output", action="store_true",
+                        help="Include every item in the final result (text or --json)")
     parser.add_argument("--config", type=Path, help="Explicit YAML config path")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--profile", help="Named generation profile (generation.active_profile)")
@@ -71,6 +73,14 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+class _ArgumentFailure(SystemExit):
+    """Keep argparse's exit code while allowing a formatted final error."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(2)
+        self.message = message
+
+
 class _CommandParser(argparse.ArgumentParser):
     """Expose shared options at every command level without resetting earlier values."""
 
@@ -78,6 +88,9 @@ class _CommandParser(argparse.ArgumentParser):
         super().__init__(argument_default=None if runtime_defaults else argparse.SUPPRESS, **kwargs)
         _add_runtime_options(self)
         self.argument_default = None
+
+    def error(self, message: str) -> NoReturn:
+        raise _ArgumentFailure(message)
 
     @overload
     def parse_args(self, args: Sequence[str] | None = None,
@@ -103,6 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
         runtime_defaults=True,
         prog="tkn-codex-chat-note",
         description="Preserve Codex Raw, normalize events, and generate weekly, monthly and yearly reviews.",
+        epilog="Results: key=value on stdout, or --json. Progress/diagnostics: stderr. "
+               "Exit codes: 0 success, 1 failure, 2 arguments/incomplete, 130 interrupted.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -110,12 +125,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub = config.add_subparsers(dest="config_command", required=True)
     init = sub.add_parser("init", help="Create config.yaml; protect existing edits")
     init.add_argument("--force", action="store_true", help="Back up and replace an edited config")
-    listing = sub.add_parser(
+    sub.add_parser(
         "list",
         help="List effective values and their sources",
         description="Read-only configuration listing as key=value lines; does not write files.",
     )
-    listing.add_argument("--json", action="store_true", help="Print the full configuration report as JSON")
     for name, help_text in (
         ("clone", "Initialize and process all available history; resume safely when repeated"),
         ("pull", "Capture new/changed logs and refresh canonical events without inference"),
@@ -124,13 +138,11 @@ def build_parser() -> argparse.ArgumentParser:
             name, help=help_text, description=help_text + ". Writes by default; no inference."
         )
         command.add_argument("--dry-run", action="store_true", help="Inspect without writes or inference")
-        command.add_argument("--full-output", action="store_true", help="Print the full run result")
     usage_report = commands.add_parser("build-report", help="Build an offline token usage and reference-cost report")
     usage_report.add_argument("--dry-run", action="store_true", help="Aggregate without writing or opening")
     usage_report.add_argument("--no-open", action="store_true", help="Write the report without opening a browser")
     scheduled = commands.add_parser("scheduled-run", help="Capture Raw and build reviews when calendar periods close")
     scheduled.add_argument("--dry-run", action="store_true", help="Plan without writes or inference")
-    scheduled.add_argument("--full-output", action="store_true", help="Print the complete JSON run result")
     reviews = commands.add_parser("review-notes", help="Build source-cited weekly, monthly and yearly reviews")
     review_sub = reviews.add_subparsers(dest="review_command", required=True)
     review_build = review_sub.add_parser("build", help="Build a closed calendar period (default: latest closed)")
@@ -165,7 +177,6 @@ def build_parser() -> argparse.ArgumentParser:
         "ingest", help="Write source copies and manifests (writes by default)"
     )
     ingest.add_argument("--dry-run", action="store_true", help="Inspect without writing")
-    ingest.add_argument("--full-output", action="store_true", help="Explicitly print the full JSON report to stdout")
     return parser
 
 
@@ -175,10 +186,6 @@ def _add_build_options(parser: argparse.ArgumentParser) -> None:
         "--force", action="store_true", help="Re-evaluate unchanged inputs; does not override reviewed or edited files"
     )
     parser.add_argument("--allow-edited", action="store_true", help="Explicitly replace edited, unreviewed outputs")
-    parser.add_argument(
-        "--full-output", action="store_true",
-        help="Explicitly print the full JSON report to stdout (default: summary and saved report paths)"
-    )
 
 
 def _overrides(args: argparse.Namespace) -> dict[str, Any]:
@@ -212,10 +219,6 @@ def _configure_logging(args: argparse.Namespace) -> None:
     logging.basicConfig(level=level, handlers=[handler], force=True)
 
 
-def _emit(value: dict[str, Any]) -> None:
-    print(json.dumps(value, ensure_ascii=False, indent=2))
-
-
 def _usage_summary(value: dict[str, Any]) -> str:
     parts = []
     for key, label in (("inputTokens", "input"), ("outputTokens", "output")):
@@ -234,193 +237,246 @@ def _progress(event: dict[str, Any]) -> None:
         LOGGER.info("Source: %s", event.get("sourceId", ""))
 
 
+def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[str, Any]) -> int:
+    def save(value: dict[str, Any]) -> None:
+        pending[:] = [value]
+
+    if args.command == "config":
+        if args.config_command == "init":
+            if _overrides(args):
+                raise PipelineError(
+                    "runtime configuration options cannot be used with config init; "
+                    "create the file first, then edit it or use the options at runtime"
+                )
+            LOGGER.info("Initializing user configuration")
+            report = initialize_user_config(args.config, force=args.force)
+            if report["status"] == "unchanged":
+                LOGGER.info("Configuration unchanged: %s", report["configPath"])
+            else:
+                log_success(
+                    LOGGER,
+                    "Configuration %s: %s",
+                    report["status"],
+                    report["configPath"],
+                )
+            if report["backupPath"]:
+                LOGGER.info("Configuration backup: %s", report["backupPath"])
+            save({"command": "config init", **report})
+            return 0
+        LOGGER.info("Showing resolved configuration")
+        resolution = resolve_app_config(
+            explicit_path=args.config,
+            overrides=_overrides(args),
+        )
+        resolved = resolution.config
+        report = {
+            "command": "config list",
+            "config": config_document(resolved),
+            "generationResolved": {
+                "profile": resolved.generation.active_profile,
+                "provider": resolved.provider,
+                "model": resolved.model,
+                "reasoningEffort": resolved.reasoning_effort,
+                "inferenceOptions": resolved.active_provider_config.inference_options(),
+            },
+            "storage": {
+                "layoutVersion": 5,
+                "sourceRoots": {
+                    source_id: {
+                        **{
+                            kind: str(path)
+                            for kind, path in resolved.source_storage_paths(source_id).items()
+                        },
+                        "catalog": str(resolved.source_storage_paths(source_id)["data"] / "catalog"),
+                        "provenance": str(resolved.source_storage_paths(source_id)["data"] / "provenance"),
+                    }
+                    for source_id in resolved.sources
+                },
+            },
+            "configSchema": {
+                "effectiveVersion": resolution.effective_schema_version,
+                "hasInMemoryMigrations": resolution.has_in_memory_migrations,
+            },
+            "sources": resolution.sources,
+            "layers": list(resolution.layers),
+        }
+        save(report)
+        return 0
+
+    from .pipeline import pipeline_status, run_pipeline
+
+    config = load_app_config(explicit_path=args.config, overrides=_overrides(args))
+    targets["sources"] = {
+        name: {"sourceRoot": str(config.for_source(name).codex_home),
+               **{kind + "Root": str(path) for kind, path in config.source_storage_paths(name).items()}}
+        for name in config.sources if args.source is None or name == args.source
+    }
+    if args.source is not None:
+        selected = config.enabled_source_configs(args.source)
+        config = selected[0]
+    if args.command in {"review-notes", "scheduled-run"}:
+        from .reviews import run_reviews, run_scheduled, validate_review
+
+        if args.command == "review-notes" and args.review_command == "validate":
+            save(validate_review(args.artifact.expanduser().absolute()))
+            return 0
+        if args.command == "scheduled-run":
+            result = run_scheduled(config, dry_run=args.dry_run, config_path=args.config)
+        else:
+            result = run_reviews(config, kind=getattr(args, "period", None), day=getattr(args, "date", None),
+                                 as_of=getattr(args, "as_of", None), dry_run=args.dry_run,
+                                 force=args.force, allow_edited=args.allow_edited)
+        save(result)
+        review_result = result.get("reviews", result)
+        LOGGER.info("Review notes: generated %s; rendered %s; planned %s; skipped empty %s; "
+                    "model calls %s; cache hits %s",
+                    review_result.get("generatedCount", 0), review_result.get("renderedCount", 0),
+                    review_result.get("plannedCount", 0), review_result.get("skippedEmptyCount", 0),
+                    review_result.get("modelCalls", 0), review_result.get("cacheHits", 0))
+        if review_result.get("reportPath"):
+            LOGGER.info("Run report: %s", review_result["reportPath"])
+        for path in review_result.get("reportPaths", []):
+            LOGGER.info("Run report: %s", path)
+        # Review errors are logged at detection. Capture reports need their own
+        # diagnostic because scheduled capture runs without a progress callback.
+        for source_result in result.get("sourceResults", [result]):
+            capture = source_result.get("capture", {})
+            for path in capture.get("reportPaths", []):
+                LOGGER.info("capture report: %s", path)
+            if capture.get("reportPath"):
+                LOGGER.info("capture report: %s", capture["reportPath"])
+            if capture and not capture["ok"]:
+                LOGGER.error("Source %s: capture/normalization failed; reviews were not started for this "
+                             "source; inspect the capture report",
+                             capture.get("sourceId", "unknown"))
+        if not result["complete"] and review_result.get("pendingPeriods", 0):
+            LOGGER.warning("Review generation incomplete; %s pending periods. "
+                           "Rerun the same command to resume. Exit code: %s",
+                           review_result.get("pendingPeriods", "unknown"), 1 if not result["ok"] else 2)
+        elif not result["complete"] and "pendingPeriods" not in review_result:
+            LOGGER.warning("Review generation incomplete; input processing failed before review planning; "
+                           "inspect the run report. Exit code: %s", 1 if not result["ok"] else 2)
+        elif not result["complete"]:
+            LOGGER.warning("No dated review periods are pending, but unresolved input problems prevent "
+                           "completion; inspect the run report. Exit code: %s", 1 if not result["ok"] else 2)
+        elif result["ok"] and not args.dry_run:
+            LOGGER.info("Review generation complete; no pending periods")
+        return 1 if not result["ok"] else 0 if result["complete"] else 2
+    if args.command == "build-report":
+        from .usage_report import build_usage_report
+
+        result = build_usage_report(config, dry_run=args.dry_run, no_open=args.no_open)
+        save(result)
+        log_success(LOGGER, "Usage report: %s", result["htmlPath"])
+        return 0
+    if args.command == "provenance":
+        from .provenance import validate_provenance
+
+        results = [
+            {
+                **validate_provenance(source.data_root),
+                "sourceProvider": source.source_provider,
+                "sourceId": source.source_id,
+            }
+            for source in config.enabled_source_configs()
+        ]
+        save(
+            results[0]
+            if len(results) == 1
+            else {"ok": all(result["ok"] for result in results), "sourceResults": results}
+        )
+        return 0
+    if args.command == "storage":
+        from .storage_migration import migrate_storage
+
+        save(migrate_storage(config, from_config=args.from_config, dry_run=args.dry_run, config_path=args.config))
+        return 0
+    if args.command == "status":
+        save(pipeline_status(config))
+        return 0
+    LOGGER.info("%s %s", "Planning" if args.dry_run else "Starting", args.command)
+    report = run_pipeline(config, mode=args.command, dry_run=args.dry_run,
+                          config_path=args.config, progress=_progress)
+    for report_path in report.get("reportPaths", []):
+        LOGGER.info("Run report: %s", report_path)
+    if report.get("reportPath"):
+        LOGGER.info("Run report: %s", report["reportPath"])
+    for warning in report.get("warnings", []):
+        LOGGER.warning("%s", warning)
+    save(report)
+    counts = report["threadCounts"]
+    summary = (
+        f"{args.command}: normalized {report.get('normalizedThreadCount', 0)} conversations; "
+        f"current {counts.get('current', 0)}, deferred {counts.get('deferred', 0)}, "
+        f"excluded {counts.get('excluded', 0)}, failed {len(report['failed']) or counts.get('failed', 0)}"
+    )
+    if report.get("usageTotals", {}).get("requestCount"):
+        summary += "; " + _usage_summary(report["usageTotals"])
+    failed = bool(report["failed"] or report["threadCounts"].get("failed"))
+    if failed:
+        LOGGER.error("%s; inspect the saved report for failures", summary)
+        return 1
+    if (report.get("generationStop") or not report["ok"]
+        or (not args.dry_run and args.command in {"clone", "pull"} and not report["complete"])):
+        LOGGER.warning("%s; incomplete, next pull resumes pending work", summary)
+        return 2
+    log_success(LOGGER, "%s; %s", summary, "plan validated (no report saved)" if args.dry_run else "completed")
+    return 0
+
+
+def _command_name(args: argparse.Namespace) -> str:
+    keys = ("command", "config_command", "review_command", "storage_command", "provenance_command", "raw_command")
+    return " ".join(str(getattr(args, key)) for key in keys if getattr(args, key, None))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _utf8_console()
-    args = build_parser().parse_args(argv)
-    _configure_logging(args)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    tokens = argv[:argv.index("--")] if "--" in argv else argv
+    json_output = "--json" in tokens
+    _configure_logging(argparse.Namespace(quiet="--quiet" in tokens or "-q" in tokens,
+                                         verbose="--verbose" in tokens or "-v" in tokens))
+    args: argparse.Namespace | None = None
+    targets: dict[str, Any] = {}
+    pending: list[dict[str, Any]] = []
+    parser = build_parser()
     try:
-        if args.command == "config":
-            if args.config_command == "init":
-                if _overrides(args):
-                    raise PipelineError(
-                        "runtime configuration options cannot be used with config init; "
-                        "create the file first, then edit it or use the options at runtime"
-                    )
-                LOGGER.info("Initializing user configuration")
-                report = initialize_user_config(args.config, force=args.force)
-                if report["status"] == "unchanged":
-                    LOGGER.info("Configuration unchanged: %s", report["configPath"])
-                else:
-                    log_success(
-                        LOGGER,
-                        "Configuration %s: %s",
-                        report["status"],
-                        report["configPath"],
-                    )
-                if report["backupPath"]:
-                    LOGGER.info("Configuration backup: %s", report["backupPath"])
-                _emit({"command": "config init", **report})
-                return 0
-            LOGGER.info("Showing resolved configuration")
-            resolution = resolve_app_config(
-                explicit_path=args.config,
-                overrides=_overrides(args),
-            )
-            resolved = resolution.config
-            report = {
-                "command": "config list",
-                "config": config_document(resolved),
-                "generationResolved": {
-                    "profile": resolved.generation.active_profile,
-                    "provider": resolved.provider,
-                    "model": resolved.model,
-                    "reasoningEffort": resolved.reasoning_effort,
-                    "inferenceOptions": resolved.active_provider_config.inference_options(),
-                },
-                "storage": {
-                    "layoutVersion": 5,
-                    "sourceRoots": {
-                        source_id: {
-                            **{
-                                kind: str(path)
-                                for kind, path in resolved.source_storage_paths(source_id).items()
-                            },
-                            "catalog": str(resolved.source_storage_paths(source_id)["data"] / "catalog"),
-                            "provenance": str(resolved.source_storage_paths(source_id)["data"] / "provenance"),
-                        }
-                        for source_id in resolved.sources
-                    },
-                },
-                "configSchema": {
-                    "effectiveVersion": resolution.effective_schema_version,
-                    "hasInMemoryMigrations": resolution.has_in_memory_migrations,
-                },
-                "sources": resolution.sources,
-                "layers": list(resolution.layers),
-            }
-            if args.json:
-                _emit(report)
-            else:
-                print("\n".join(config_lines(report)))
-            return 0
-
-        from .pipeline import pipeline_status, run_pipeline
-
-        config = load_app_config(explicit_path=args.config, overrides=_overrides(args))
-        if args.source is not None:
-            selected = config.enabled_source_configs(args.source)
-            config = selected[0]
-        if args.command in {"review-notes", "scheduled-run"}:
-            from .reviews import run_reviews, run_scheduled, validate_review
-
-            if args.command == "review-notes" and args.review_command == "validate":
-                _emit(validate_review(args.artifact.expanduser().absolute()))
-                return 0
-            if args.command == "scheduled-run":
-                result = run_scheduled(config, dry_run=args.dry_run, config_path=args.config)
-            else:
-                result = run_reviews(config, kind=getattr(args, "period", None), day=getattr(args, "date", None),
-                                     as_of=getattr(args, "as_of", None), dry_run=args.dry_run,
-                                     force=args.force, allow_edited=args.allow_edited)
-            if args.full_output:
-                _emit(result)
-            review_result = result.get("reviews", result)
-            LOGGER.info("Review notes: generated %s; rendered %s; planned %s; skipped empty %s; "
-                        "model calls %s; cache hits %s",
-                        review_result.get("generatedCount", 0), review_result.get("renderedCount", 0),
-                        review_result.get("plannedCount", 0), review_result.get("skippedEmptyCount", 0),
-                        review_result.get("modelCalls", 0), review_result.get("cacheHits", 0))
-            if review_result.get("reportPath"):
-                LOGGER.info("Run report: %s", review_result["reportPath"])
-            for path in review_result.get("reportPaths", []):
-                LOGGER.info("Run report: %s", path)
-            # Review errors are logged at detection. Capture reports need their own
-            # diagnostic because scheduled capture runs without a progress callback.
-            for source_result in result.get("sourceResults", [result]):
-                capture = source_result.get("capture", {})
-                for path in capture.get("reportPaths", []):
-                    LOGGER.info("capture report: %s", path)
-                if capture.get("reportPath"):
-                    LOGGER.info("capture report: %s", capture["reportPath"])
-                if capture and not capture["ok"]:
-                    LOGGER.error("Source %s: capture/normalization failed; reviews were not started for this "
-                                 "source; inspect the capture report",
-                                 capture.get("sourceId", "unknown"))
-            if not result["complete"] and review_result.get("pendingPeriods", 0):
-                LOGGER.warning("Review generation incomplete; %s pending periods. "
-                               "Rerun the same command to resume. Exit code: %s",
-                               review_result.get("pendingPeriods", "unknown"), 1 if not result["ok"] else 2)
-            elif not result["complete"] and "pendingPeriods" not in review_result:
-                LOGGER.warning("Review generation incomplete; input processing failed before review planning; "
-                               "inspect the run report. Exit code: %s", 1 if not result["ok"] else 2)
-            elif not result["complete"]:
-                LOGGER.warning("No dated review periods are pending, but unresolved input problems prevent "
-                               "completion; inspect the run report. Exit code: %s", 1 if not result["ok"] else 2)
-            elif result["ok"] and not args.dry_run:
-                LOGGER.info("Review generation complete; no pending periods")
-            return 1 if not result["ok"] else 0 if result["complete"] else 2
-        if args.command == "build-report":
-            from .usage_report import build_usage_report
-
-            result = build_usage_report(config, dry_run=args.dry_run, no_open=args.no_open)
-            _emit(result)
-            log_success(LOGGER, "Usage report: %s", result["htmlPath"])
-            return 0
-        if args.command == "provenance":
-            from .provenance import validate_provenance
-
-            results = [
-                {
-                    **validate_provenance(source.data_root),
-                    "sourceProvider": source.source_provider,
-                    "sourceId": source.source_id,
-                }
-                for source in config.enabled_source_configs()
-            ]
-            _emit(
-                results[0]
-                if len(results) == 1
-                else {"ok": all(result["ok"] for result in results), "sourceResults": results}
-            )
-            return 0
-        if args.command == "storage":
-            from .storage_migration import migrate_storage
-
-            _emit(migrate_storage(config, from_config=args.from_config, dry_run=args.dry_run, config_path=args.config))
-            return 0
-        if args.command == "status":
-            _emit(pipeline_status(config))
-            return 0
-        LOGGER.info("%s %s", "Planning" if args.dry_run else "Starting", args.command)
-        report = run_pipeline(config, mode=args.command, dry_run=args.dry_run,
-                              config_path=args.config, progress=_progress)
-        for report_path in report.get("reportPaths", []):
-            LOGGER.info("Run report: %s", report_path)
-        if report.get("reportPath"):
-            LOGGER.info("Run report: %s", report["reportPath"])
-        for warning in report.get("warnings", []):
-            LOGGER.warning("%s", warning)
-        if args.full_output:
-            _emit(report)
-        counts = report["threadCounts"]
-        summary = (
-            f"{args.command}: normalized {report.get('normalizedThreadCount', 0)} conversations; "
-            f"current {counts.get('current', 0)}, deferred {counts.get('deferred', 0)}, "
-            f"excluded {counts.get('excluded', 0)}, failed {len(report['failed']) or counts.get('failed', 0)}"
-        )
-        if report.get("usageTotals", {}).get("requestCount"):
-            summary += "; " + _usage_summary(report["usageTotals"])
-        failed = bool(report["failed"] or report["threadCounts"].get("failed"))
-        if failed:
-            LOGGER.error("%s; inspect the saved report for failures", summary)
-            return 1
-        if (report.get("generationStop") or not report["ok"]
-            or (not args.dry_run and args.command in {"clone", "pull"} and not report["complete"])):
-            LOGGER.warning("%s; incomplete, next pull resumes pending work", summary)
-            return 2
-        log_success(LOGGER, "%s; %s", summary, "plan validated (no report saved)" if args.dry_run else "completed")
-        return 0
-    except (PipelineError, RawCaptureError, OSError, ValueError, SystemExit) as exc:
+        args = parser.parse_args(argv)
+        json_output = bool(args.json)
+        _configure_logging(args)
+        targets["configPaths"] = [str(Path.home() / ".tkn/codex_chat_note_pipeline/config.yaml"),
+                                  str(Path.cwd() / ".tkn/config.yaml")]
+        for key in ("config", "artifact", "from_config"):
+            path = getattr(args, key, None)
+            if path is not None:
+                targets[key + "Path"] = str(path.expanduser().absolute())
+        code = _run(args, pending, targets)
+        result = with_target_paths(pending[0], targets.get("sources", {}))
+    except SystemExit as exc:
+        if isinstance(exc, _ArgumentFailure):
+            code, message = 2, exc.message
+            parser.print_usage(sys.stderr)
+        elif args is None and exc.code == 0:
+            raise  # argparse's help/version remain ordinary successful guidance.
+        else:
+            code, message = 1, str(exc)
+        LOGGER.error("%s", message)
+        result = {"ok": False, "status": "failed", "error": message,
+                  "errorType": "argument" if code == 2 else "execution",
+                  "targets": targets}
+    except KeyboardInterrupt:
+        code = 130
+        LOGGER.error("Interrupted; already completed writes are retained; rerun to resume")
+        result = {"ok": False, "status": "interrupted", "error": "interrupted", "targets": targets}
+    except Exception as exc:
+        code = 1
         LOGGER.error("%s", exc)
-        _emit({"ok": False, "error": str(exc)})
-        return 1
+        for attribute in ("filename", "filename2"):
+            path = getattr(exc, attribute, None)
+            if path is not None:
+                targets[attribute] = str(path)
+        result = {"ok": False, "error": str(exc), "errorType": type(exc).__name__, "targets": targets}
+    result = {**result, "command": _command_name(args) if args is not None else None, "exitCode": code}
+    result.setdefault("status", "success" if code == 0 else "incomplete" if code == 2 else "failed")
+    emit(public_result(result, full_output=bool(getattr(args, "full_output", False))), json_output=json_output)
+    return code

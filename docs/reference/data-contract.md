@@ -1,6 +1,10 @@
 # Data contract: chat evidence and calendar reviews
 
-CLI 0.33.1 · config 9.0.0 · storage 5 · catalog/provenance 1.0.0 · Review Note 1.0.0
+CLI 0.46.0 · config 9.0.0 · storage 5 · catalog/provenance 1.0.0 · Review Note 1.0.0
+
+Terminal results follow the [CLI output contract](cli-output.md): copyable
+`key=value` by default, explicit `--json`, independent `--full-output` detail.
+This display-only boundary does not change any file or Python API contract below.
 
 This is the file interface for consumers of captured Codex conversations and calendar
 reviews. For operation, see the [README](../../README.md); for review content, see the

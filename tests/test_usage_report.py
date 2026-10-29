@@ -235,7 +235,7 @@ def test_build_report_cli_routes_without_running_pipeline(tmp_path, monkeypatch,
     cfg, _, _ = saved(tmp_path)
     monkeypatch.setattr("tkn_codex_chat_note.cli.load_app_config", lambda **kw: cfg)
     monkeypatch.setattr("tkn_codex_chat_note.pipeline.run_pipeline", lambda *a, **k: pytest.fail("pipeline run"))
-    assert main(["build-report", "--dry-run"]) == 0
+    assert main(["--json", "build-report", "--dry-run"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["dryRun"] and result["recordCount"] == 1
 

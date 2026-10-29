@@ -85,8 +85,6 @@ def test_config_list_help_describes_output_and_old_name_is_removed(capsys: pytes
     assert help_exit.value.code == 0
     help_text = capsys.readouterr().out
     assert "key=value" in help_text and "--json" in help_text and "Read-only" in help_text
-    with pytest.raises(SystemExit) as old_exit:
-        main(["config", "show"])
-    assert old_exit.value.code == 2
-    assert capsys.readouterr().out == ""
+    assert main(["config", "show"]) == 2
+    assert "status=failed" in capsys.readouterr().out
     assert not build_parser().parse_args(["config", "list"]).json

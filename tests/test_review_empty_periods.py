@@ -181,7 +181,7 @@ def test_cli_does_not_claim_completion_for_undated_history(
     config = config_for(tmp_path)
     seed(config, [("", "Undated message")])
     monkeypatch.setattr(cli, "load_app_config", lambda **_: config)
-    assert cli.main(["review-notes", "due", "--full-output"]) == 1
+    assert cli.main(["--json", "review-notes", "due", "--full-output"]) == 1
     captured = capsys.readouterr()
     report = json.loads(captured.out)
     assert report["pendingPeriods"] == 0 and report["undatedEventCount"] == 1

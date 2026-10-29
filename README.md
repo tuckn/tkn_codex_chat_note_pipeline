@@ -81,7 +81,7 @@ tkn-codex-chat-note --help
 tkn-codex-chat-note config init
 ```
 
-ソースやリソースの更新後は `uv tool install . --reinstall` でインストール済みCLIへ反映します。
+ソースやリソースの更新後は、検証済みの依存関係を固定してインストール済みCLIへ反映します。
 
 ### 2.1. 設定
 
@@ -195,10 +195,36 @@ tkn-codex-chat-note build-report --no-open
 - 編集・レビュー済みのReview Noteを保護します。`--force` は再生成、`--allow-edited` は未確認の手編集のみバックアップ後に置換します。確認済みノートの保護は解除しません。
 - 成功終了は0、失敗・保護で処理できない項目ありは1、レビューの時間・回数上限による未完了は2です。不足情報付きの成功は履歴全体の完全性を保証しません。
 - レビュー実行中はsource・対象期間の準備、モデル呼び出しの開始・応答受信と経過秒、cache再利用、期間ごとの結果を逐次表示します。回数上限と時間上限を区別し、上限停止時は未完了・残り期間数・再実行による再開をWARNINGで示します。残り期間数は資料があり生成・更新が必要な期間だけを数え、途中停止した期間を含みます。上限停止後も推論なしで残りを調べ、空の期間と変更のない生成済み期間は除外します。`--dry-run` の `pendingPeriods` は生成・更新の予定件数です。資料の読み取り失敗・破損・正規化失敗は記録なしと区別し、エラーとして通知します。日時のない会話記録は `undatedEventCount` と `historyIssues` で別途報告し、日時が分かる資料の処理は続けます。同じ日時不足のERRORはsourceごとに検出時の1回だけ表示し、終了時に汎用エラーとして重複表示しません。元ログの発言にも日時がなければ、再実行だけでは解消しません。旧形式のチャット開始日時は発言日時として自動補完しません。日時不明の記録が残る間は全完了とせず終了コード1にします。週・月・年を特定できないため、日時不明の記録を `pendingPeriods` には加算しません。`--quiet` でエラー以外の表示を抑制できます。
-- 進捗はstderr、`--full-output` の構造化結果はstdoutです。`config list` は既定で `key=value`、`--json` で構造化出力です。
+- 全コマンドの最終結果はstdoutへ既定で `key=value`、`--json` 指定時はJSONで出力します。進捗・警告・診断はstderrです。`--full-output` は形式を変えず、表示する詳細を増やします。
 - Session Noteの生成・検証、専用言語プロファイル、`pull --limit`、`--idle-minutes` は廃止しました。旧生成物を読み込まず、削除もしません。
 
-### 4.1. config 8から9への更新
+### 4.1. CLIの結果表示
+
+処理・検証・設定操作を含む全コマンドが最終結果を標準出力へ返します。通常は1行1項目の `key=value` 一覧です。入れ子は `.`、配列は `[0]` などの添字、空の配列・マッピングは `[]`・`{}`、真偽値は `true`・`false`、未設定値は `null` で表示します。文字列にJSONの引用符を付けず、Windowsパスの `\` を重ねたり、長いパスを省略したりしません。改行などの制御文字はエスケープします。
+
+```shell
+tkn-codex-chat-note clone --dry-run
+tkn-codex-chat-note review-notes due --dry-run --full-output
+```
+
+結果の `status`・`exitCode`、件数、`failed`・`historyIssues`、要確認の `threads`・`results` と理由、保存した `reportPath` / `reportPaths` を確認してください。変更なし・除外・空期間などの詳細は件数にまとめる場合があります。`omittedDetailsCount` と `detailsHint` があるときは、保存済みレポート、または同じコマンドの `--full-output` で詳細を確認できます。書き込みコマンドの再実行は再度処理するため、保存済みレポートがあればそちらを参照してください。
+
+機械処理で読む場合は、必ず `--json` を付けます。通常の一覧を文字列解析しないでください。
+
+```shell
+tkn-codex-chat-note status --json
+tkn-codex-chat-note review-notes due --dry-run --json --full-output
+```
+
+`--json` と `--full-output` はコマンドの前・途中・後ろに指定できます。`--json` は1回の結果を1つのJSON documentで出し、引数・設定・実行時エラーや中断も可能な限り同じ形式にします。対象パスは `targets`、`sourcePaths`、`jsonPath`・`notePath` などの独立した項目で確認できます。ログ・見出し・カラーはJSONに混ぜません。
+
+`--quiet` / `--verbose` はstderrのログ量だけを変え、最終結果は抑制しません。TTY・パイプ・リダイレクトでも形式は自動変更しません。終了コードは0が成功、1が処理・設定・検証失敗、2が引数エラーまたは上限等による未完了、130が中断です。`--help` と `--version` は通常の案内を表示します。
+
+表示オプションは成果物の種類や生成有無を変えません。CLIの表示形式と、Python APIの戻り値、保存するJSON・manifest・ノート・レポートの形式は別の契約です。
+
+[CLI出力契約](docs/reference/cli-output.md)に項目とコマンドごとの詳細を記載しています。
+
+### 4.2. config 8から9への更新
 
 トップレベルの `reviews` を各 `sources.<id>.reviews` へ移し、`reviews.data_root`・`reviews.state_root`・`reviews.session_note_limit` を削除します。レビューは各sourceのdata/state配下になります。`generation.session_note_profile`・`idle_minutes`・`installed_at` も削除し、`schema_version` を `9.0.0` にします。
 

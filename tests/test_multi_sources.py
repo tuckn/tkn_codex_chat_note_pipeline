@@ -251,22 +251,22 @@ def test_cli_multi_source_show_status_selection_and_compact_output(
     assert main([*args, "config", "list", "--json"]) == 0
     shown = json.loads(capsys.readouterr().out)
     assert set(shown["storage"]["sourceRoots"]) == set(config.sources)
-    assert main([*args, "clone", "--dry-run"]) == 0
+    assert main(["--json", *args, "clone", "--dry-run"]) == 0
     output = capsys.readouterr()
-    assert output.out == ""
+    assert json.loads(output.out)["exitCode"] == 0
     assert "plan validated (no report saved)" in output.err
-    assert main([*args, "clone", "--dry-run", "--full-output"]) == 0
+    assert main(["--json", *args, "clone", "--dry-run", "--full-output"]) == 0
     full = json.loads(capsys.readouterr().out)
     assert len(full["sourceResults"]) == 2
     assert all("threads" in result and "rawIngest" in result for result in full["sourceResults"])
-    assert main([*args, "--source", "pc-windows", "raw", "ingest", "--dry-run"]) == 0
+    assert main(["--json", *args, "--source", "pc-windows", "raw", "ingest", "--dry-run"]) == 0
     output = capsys.readouterr()
-    assert output.out == ""
+    assert json.loads(output.out)["exitCode"] == 0
     assert "Source: pc-windows" in output.err
-    assert main([*args, "--source", "missing", "status"]) == 1
+    assert main(["--json", *args, "--source", "missing", "status"]) == 1
     assert "unknown source_id" in json.loads(capsys.readouterr().out)["error"]
     assert run_pipeline(config, mode="clone")["ok"]
-    assert main([*args, "--source", "pc-windows", "review-notes", "due", "--dry-run", "--full-output"]) == 0
+    assert main(["--json", *args, "--source", "pc-windows", "review-notes", "due", "--dry-run", "--full-output"]) == 0
     assert json.loads(capsys.readouterr().out)["sourceId"] == "pc-windows"
 
 

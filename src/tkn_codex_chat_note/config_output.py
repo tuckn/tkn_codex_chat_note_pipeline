@@ -1,8 +1,9 @@
-"""Copyable, one-line rendering of resolved configuration reports."""
+"""Copyable, one-line rendering shared by all CLI results."""
 
 from __future__ import annotations
 
 import json
+from pathlib import PurePath
 from typing import Any
 
 
@@ -35,5 +36,7 @@ def config_lines(value: Any, prefix: str = "") -> list[str]:
             for index, item in enumerate(value)
             for line in config_lines(item, f"{prefix}[{index}]")
         ]
-    display = _single_line(value) if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if isinstance(value, PurePath):
+        value = str(value)
+    display = _single_line(value) if isinstance(value, str) else json.dumps(value, ensure_ascii=False, allow_nan=False)
     return [f"{prefix}={display}"]

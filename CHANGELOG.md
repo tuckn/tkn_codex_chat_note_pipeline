@@ -7,6 +7,14 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.46.0 - 2026-10-29
+
+- All commands emit a final, copyable `key=value` result by default. `--json` selects one machine-readable JSON document; `--full-output` includes every report item in either format.
+- Accept `--json` and `--full-output` at every command level. Detail selection is independent of format, logging verbosity, TTY, pipes and redirection.
+- Preserve failures, attention targets, reasons and counts in ordinary output; summarize routine details with saved report paths or `--full-output` guidance. Display diagnostic target paths as separate fields.
+- Emit selected-format argument/configuration/runtime errors and interrupted results, retaining exit codes 0/1/2 and handling interruption as 130. Keep ordinary help/version output.
+- Keep Python API results, saved artifacts, config schemas, side effects and dry-run behavior unchanged.
+
 ## 0.45.1 - 2026-10-26
 
 - Report undated history once per source, including resolution guidance; remove duplicate final and misleading generic review errors.

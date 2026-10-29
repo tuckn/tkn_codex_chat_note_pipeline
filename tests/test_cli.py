@@ -47,9 +47,9 @@ def test_clone_dry_run_and_pull_initialization_boundary(tmp_path: Path, capsys: 
     target = tmp_path / "config.yaml"
     write_config(config, target)
     write_chat(config.sessions_root / "one.jsonl", thread_id="one", cwd=tmp_path)
-    assert main(["--config", str(target), "pull", "--dry-run"]) == 1
+    assert main(["--json", "--config", str(target), "pull", "--dry-run"]) == 1
     assert "clone" in json.loads(capsys.readouterr().out)["error"]
-    assert main(["--config", str(target), "clone", "--dry-run", "--full-output"]) == 0
+    assert main(["--json", "--config", str(target), "clone", "--dry-run", "--full-output"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["threads"][0]["status"] == "current"
     assert not config.data_root.exists() and result["reportPath"] is None
@@ -79,13 +79,13 @@ def test_pipeline_exit_codes_and_summary_output(
         }
 
     monkeypatch.setattr(pipeline, "run_pipeline", fake_run)
-    assert main(["clone"]) == expected
+    assert main(["--json", "clone"]) == expected
     captured = capsys.readouterr()
-    assert captured.out == ""
+    assert json.loads(captured.out)["exitCode"] == expected
     assert "Run report: C:/reports/run.json" in captured.err
     assert "clone: normalized 0 conversations;" in captured.err
     assert "private" not in captured.err
-    assert main(["clone", "--full-output"]) == expected
+    assert main(["--json", "clone", "--full-output"]) == expected
     result = json.loads(capsys.readouterr().out)
     assert result["threads"] == [{"private": "detail"}]
 
@@ -220,9 +220,9 @@ def test_config_init_cli_creates_then_keeps_the_user_config(
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
 
-    assert main(["config", "init"]) == 0
+    assert main(["--json", "config", "init"]) == 0
     created = json.loads(capsys.readouterr().out)
-    assert main(["config", "init"]) == 0
+    assert main(["--json", "config", "init"]) == 0
     unchanged = json.loads(capsys.readouterr().out)
 
     assert created == {
@@ -230,6 +230,7 @@ def test_config_init_cli_creates_then_keeps_the_user_config(
         "status": "created",
         "configPath": str(target),
         "backupPath": None,
+        "exitCode": 0,
     }
     assert unchanged["status"] == "unchanged"
     assert target.is_file()
@@ -237,7 +238,7 @@ def test_config_init_cli_creates_then_keeps_the_user_config(
 
 
 def test_config_init_rejects_runtime_overrides(capsys: CaptureFixture[str]) -> None:
-    result = main(["--model", "temporary", "config", "init"])
+    result = main(["--json", "--model", "temporary", "config", "init"])
 
     assert result == 1
     output = json.loads(capsys.readouterr().out)
@@ -284,7 +285,7 @@ def test_other_acquisition_providers_are_rejected(
     )
     assert main(["--config", str(target), "config", "list", "--json"]) == 1
     assert "unknown configuration key: chat" in json.loads(capsys.readouterr().out)["error"]
-    assert main(["--config", str(target), "raw", "ingest", "--dry-run"]) == 1
+    assert main(["--json", "--config", str(target), "raw", "ingest", "--dry-run"]) == 1
     assert "unknown configuration key: chat" in json.loads(capsys.readouterr().out)["error"]
     assert not (tmp_path / "user").exists()
 

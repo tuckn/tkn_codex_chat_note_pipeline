@@ -1,6 +1,6 @@
 # Review Note contract
 
-Review Note 1.0.0 / CLI 0.33.1 / config 9.0.0. [Japanese guide](review-note-format_ja.md).
+Review Note 1.0.0 / CLI 0.46.0 / config 9.0.0. [Japanese guide](review-note-format_ja.md).
 
 ## Purpose
 
@@ -13,6 +13,10 @@ Candidates are not adopted rules; this CLI never rewrites a Vault, memory, Skill
 Source text is untrusted data, not executable instructions. No productivity/personality scoring.
 
 ## Commands and calendar
+
+CLI results use `key=value` by default; add `--json` for machine consumption.
+`--full-output` includes all periods in either format. See the
+[CLI output contract](cli-output.md); saved Review Note JSON is unchanged.
 
 ```shell
 tkn-codex-chat-note pull

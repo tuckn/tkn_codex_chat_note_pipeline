@@ -51,7 +51,7 @@ def test_cli_progress_is_live_and_json_stays_clean(
 
     monkeypatch.setattr(reviews, "run_reviews", run)
     args = ["review-notes", "build", "--period", "weekly", "--date", "2026-05-19", "--full-output"]
-    assert main(args + (["--quiet"] if quiet else [])) == 0
+    assert main(["--json", *args] + (["--quiet"] if quiet else [])) == 0
     captured = capsys.readouterr()
     assert json.loads(captured.out)["generatedCount"] == 1
     assert bool(live)
@@ -92,7 +92,7 @@ def test_call_limit_warns_and_counts_current_period_as_pending(
         return run_reviews(config, generate=FakeGenerator(), **kwargs)
 
     monkeypatch.setattr(reviews, "run_reviews", run)
-    assert main(["review-notes", "due", "--as-of", "2026-05-25", "--full-output"]) == 2
+    assert main(["--json", "review-notes", "due", "--as-of", "2026-05-25", "--full-output"]) == 2
     captured = capsys.readouterr()
     report = json.loads(captured.out)
     assert report["ok"] and not report["complete"] and report["pendingPeriods"] == 1
@@ -193,7 +193,7 @@ def test_undated_error_does_not_hide_independent_stops(
             "period": period.document(), "status": "blocked", "reason": "manually edited review",
         })
     args = ["review-notes", "due", "--as-of", "2026-05-25", "--full-output"]
-    assert main(args + (["--quiet"] if quiet else [])) == 1
+    assert main(["--json", *args] + (["--quiet"] if quiet else [])) == 1
     captured = capsys.readouterr()
     report = json.loads(captured.out)
     assert report["undatedEventCount"] == report["pendingPeriods"] == 1
@@ -233,7 +233,7 @@ def test_scheduled_capture_failure_remains_visible_with_undated_history(
                 "reportPath": str(tmp_path / (source.source_id + ".json"))}
 
     monkeypatch.setattr(pipeline, "run_pipeline", capture)
-    assert main(["scheduled-run", "--full-output"]) == 1
+    assert main(["--json", "scheduled-run", "--full-output"]) == 1
     captured = capsys.readouterr()
     result = json.loads(captured.out)
     assert not result["ok"] and not result["complete"]
