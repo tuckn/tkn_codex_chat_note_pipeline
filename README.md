@@ -64,7 +64,7 @@ Frontmatterは `type: chatReview` とし、概要、期間、取得元 `sourceAp
 
 | 項目 | 内容 |
 |---|---|
-| 取得元 | ローカルのCodexログ（保存済みアーカイブを含む） |
+| 取得元 | ローカルのCodexログ（保存済みアーカイブを含む）。`tkn-genai-chat-archiver` がRawを保管している場合は、そのアーカイブを読むだけ（[4.3節](#43-tkn-genai-chat-archiverのアーカイブを読む)） |
 | 出力 | Raw、正規化イベント、catalog・provenance、週次・月次・年次Markdown＋JSON |
 | 生成AI | Codex、Claude Code、GitHub Copilot CLI、Antigravity、Ollama、Azure OpenAI |
 | source | PC・環境等の取得元。source間のレビューは統合しない |
@@ -157,7 +157,7 @@ tkn-codex-chat-note pull
 tkn-codex-chat-note raw ingest
 ```
 
-`clone` は初期化・保存・正規化、`pull` は初期化済み領域の更新です。どちらも生成AIを呼びません。`raw ingest` はRaw保存だけでcatalogを更新しません。通常は `scheduled-run`、保存だけなら `clone` / `pull` を使用します。
+`clone` は初期化・保存・正規化、`pull` は初期化済み領域の更新です。どちらも生成AIを呼びません。`raw ingest` はRaw保存だけでcatalogを更新しません。通常は `scheduled-run`、保存だけなら `clone` / `pull` を使用します。`raw_root` を `tkn-genai-chat-archiver` が保管している場合、`raw ingest` はエラーで止まります（取得はそのツールの `capture` で行います）。
 
 ### 3.3. レビューを個別に作る
 
@@ -229,6 +229,20 @@ tkn-codex-chat-note review-notes due --dry-run --json --full-output
 トップレベルの `reviews` を各 `sources.<id>.reviews` へ移し、`reviews.data_root`・`reviews.state_root`・`reviews.session_note_limit` を削除します。レビューは各sourceのdata/state配下になります。`generation.session_note_profile`・`idle_minutes`・`installed_at` も削除し、`schema_version` を `9.0.0` にします。
 
 旧設定は自動上書きせず、更新方法を表示します。以前のsource横断レビューは新しいsource別レビューへ自動移行しません。旧レビュー・Session Noteは既存の場所に残ります。storage 5のRaw・正規化イベントはそのまま利用できます。保存先自体を移す場合は `storage migrate --from-config <old-config> --dry-run` で計画を確認してください。
+
+### 4.3. tkn-genai-chat-archiverのアーカイブを読む
+
+`raw_root` に `.tkn-genai-chat-archive.json` があると、そのフォルダは `tkn-genai-chat-archiver` が保管するRawアーカイブとして扱い、このCLIは読むだけにします。設定の変更は不要です。既存のRawをそのツールの `legacy adopt` で引き継いだ場合も同じです。
+
+- アーカイブの所有マーカーの `profile` が `codex`、`sourceId` が設定のsource IDと一致しなければ、何も書かずに止まります。
+- 確定したmanifest（`manifests/*.jsonl`）だけを読み、相対パスごとの最新の版を使います。使う前に保存ファイルと展開後の内容のサイズ・SHA-256を照合します。
+- Codexが圧縮した `.jsonl.zst` も読みます。同じ内容の `x.jsonl` と `x.jsonl.zst` は1つの会話の入力として扱い、先に保存した版の参照を使い続けます。そのため、圧縮だけでは正規化イベントやレビューの根拠は変わりません。
+- 圧縮された版は `cache_root` 配下に展開して再利用します。`--dry-run` では一時フォルダに展開し、終了時に消します。
+- アプリ状態（`.codex-global-state.json`）と会話タイトル（`session_index.jsonl`）も、アーカイブの最新版を読みます。タイトルの版がなければ `source_root` から読みます。
+- `raw_root` には何も書きません（コピー・`manifest.jsonl`・`metadata/`・所有マーカー・ロックのいずれも作りません）。`raw ingest` と `storage migrate` はエラーで止まります。
+- 取り込みの新しさは、アーカイブを最後に更新した時点までです。`scheduled-run` の前に `tkn-genai-chat-archiver capture` を実行してください。
+
+詳細は[Data contract](docs/reference/data-contract.md#archive-managed-raw)を参照してください。
 
 - [Review Note仕様（日本語）](docs/reference/review-note-format_ja.md)
 - [Review Note contract（English）](docs/reference/review-note-format.md)

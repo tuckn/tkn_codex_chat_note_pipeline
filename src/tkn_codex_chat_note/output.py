@@ -13,7 +13,7 @@ from .config_output import config_lines
 # Only these item collections can be summarized. Diagnostics, sources in config,
 # report paths and provenance are never removed by a generic list-size limit.
 _DETAIL_COLLECTIONS = {"threads", "results", "files"}
-_ROUTINE_STATUSES = {"current", "unchanged", "excluded", "skipped-empty"}
+_ROUTINE_STATUSES = {"current", "unchanged", "archived", "excluded", "skipped-empty"}
 
 
 def with_target_paths(value: dict[str, Any], roots: dict[str, dict[str, str]]) -> dict[str, Any]:

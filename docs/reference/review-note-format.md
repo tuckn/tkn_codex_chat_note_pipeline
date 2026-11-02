@@ -1,6 +1,6 @@
 # Review Note contract
 
-Review Note 1.0.0 / CLI 0.46.0 / config 9.0.0. [Japanese guide](review-note-format_ja.md).
+Review Note 1.0.0 / CLI 0.47.0 / config 9.0.0. [Japanese guide](review-note-format_ja.md).
 
 ## Purpose
 

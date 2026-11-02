@@ -19,11 +19,26 @@ RAW_MANIFEST_SCHEMA_VERSION = 3
 RAW_OWNERSHIP_MARKER = ".tkn-genai-chat-note-root.json"
 RAW_OWNER_APPLICATION_ID = "tkn-genai-chat-note-pipeline"
 RAW_OWNER_SCHEMA_VERSION = 1
+# Written by tkn-genai-chat-archiver; when present, that tool owns every Raw write.
+ARCHIVE_MARKER = ".tkn-genai-chat-archive.json"
 SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class RawCaptureError(RuntimeError):
     pass
+
+
+def archive_managed(raw_root: Path) -> bool:
+    """Whether raw_root is a tkn-genai-chat-archiver archive that this pipeline only reads."""
+    marker = raw_root.expanduser() / ARCHIVE_MARKER
+    return marker.exists() or marker.is_symlink()
+
+
+def archive_capture_error(raw_root: Path) -> RawCaptureError:
+    return RawCaptureError(
+        f"raw_root is managed by tkn-genai-chat-archiver and is read-only here: {raw_root}; "
+        "capture with `tkn-genai-chat-archiver capture`, then run pull"
+    )
 
 
 @dataclass(frozen=True)
@@ -241,6 +256,8 @@ def ingest_raw_sources(
 
     sessions = sessions_root.expanduser().absolute()
     raw = raw_root.expanduser().absolute()
+    if archive_managed(raw):
+        raise archive_capture_error(raw)
     if sessions.exists() and not sessions.is_dir():
         raise RawCaptureError(f"sessions root is not a directory: {sessions}")
     sessions_resolved = sessions.resolve(strict=False)

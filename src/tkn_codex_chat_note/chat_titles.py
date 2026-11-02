@@ -28,21 +28,32 @@ def conversation_title(title: str, requests: Iterable[str], thread_id: str = "")
     return "Codex conversation" + (" " + thread_id[:8] if thread_id else "")
 
 
+def _add_title(titles: dict[str, str], line: str) -> None:
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(record, dict):
+        return
+    id, title = record.get("id"), record.get("thread_name")
+    if isinstance(id, str) and isinstance(title, str) and (name := display_title(title)):
+        titles[id] = name
+
+
+def parse_chat_titles(lines: Iterable[str]) -> dict[str, str]:
+    titles: dict[str, str] = {}
+    for line in lines:
+        _add_title(titles, line)
+    return titles
+
+
 def load_chat_titles(path: Path) -> dict[str, str]:
     """Session index names are optional display metadata, never semantic evidence."""
     titles: dict[str, str] = {}
     try:
         with path.open(encoding="utf-8-sig") as stream:
             for line in stream:
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(record, dict):
-                    continue
-                id, title = record.get("id"), record.get("thread_name")
-                if isinstance(id, str) and isinstance(title, str) and (name := display_title(title)):
-                    titles[id] = name
+                _add_title(titles, line)
     except (OSError, UnicodeError):
         pass  # Optional local metadata can be absent, including on imported sources.
     return titles

@@ -18,7 +18,7 @@ from typing import Any
 from .config import AppConfig, CodexSourceConfig, _read_layer, _resolve_paths, validate_source_id
 from .initialization import ROOT_KINDS, ROOT_OWNERSHIP_MARKER, _ownership_marker_document
 from .provenance import validate_provenance
-from .raw_capture import SOURCE_ID_PATTERN, _mirror_relative
+from .raw_capture import SOURCE_ID_PATTERN, _mirror_relative, archive_managed
 from .runtime import PipelineError, atomic_write_bytes
 from .storage import STORAGE_VERSION, _root_lock, read_json, validate_storage
 
@@ -483,7 +483,17 @@ def _build_source_plan(source: SourceStore, config: AppConfig) -> list[Migration
 def migrate_storage(
     config: AppConfig, *, from_config: Path, dry_run: bool, config_path: Path | None = None
 ) -> dict[str, Any]:
+    if archive_managed(config.raw_root):
+        raise PipelineError(
+            "storage migrate cannot write to a Raw archive managed by tkn-genai-chat-archiver; "
+            "choose a fresh raw_root or relocate the archive with that tool"
+        )
     source = _source_store(from_config, config.source_id)
+    if archive_managed(source.raw):
+        raise PipelineError(
+            "storage migrate cannot copy a Raw archive managed by tkn-genai-chat-archiver; "
+            "keep raw_root and point the new configuration at the same archive"
+        )
     source_config_hash = sha256(source.config_path.read_bytes()).hexdigest()
     roots = validate_storage(config, config_path, allow_legacy=True)
     for root in roots:

@@ -1,6 +1,6 @@
 # Data contract: chat evidence and calendar reviews
 
-CLI 0.46.0 · config 9.0.0 · storage 5 · catalog/provenance 1.0.0 · Review Note 1.0.0
+CLI 0.47.0 · config 9.0.0 · storage 5 · catalog/provenance 1.0.0 · Review Note 1.0.0
 
 Terminal results follow the [CLI output contract](cli-output.md): copyable
 `key=value` by default, explicit `--json`, independent `--full-output` detail.
@@ -26,7 +26,9 @@ rewrites a Vault, Skill, memory or AGENTS.md automatically.
 `raw ingest` only captures source files. `clone` initializes storage, captures and
 normalizes; `pull` refreshes an initialized store. These commands do not call a model.
 `scheduled-run` captures and normalizes, then generates closed, due review periods.
-A successful normalization does not imply that reviews have been generated.
+A successful normalization does not imply that reviews have been generated. When
+tkn-genai-chat-archiver manages raw_root, these commands read its archive instead of
+capturing (see [Archive-managed Raw](#archive-managed-raw)) and `raw ingest` is refused.
 
 ## Source identity and configuration
 
@@ -70,11 +72,44 @@ Raw schema-3 paths are latest source copies and may change. Historical citations
 retained provenance snapshotRef and hash, not a mutable latest Raw path. No cloud-only
 history is fetched, and no complete-history claim is made.
 
+## Archive-managed Raw
+
+When raw_root contains `.tkn-genai-chat-archive.json`, tkn-genai-chat-archiver owns it and
+this pipeline only reads it. No configuration change selects this mode. The marker must have
+schemaVersion 1.x, applicationId `tkn-genai-chat-archiver`, rootKind `chatLogArchive`,
+profile `codex` and this sourceId; otherwise processing stops before any write.
+
+- Only confirmed `manifests/*.jsonl` (last line is a `run` record) are read. `.partial` and
+  unconfirmed manifests are ignored and reported. An invalid record in a confirmed manifest,
+  a record of another source or an unsafe path stops processing.
+- Chat inputs are `sessions/` paths and, with include_archived, `archived_sessions/` paths
+  ending in `.jsonl`, `.jsonl.zst` or `.jsonl.gz`. Each path uses its latest version ordered
+  by capturedAt, then runId.
+- When the latest versions of `x.jsonl` and `x.jsonl.zst` share content.sha256, they form one
+  input whose reference is the earliest captured of those versions. Codex compression thus
+  keeps existing capture refs and Canonical Events. Different contents stay separate histories.
+- Stored size/SHA-256 and decoded size/SHA-256 are verified before use. A version that fails
+  falls back to another version with the same content; otherwise it is reported as failed.
+- captureRef is `raw:/codex/<source_id>/<storedPath>`. Adopted files keep `sessions/...` and
+  `archived_sessions/...`; later versions are under `snapshots/<runId>/...`. Capture SHA-256,
+  byte counts, provenance snapshots and `#L<line>` locators describe decoded content.
+- Compressed versions are decoded into `<cache_root>/codex/<source_id>/archive-content/`,
+  reused after hash checks and pruned when no input uses them. Dry runs decode into a
+  temporary folder that is removed when the run ends.
+- `.codex-global-state.json` and `session_index.jsonl` come from their latest archived
+  versions. Titles fall back to source_root when the archive has no readable index.
+- Nothing is written below raw_root: no copy, manifest.jsonl, metadata/, ownership marker or
+  lock. Confirmed manifests and their versions never change, so reads need no lock.
+  `raw ingest` and `storage migrate` refuse archive-managed roots.
+- The capture report has mode `archive-read`, zero capture counts, per-input aliasRefs and an
+  `archive` object with manifest counts, ignored manifests, alias and pruned counts, and the
+  latest archive run. A latest run that is not complete or recovered adds a warning.
+
 ## Published artifacts
 
 | Artifact | Contract |
 | --- | --- |
-| Raw manifest | Reads 1/2/3; writes 3, with refs, hashes, byte counts and capture metadata |
+| Raw manifest | Reads 1/2/3; writes 3, with refs, hashes, byte counts and capture metadata. Archive-managed Raw: reads archive manifests 1.x, writes none |
 | store.json | 1.0.0; storageVersion 5, source identity, Raw prefix and legacy aliases |
 | catalog/threads.json | 1.0.0; asOf and threads |
 | Canonical export | 1.0.0; parser 2, event locators, source metadata and diagnostics |
@@ -134,7 +169,8 @@ Omitted source roots resolve to `~/.tkn/codex_chat_note_pipeline/<kind>/codex/<s
 Configured roots are final paths. Roots may share a parent but must not overlap one another
 or input directories. Ownership markers bind source identity; locks protect actual roots.
 
-- Raw: sessions/, archived_sessions/, manifest.jsonl and metadata/.
+- Raw: sessions/, archived_sessions/, manifest.jsonl and metadata/. An archive-managed
+  raw_root also has manifests/ and snapshots/, all owned by tkn-genai-chat-archiver.
 - Data: source-aligned/, catalog/, provenance/, store.json and reviews/.
 - State: pipeline.json, normalization/, reports/, last-run.json and reviews/.
 - Review state: index.json, reports/, usage/, transactions/ and backups/.

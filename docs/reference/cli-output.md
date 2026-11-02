@@ -1,4 +1,4 @@
-# CLI result contract (0.46.0)
+# CLI result contract (0.47.0)
 
 This contract applies only to terminal results. Python API returns, saved reports,
 manifests, Review Note JSON/Markdown and communication protocols retain their schemas.

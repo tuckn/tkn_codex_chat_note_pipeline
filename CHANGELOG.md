@@ -7,6 +7,14 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.47.0 - 2026-11-02
+
+- Read Raw archives managed by tkn-genai-chat-archiver without writing to them. A raw_root containing `.tkn-genai-chat-archive.json` is read only: `clone`, `pull` and `scheduled-run` use the latest version of each path from confirmed archive manifests, after checking stored and decoded sizes and SHA-256.
+- Read Codex `.jsonl.zst` conversations. Same-content `.jsonl` and `.jsonl.zst` copies form one input that keeps the earliest captured reference, so compression does not regenerate Canonical Events.
+- Read the Codex app state and session titles from the archive. Decoded copies go to the source cache; dry runs use a temporary folder.
+- Refuse `raw ingest` and `storage migrate` for archive-managed roots. Write no copy, manifest, metadata snapshot, ownership marker or lock below such a raw_root.
+- Add the `zstandard` dependency.
+
 ## 0.46.0 - 2026-10-29
 
 - All commands emit a final, copyable `key=value` result by default. `--json` selects one machine-readable JSON document; `--full-output` includes every report item in either format.

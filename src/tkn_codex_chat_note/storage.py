@@ -10,6 +10,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
+from .archive_reader import validate_archive_marker
 from .config import AppConfig, global_config_path
 from .initialization import (
     ROOT_KINDS,
@@ -17,6 +18,7 @@ from .initialization import (
     inspect_reset_target_ownership,
     validate_reset_targets,
 )
+from .raw_capture import RawCaptureError, archive_managed
 from .runtime import PipelineError, atomic_write_json, now_iso
 
 STORAGE_VERSION = 5
@@ -84,7 +86,16 @@ def validate_storage(
     for path in (config.data_root, config.state_root, config.raw_root, config.source_cache_root):
         if path.is_symlink():
             raise PipelineError(f"pipeline root must not be a symbolic link: {path}")
+    archive = archive_managed(config.raw_root)
+    if archive:
+        # The archiver owns raw_root; its marker replaces this pipeline's Raw ownership marker.
+        try:
+            validate_archive_marker(config.raw_root.expanduser().absolute(), config.source_id)
+        except RawCaptureError as exc:
+            raise PipelineError(str(exc)) from exc
     for ownership in inspect_reset_target_ownership(roots):
+        if archive and ownership["kind"] == "raw":
+            continue
         if ownership["status"] not in {"missing", "empty", "owned"}:
             raise PipelineError(f"refusing unowned or invalid pipeline root: {ownership['path']}; choose fresh roots")
     for kind, namespace in config.source_storage_paths().items():
@@ -186,7 +197,11 @@ def pipeline_storage(
     if dry_run:
         yield
         return
-    for kind, root in zip(ROOT_KINDS, roots, strict=True):
+    # An archive-managed raw_root is read only: no directory, marker, or lock is written there.
+    # Confirmed archive manifests and their versions never change, so reading needs no lock.
+    archive = archive_managed(config.raw_root)
+    owned = [(kind, root) for kind, root in zip(ROOT_KINDS, roots, strict=True) if not (archive and kind == "raw")]
+    for kind, root in owned:
         root.mkdir(parents=True, exist_ok=True)
         marker = root / ROOT_OWNERSHIP_MARKER
         if not marker.exists():
@@ -201,7 +216,7 @@ def pipeline_storage(
                 },
             )
     with ExitStack() as stack:
-        for root in sorted(roots):
+        for root in sorted(root for _kind, root in owned):
             stack.enter_context(_root_lock(root))
         validate_storage(config, config_path)
         descriptor = config.data_root / "store.json"

@@ -10,8 +10,9 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from .archive_reader import source_chat_titles
 from .chat_logs import clean_user_text
-from .chat_titles import conversation_title, load_chat_titles
+from .chat_titles import conversation_title
 from .config import AppConfig
 from .media_inputs import describe_embedded_images
 from .references import resolve_store_ref
@@ -163,7 +164,7 @@ def canonical_evidence(config: AppConfig, period: Period) -> EvidenceSet:
             result.gaps.append(f"source {source.source_id}: catalog missing; run pull after raw ingest")
             continue
         catalog = checked_json(path)
-        titles = load_chat_titles(source.codex_home / "session_index.jsonl")
+        titles = source_chat_titles(source)
         result.sources.append({"sourceId": source.source_id, "catalogPath": str(path),
                                "catalogAsOf": catalog.get("asOf"), "catalogSha256": digest(catalog)})
         preparation: dict[str, Any] = {

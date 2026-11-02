@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -10,6 +11,14 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
 from .app_state import CodexAppState, load_codex_app_state
+from .archive_reader import (
+    APP_STATE_PATH,
+    ArchiveContent,
+    archive_warnings,
+    chat_source_inputs,
+    open_archive,
+    source_chat_titles,
+)
 from .chat_logs import (
     ThreadSource,
     has_clean_user_message,
@@ -18,11 +27,18 @@ from .chat_logs import (
     path_is_within,
     read_thread_source,
 )
-from .chat_titles import conversation_title, load_chat_titles
+from .chat_titles import conversation_title
 from .config import AppConfig
 from .histories import combine_histories
 from .provenance import ProvenanceStore, immutable_bytes, json_bytes
-from .raw_capture import RawCaptureError, RawSourceInput, _stable_source_bytes, ingest_raw_sources
+from .raw_capture import (
+    RawCaptureError,
+    RawSourceInput,
+    _stable_source_bytes,
+    archive_capture_error,
+    archive_managed,
+    ingest_raw_sources,
+)
 from .runtime import (
     PipelineError,
     atomic_write_json,
@@ -52,10 +68,44 @@ class Discovery:
     metadata_entity: dict[str, Any] | None
 
 
+def _observe_archived_app_state(
+    config: AppConfig,
+    provenance: ProvenanceStore,
+    archive: ArchiveContent,
+) -> tuple[CodexAppState | None, dict[str, Any] | None, list[str]]:
+    version = archive.index.latest(APP_STATE_PATH)
+    if version is None:
+        return None, None, ["Codex app metadata is not in the Raw archive; conversations are still ingested"]
+    try:
+        path = archive.path(version)
+        content = path.read_bytes()
+        if sha256(content).hexdigest() != version.content_sha256:
+            raise RawCaptureError(f"archived Codex app metadata changed while reading: {version.stored_path}")
+    except (OSError, RawCaptureError) as exc:
+        return None, None, [f"Cannot read Codex app metadata from the Raw archive; membership is unknown: {exc}"]
+    entity = provenance.entity(
+        content,
+        identity=f"codex-app-state:{config.source_id}:{version.content_sha256}",
+        ref=f"raw:/{config.source_provider}/{config.source_id}/{version.stored_path}",
+        kind="sourceMetadata",
+    )
+    try:
+        state = load_codex_app_state(path)
+    except PipelineError as exc:
+        return None, entity, [f"Unsupported Codex app metadata; membership is unknown: {exc}"]
+    return state, entity, []
+
+
 def observe_app_state(
     config: AppConfig,
     provenance: ProvenanceStore,
+    archive: ArchiveContent | None = None,
 ) -> tuple[CodexAppState | None, dict[str, Any] | None, list[str]]:
+    if archive is not None:
+        return _observe_archived_app_state(config, provenance, archive)
+    if archive_managed(config.raw_root):
+        # Snapshots below raw_root belong to the archiver.
+        raise archive_capture_error(config.raw_root)
     if not config.app_state_path.is_file():
         return None, None, ["Codex app metadata is unavailable; conversations are still ingested"]
     try:
@@ -154,8 +204,12 @@ def _diagnostics(path: Path) -> dict[str, Any]:
 
 
 def capture_sources(
-    config: AppConfig, *, dry_run: bool, captured_at: str
+    config: AppConfig, *, dry_run: bool, captured_at: str, archive: ArchiveContent | None = None
 ) -> tuple[list[RawSourceInput], dict[str, Any]]:
+    if archive is not None:
+        inputs, raw_report = chat_source_inputs(archive, include_archived=config.include_archived, dry_run=dry_run)
+        raw_report["sessionsRoot"] = str(config.sessions_root)
+        return inputs, raw_report
     roots = [("sessions/", config.sessions_root)]
     if config.include_archived:
         roots.append(("archived_sessions/", config.codex_home / "archived_sessions"))
@@ -175,14 +229,27 @@ def capture_sources(
 
 
 def discover(config: AppConfig, provenance: ProvenanceStore, *, run_id: str) -> Discovery:
+    with ExitStack() as stack:
+        archive = open_archive(config, dry_run=provenance.dry_run, stack=stack)
+        discovery = _discover(config, provenance, run_id=run_id, archive=archive)
+        if archive is not None and not provenance.dry_run:
+            discovery.raw_report["archive"]["prunedContentCount"] = archive.prune()
+        return discovery
+
+
+def _discover(
+    config: AppConfig, provenance: ProvenanceStore, *, run_id: str, archive: ArchiveContent | None
+) -> Discovery:
     started = now_iso()
     previous = {
         entry["threadKey"]: entry
         for entry in read_json(config.data_root / "catalog" / "threads.json").get("threads", [])
         if entry.get("sourceProvider") == config.source_provider and entry.get("sourceId") == config.source_id
     }
-    inputs, raw_report = capture_sources(config, dry_run=provenance.dry_run, captured_at=started)
-    app_state, metadata_entity, warnings = observe_app_state(config, provenance)
+    inputs, raw_report = capture_sources(config, dry_run=provenance.dry_run, captured_at=started, archive=archive)
+    app_state, metadata_entity, warnings = observe_app_state(config, provenance, archive)
+    if archive is not None:
+        warnings = [*archive_warnings(archive), *warnings]
     projects: dict[str, dict[str, Any]] = {}
     if app_state:
         projects = {
@@ -202,7 +269,7 @@ def discover(config: AppConfig, provenance: ProvenanceStore, *, run_id: str) -> 
             groups.setdefault(source.thread_log.id, []).append((item, source))
         except (OSError, ValueError) as exc:
             failures.append({"stage": "normalize", "sourceRef": item.source_ref, "error": str(exc)})
-    titles = load_chat_titles(config.codex_home / "session_index.jsonl")
+    titles = source_chat_titles(config, archive)
     entries: list[dict[str, Any]] = []
     evidence: dict[str, list[dict[str, Any]]] = {}
     for thread_id, versions in sorted(groups.items()):

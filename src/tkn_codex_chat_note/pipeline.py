@@ -11,7 +11,7 @@ from uuid import uuid4
 from .catalog import CATALOG_SCHEMA_VERSION, capture_sources, discover
 from .config import AppConfig
 from .provenance import ProvenanceStore
-from .raw_capture import RawCaptureError
+from .raw_capture import RawCaptureError, archive_managed
 from .runtime import PipelineError, atomic_write_json, now_iso, now_local
 from .storage import legacy_storage_pending, pipeline_storage, read_json
 
@@ -153,6 +153,12 @@ def run_pipeline(
     if mode not in {"clone", "pull", "raw"}:
         raise PipelineError(f"unknown pipeline mode: {mode}")
     sources = config.enabled_source_configs(source_id)
+    managed = [source.source_id for source in sources if archive_managed(source.raw_root)]
+    if mode == "raw" and managed:
+        raise PipelineError(
+            "raw ingest is disabled for sources whose Raw archive is managed by tkn-genai-chat-archiver "
+            f"({', '.join(managed)}); capture with `tkn-genai-chat-archiver capture`, then run pull"
+        )
     # Validate every destination before the first one creates files or calls AI.
     for source in sources:
         with pipeline_storage(source, initialize=mode in {"clone", "raw"}, dry_run=True, config_path=config_path):

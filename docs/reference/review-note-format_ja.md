@@ -1,6 +1,6 @@
 # Review Noteの生成・利用
 
-Review Note 1.0.0 / CLI 0.46.0 / config 9.0.0。英語版は [Review Note contract](review-note-format.md)。
+Review Note 1.0.0 / CLI 0.47.0 / config 9.0.0。英語版は [Review Note contract](review-note-format.md)。
 
 ## 目的と内容
 
