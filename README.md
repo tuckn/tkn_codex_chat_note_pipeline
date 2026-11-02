@@ -1,6 +1,6 @@
-# tkn-codex-chat-note: Tkn Codex Chat Note Pipeline
+# Tkn Codex Chat Note Pipeline — Codexチャットから週次・月次・年次のReview Noteを作るCLI
 
-ローカルのCodexチャットをRawとして保存し、**週次・月次・年次のReview Note**を生成するCLIです。人が読むMarkdownと、生成AIが再利用する出典付きJSONを保存します。
+`tkn-codex-chat-note` は、ローカルのCodexチャットをRawとして保存し、**週次・月次・年次のReview Note**を生成するCLIです。人が読むMarkdownと、生成AIが再利用する出典付きJSONを保存します。
 
 ## 1. これは何か
 
