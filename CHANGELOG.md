@@ -19,7 +19,7 @@ Stage 0 of the role redesign: the CLI moves from calendar reviews toward source-
 - Rename the Task Scheduler example to `scripts/register-scheduled-task.ps1` (default task name `TknGenAIChatNote`).
 - Add `actions link --dry-run`: read recent Codex and Claude Code conversations from tkn-genai-chat-archiver archives, build session digests (the person's requests, final answers, paired tool executions, Vault notes opened or changed, facts) and match conversations with Action notes by clues A-D only. The report goes to `processes.state_root`; nothing is written to the Vault and no generative AI is used.
 - Configuration adds `archives`, `utc_offset_minutes`, `path_aliases`, `processes` and `vault` (all Vault conventions are settings).
-- Depend on `tkn-genai-chat-archiver` (`ArchiveView`) and `tkn-genai-chat-search` (`library`) for reading archives and log formats.
+- Depend on `tkn-genai-chat-archiver` (`ArchiveView`) and `tkn-genai-chat-search` (`library`) for reading archives and log formats. Both are pinned to GitHub commits, like `tkn-genai-bridge`, so the project installs without sibling checkouts.
 
 ## 0.47.0 - 2026-11-02
 
