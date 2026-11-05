@@ -8,14 +8,14 @@ from typing import Any
 import pytest
 from test_reviews import FakeGenerator, config_for, item, seed
 
-from tkn_codex_chat_note.review_comparison import load_previous, previous_period
-from tkn_codex_chat_note.review_evidence import checked_json, period_evidence, review_path
-from tkn_codex_chat_note.review_generation import ReviewGenerator
-from tkn_codex_chat_note.review_model import ReviewDraft, ReviewItem, period_for
-from tkn_codex_chat_note.review_quality import EvidenceResult
-from tkn_codex_chat_note.review_render import render_review
-from tkn_codex_chat_note.reviews import run_reviews, validate_review
-from tkn_codex_chat_note.runtime import PipelineError, atomic_write_json
+from tkn_genai_chat_note.review_comparison import load_previous, previous_period
+from tkn_genai_chat_note.review_evidence import checked_json, period_evidence, review_path
+from tkn_genai_chat_note.review_generation import ReviewGenerator
+from tkn_genai_chat_note.review_model import ReviewDraft, ReviewItem, period_for
+from tkn_genai_chat_note.review_quality import EvidenceResult
+from tkn_genai_chat_note.review_render import render_review
+from tkn_genai_chat_note.reviews import run_reviews, validate_review
+from tkn_genai_chat_note.runtime import PipelineError, atomic_write_json
 
 
 def payload(prompt: str) -> dict[str, Any]:

@@ -10,18 +10,18 @@ from typing import Any
 import pytest
 from test_reviews import FakeGenerator, config_for, seed, weekly
 
-from tkn_codex_chat_note.api_inference import ApiBudgetExceeded
-from tkn_codex_chat_note.cli import main
-from tkn_codex_chat_note.review_generation import ReviewGenerator
-from tkn_codex_chat_note.reviews import run_reviews
+from tkn_genai_chat_note.api_inference import ApiBudgetExceeded
+from tkn_genai_chat_note.cli import main
+from tkn_genai_chat_note.review_generation import ReviewGenerator
+from tkn_genai_chat_note.reviews import run_reviews
 
 
 @pytest.mark.parametrize("quiet", [False, True])
 def test_cli_progress_is_live_and_json_stays_clean(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], quiet: bool,
 ) -> None:
-    import tkn_codex_chat_note.cli as cli
-    import tkn_codex_chat_note.reviews as reviews
+    import tkn_genai_chat_note.cli as cli
+    import tkn_genai_chat_note.reviews as reviews
 
     config = config_for(tmp_path)
     seed(config, [("2026-05-19T00:00:00Z", "PRIVATE SOURCE TEXT")])
@@ -81,8 +81,8 @@ def test_completed_period_is_logged_before_next_model_call(tmp_path: Path, caplo
 def test_call_limit_warns_and_counts_current_period_as_pending(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import tkn_codex_chat_note.cli as cli
-    import tkn_codex_chat_note.reviews as reviews
+    import tkn_genai_chat_note.cli as cli
+    import tkn_genai_chat_note.reviews as reviews
 
     config = config_for(tmp_path, max_calls=1)
     seed(config, [("2026-05-19T00:00:00Z", "Question")])
@@ -108,7 +108,7 @@ def test_call_limit_warns_and_counts_current_period_as_pending(
 def test_time_limit_is_distinct_and_does_not_call_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
 ) -> None:
-    import tkn_codex_chat_note.reviews as reviews
+    import tkn_genai_chat_note.reviews as reviews
 
     config = config_for(tmp_path)
     seed(config, [("2026-05-19T00:00:00Z", "Question")])
@@ -170,9 +170,9 @@ def test_undated_error_does_not_hide_independent_stops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     stop: str, quiet: bool,
 ) -> None:
-    import tkn_codex_chat_note.cli as cli
-    import tkn_codex_chat_note.reviews as reviews
-    from tkn_codex_chat_note.runtime import PipelineError
+    import tkn_genai_chat_note.cli as cli
+    import tkn_genai_chat_note.reviews as reviews
+    from tkn_genai_chat_note.runtime import PipelineError
 
     config = config_for(tmp_path, max_calls=1)
     seed(config, [("", "Undated message"), ("2026-05-19T00:00:00Z", "Dated message")])
@@ -214,33 +214,32 @@ def test_undated_error_does_not_hide_independent_stops(
 
 
 @pytest.mark.parametrize("multiple_sources", [False, True])
-def test_scheduled_capture_failure_remains_visible_with_undated_history(
+def test_scheduled_capture_failure_remains_visible_without_review_messages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     multiple_sources: bool,
 ) -> None:
-    import tkn_codex_chat_note.cli as cli
-    import tkn_codex_chat_note.pipeline as pipeline
+    import tkn_genai_chat_note.cli as cli
+    import tkn_genai_chat_note.pipeline as pipeline
+    from tkn_genai_chat_note.runtime import PipelineError
 
     config = config_for(tmp_path / "windows")
     if multiple_sources:
-        seed(config, [("", "Undated message")])
         config.sources["broken"] = config_for(tmp_path / "broken").sources["windows"]
     monkeypatch.setattr(cli, "load_app_config", lambda **_: config)
 
     def capture(source: Any, **kwargs: Any) -> dict[str, Any]:
-        ok = multiple_sources and source.source_id == "windows"
-        return {"ok": ok, "complete": ok, "sourceId": source.source_id,
-                "reportPath": str(tmp_path / (source.source_id + ".json"))}
+        if multiple_sources and source.source_id == "windows":
+            return {"ok": True, "complete": True, "sourceProvider": "codex", "sourceId": "windows",
+                    "threadCounts": {"current": 1}, "failed": [], "normalizedThreadCount": 1,
+                    "reportPath": str(tmp_path / "windows.json")}
+        raise PipelineError(f"capture failed for {source.source_id}")
 
-    monkeypatch.setattr(pipeline, "run_pipeline", capture)
+    monkeypatch.setattr(pipeline, "_run_source_pipeline", capture)
     assert main(["--json", "scheduled-run", "--full-output"]) == 1
     captured = capsys.readouterr()
     result = json.loads(captured.out)
-    assert not result["ok"] and not result["complete"]
-    assert captured.err.count("[ERROR]") == (2 if multiple_sources else 1)
-    assert captured.err.count("have no timestamp") == int(multiple_sources)
+    assert not result["ok"]
     failed_source = "broken" if multiple_sources else "windows"
-    assert f"Source {failed_source}: capture/normalization failed" in captured.err
-    assert f"capture report: {tmp_path / (failed_source + '.json')}" in captured.err
-    assert "Some processing failed or was protected" not in captured.err
-    assert "Review generation complete" not in captured.err
+    assert f"capture failed for {failed_source}" in captured.out
+    assert "[ERROR]" in captured.err
+    assert "Review" not in captured.err

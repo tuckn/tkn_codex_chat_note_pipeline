@@ -76,7 +76,7 @@ class ReviewGenerator:
         if options.get("generation_settings_sha256"):
             # Bridge's generation identity excludes profile aliases and price-only changes.
             options.pop("bridge", None)
-            options.pop("bridge_profile", None)
+            options.pop("genai_profile", None)
         self.signature = digest({"version": REVIEW_VERSION, "instructions": self.instructions,
                                  "schema": self.schema, "settings": self.settings.model_dump(mode="json", include={
                                      "language", "utc_offset_minutes", "input_characters",
@@ -97,7 +97,7 @@ class ReviewGenerator:
                                                     EvidenceResult.model_json_schema()]})
         self.journal = UsageJournal(config.review_state_root / "usage" / run_id,
                                     {"runId": run_id, "command": "review-notes", "sourceId": config.source_id,
-                                     "generationProfile": config.generation.active_profile, "noteStatus": "unfinished"})
+                                     "generationProfile": config.generation.genai_profile, "noteStatus": "unfinished"})
         self.api: ApiClient | None = None
 
     def close(self) -> None:

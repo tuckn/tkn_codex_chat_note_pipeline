@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .archive_reader import validate_archive_marker
-from .config import AppConfig, global_config_path
+from .config import AppConfig, global_config_path, legacy_app_root
 from .initialization import (
     ROOT_KINDS,
     ROOT_OWNERSHIP_MARKER,
@@ -75,6 +75,22 @@ def validate_source_layout(config: AppConfig) -> None:
                 raise PipelineError("configured output root overlaps a chat source root")
 
 
+def _reject_stranded_legacy_defaults(config: AppConfig) -> None:
+    """Never start an empty store while omitted roots still hold data at the previous default location."""
+    settings = config.source_settings
+    current = config.source_storage_paths()
+    for kind in ("raw", "data", "state"):
+        if getattr(settings, kind + "_root") is not None:
+            continue
+        legacy = legacy_app_root() / kind / "codex" / config.source_id
+        if not current[kind].exists() and legacy.exists():
+            raise PipelineError(
+                f"{kind} storage of source {config.source_id} is still at the previous default location "
+                f"{legacy}; set sources.{config.source_id}.{kind}_root to that path (`config migrate` does this), "
+                f"or move the folder to {current[kind]}"
+            )
+
+
 def validate_storage(
     config: AppConfig,
     config_path: Path | None = None,
@@ -82,6 +98,7 @@ def validate_storage(
     allow_legacy: bool = False,
 ) -> tuple[Path, ...]:
     config.require_supported_chat_sources()
+    _reject_stranded_legacy_defaults(config)
     roots = validate_reset_targets(config, config_path or global_config_path())
     for path in (config.data_root, config.state_root, config.raw_root, config.source_cache_root):
         if path.is_symlink():
@@ -185,7 +202,7 @@ def pipeline_storage(
     if metadata and metadata.get("storageVersion") != STORAGE_VERSION:
         raise PipelineError("unsupported pipeline storage version; choose fresh configured roots")
     if not metadata and not initialize:
-        raise PipelineError("pipeline is not initialized; run `tkn-codex-chat-note clone` first")
+        raise PipelineError("pipeline is not initialized; run `tkn-genai-chat-note clone` first")
     if metadata and (
         metadata.get("sourceId") != config.source_id or metadata.get("sourceProvider") != config.source_provider
     ):

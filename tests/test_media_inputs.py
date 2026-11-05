@@ -6,7 +6,7 @@ from hashlib import sha256
 
 import pytest
 
-from tkn_codex_chat_note.media_inputs import describe_embedded_images
+from tkn_genai_chat_note.media_inputs import describe_embedded_images
 
 IMAGE_BYTES = b"\x89PNG\r\n\x1a\n" + b"image-payload" * 10000
 ENCODED = base64.b64encode(IMAGE_BYTES).decode("ascii")

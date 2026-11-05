@@ -1,94 +1,77 @@
-# Tkn Codex Chat Note Pipeline — Codexチャットから週次・月次・年次のReview Noteを作るCLI
+# Tkn GenAI Chat Note Pipeline — 生成AIとの会話ログから、既存のノートへの差分案を作るCLI
 
-`tkn-codex-chat-note` は、ローカルのCodexチャットをRawとして保存し、**週次・月次・年次のReview Note**を生成するCLIです。人が読むMarkdownと、生成AIが再利用する出典付きJSONを保存します。
+`tkn-genai-chat-note` は、[tkn-genai-chat-archiver](https://github.com/tuckn/tkn_genai_chat_archiver) が保管したCodex・Claude Codeの会話ログを読み、作業ノート（Action）や日次のLogなど、**既存のノートへの差分案**を作るCLIです。
+
+> [!NOTE]
+> 役割を作り替えている途中です（[設計案](docs/design/role-redesign_ja.md)）。0.48.0は段階0（準備）で、まだノートには何も書きません。0.47.0までの名前は `tkn_codex_chat_note_pipeline`（CLI `tkn-codex-chat-note`）でした。移行は[2.3節](#23-0470tkn_codex_chat_note_pipelineからの移行)を参照してください。
 
 ## 1. これは何か
 
-```mermaid
-flowchart LR
-    CHAT[Codexログ] --> RAW[(Raw)]
-    RAW --> EVENTS[(正規化イベント)]
-    EVENTS --> WEEK[週次レビュー]
-    WEEK --> MONTH[月次レビュー]
-    MONTH --> YEAR[年次レビュー]
-    RAW -. 必要な原文の照合 .-> WEEK
-    RAW -. 必要な原文の照合 .-> MONTH
-    RAW -. 必要な原文の照合 .-> YEAR
-```
+生成AIとの会話には、本人の判断・依頼・作業の実施記録が多く残っています。一方で、作業ノートの進捗・方針・関係の更新は追いつきません。このCLIは、会話から「既存のノートのどこを、どう変えるか」の候補を少数だけ作り、本人が採否を決める形にします。会話を要約した新しいノートは作りません。
 
-Raw取得・正規化は機械処理です。生成AIを使うのはレビュー作成です。月次は週次、年次は月次を主入力とし、不足する期間は下位レビューや正規化イベントで補います。各sourceを独立に処理し、source内の複数チャットを横断して振り返ります。
+- 根拠は、アーカイブの会話の版（SHA-256）と行で示します。本人の発言からの引用は、プログラムが文字どおり一致するかを確かめます。
+- 既存のノートの本文は、本人が採用するまで変えません。
+- 利用者ごとに違うもの（フォルダ、ファイル名、Frontmatterの項目、記録の行の形、生成AIの接続先）は設定で持ちます。
 
-レビュー入力では会話を保持し、通常のツール本文を会話別の索引へ圧縮します。終了コードや診断文字列に問題の兆候がある出力は短い抜粋を残し、重要な結果・原因はRawで照合します。索引の件数はログ件数であり、独立した実行回数ではありません。正規化に失敗した会話は不足情報として明示します。
+### 1.1. 段階と今できること
 
-質問・説明・実施事項・判断理由・未解決事項に加え、Intelligence Layerへの候補と生成AIの挙動改善案を、出典・留保・次の確認事項とともに残します。推測や提案を事実として扱わず、Vault・Skill・AGENTS.mdへ自動採用しません。
+| 段階 | 内容 | 状態 |
+| --- | --- | --- |
+| 0. 準備 | 名前の変更、`scheduled-run` から期間レビューを外す、生成AIの接続を `genai_profiles` に移す、会話の要点、会話とActionの対応づけの試行 | 0.48.0で一部（下の注） |
+| 1. Actionの照合 | 既存のActionの差分案のブロック、下書きのAction | 未実装 |
+| 2. Context収集の点検 | AIが資料を探すときのつまずきを数え、週次のレポートにする | 未実装 |
+| 3. Logの記録 | その日の会話の記録を日次のLogに足す | 未実装 |
+| 4. 片付け | 期間レビュー・Raw取得・旧profileを外す | 未実装 |
 
-### 1.1. 生成されるノートの例
+注：0.48.0でできるのは、名前の変更、`scheduled-run` の変更、`genai_profiles`、`config migrate`、会話の要点と、会話とActionの対応づけの試行（`actions link --dry-run`、[3.1節](#31-会話とactionを対応づける試行)）です。ノートにはまだ何も書きません。
 
-以下は週次Review Noteの本文例です（説明用の架空データ）。
+### 1.2. 前提
 
-```markdown
-保存資料を再利用する作業と、検証手順を見直す作業がつながった週だった。
-既存情報を最初に確認できることが、両方の作業を支える可能性がある。[S001] [S002]
+設定でほかの利用者・環境でも使えるようにしていますが、次を前提にします。
 
-## テーマ別の実施・判断・残る点
+- 作業ノートの `Notes` に、日付・種類・主体・根拠付きの記録の行を残す運用。この運用をしない場合、Actionの照合の価値は小さくなります。
+- 差分案のブロックはObsidianのcalloutの書き方です。ほかのMarkdownの道具では、ただの引用として見えます。
+- `tkn-genai-chat-archiver` のアーカイブが必要です。
+- CodexとClaude Codeのログの内部形式に依存します。形式はアプリの版によって変わることがあります。
+- 最初は日本語の既定値だけを同梱します。
 
-| テーマ | 実施・結果・判断と理由 | 残る点・確認案 |
-|---|---|---|
-| 資料の再利用 | 既存ノートを見つけた後、再作成から追記へ方針を変更した。[S001] | 他の資料でも同じ索引が使えるかは未確認。 |
+### 1.3. 依存するライブラリ
 
-## 生成AIの挙動改善案
+| ライブラリ | 使うもの |
+| --- | --- |
+| [tkn_genai_chat_archiver](https://github.com/tuckn/tkn_genai_chat_archiver) | `ArchiveView`：アーカイブを読み取り専用で読む（確定したmanifestだけ、SHA-256の照合、zstdの展開） |
+| [tkn_genai_chat_search](https://github.com/tuckn/tkn_genai_chat_search) | `library`：Codex・Claude Codeのログの読み取り。発言、ツール実行の組（`call_id`・`tool_use_id`）、発言の書き手（`turnOrigin`） |
+| [tkn_genai_bridge](https://github.com/tuckn/tkn_genai_bridge) | 生成AIの呼び出し（期間レビュー。段階1からActionの照合でも使う） |
 
-| 観察された問題 | 根拠と改善案 | 適用上の留保 | 確認方法 |
-|---|---|---|---|
-| 既存資料の見落とし | 配置を仮定して探索に失敗した。次回は資料の索引を開始時に渡す。[S001] | 反復する問題かは未確認。 | 次の作業で再探索が減るか確認する。 |
-```
+ログの形式の変化への対応は、読み取りを持つこれらのリポジトリで行います。
 
-週次・月次・年次とも、最終統合でテーマ別に編集します。質問・活動は表、複数チャットの考察は文章、AI改善案は確認方法付きの表にします。詳細な抜粋はJSONに保持し、Markdownの出典は文書単位の参照にまとめます。単一バッチでも抽出後に最終統合を1回行い、複数バッチでは最後の統合をこの編集に使います。[Review Noteの仕様](docs/reference/review-note-format_ja.md)を参照してください。
+### 1.4. 段階4まで残す機能
 
-保存前には自動校正を行います。抽出結果との照合で重要な話題の抜けを確認し、引用の重複だけで照合を省略せず、関連する抽出項目の原文も渡して後続訂正・完了報告を確認します。概要は本文の校正後に照合し、判断・完了状態を揃えます。無関係な話題の分離や、説明文の再利用目的・作業場所のルールの扱いも校正対象です。校正が完了しないノートは公開せず、上限到達時は次回に再開します。意味の正しさを保証する処理ではありません。
-
-本文を膨らませないため、統合時は最大32項目・日本語7,000文字、校正後は最大36項目・8,400文字を検証します（タイトル・本文・留保・確認案の合計）。復元は重要事項6件まで、新しい話題はそのうち2件までです。各項目の文字数枠の合計も全体上限内に配分し、変更しない項目も検証します。照合した項目と理由はJSONに残します。週次・月次・年次とも、全作業の列挙ではなく主要テーマを選ぶレビューです。
-
-校正は追加のモデル呼出しを伴います。空の期間は0回、それ以外は根拠校正が最低1回、完全一致しない抽出項目があれば欠落照合も1回以上、概要があれば本文との照合が概要1件につき1回増えます。実際の回数は本文と引用の量で増えます。共通の根拠を持つ項目は同じ校正リクエストへまとめ、原文を削らず重複送信を減らします。送信時のみ根拠IDを短縮し、検証・保存前に元のIDへ戻します。確認済みcacheも再利用しますが、呼出しごとのモデル側の入力や推論・出力トークンも増えるため、最初の数回は利用量レポートで確認してください。
-
-Frontmatterは `type: chatReview` とし、概要、期間、取得元 `sourceApplication: Codex`、正本JSONへの参照、生成設定をまとめます。前週・前月・前年の参照状況は `previousReviewStatus`・`previousReviewReferenced`、モデルに渡した候補数と最終引用数は `previousReviewSelectedItemCount`・`previousReviewCitedItemCount` で確認できます。
-末尾は `created`・`updated`・`noteId` です。日英のテンプレート・プロンプト・schemaは `profiles/default-jp`・`default-en` に同梱します。
-表示テンプレートだけの変更は、次回実行時に保存済みJSONからモデル呼出しなしで反映します。
-編集済み・確認済みのノートは保持します。[Frontmatterと日英プロファイル](docs/reference/review-note-format_ja.md#frontmatterと日英プロファイル)を参照してください。
-
-出典はチャットの表示名を使い、本文の参照から、その項目を支える発言・日時・短い抜粋へ戻れます。
-詳細は出典節に折りたたんで表示します。管理用イベントは引用対象から除外します。
-「質問・学び」には再利用できる説明の要点を残し、収録範囲の制約は圧縮・切り詰め・取得上限・失敗などの種類別に表示します。
-
-### 1.2. 対象範囲
-
-| 項目 | 内容 |
-|---|---|
-| 取得元 | ローカルのCodexログ（保存済みアーカイブを含む）。`tkn-genai-chat-archiver` がRawを保管している場合は、そのアーカイブを読むだけ（[4.3節](#43-tkn-genai-chat-archiverのアーカイブを読む)） |
-| 出力 | Raw、正規化イベント、catalog・provenance、週次・月次・年次Markdown＋JSON |
-| 生成AI | Codex、Claude Code、GitHub Copilot CLI、Antigravity、Ollama、Azure OpenAI |
-| source | PC・環境等の取得元。source間のレビューは統合しない |
-| 対象外 | 会話ごとのSession Note生成、クラウドだけにある履歴の取得、候補の自動採用 |
+| 機能 | コマンド | 扱い |
+| --- | --- | --- |
+| 週・月・年のReview Note | `review-notes build`・`due`・`validate` | 手動で実行するときだけ動きます。`scheduled-run` からは外しました。新しい機能は足しません。生成済みのノートは消しません。[Review Noteの仕様](docs/reference/review-note-format_ja.md) |
+| Rawの取得・正規化 | `clone`・`pull`・`raw ingest` | Rawの保管はarchiverに移りました。archiverのアーカイブは読むだけです（[4.3節](#43-tkn-genai-chat-archiverのアーカイブを読む)） |
+| 利用量レポート | `build-report` | 残します |
 
 ## 2. セットアップ
 
-Python 3.11以上とuvを使用します。生成プロバイダーは別途インストール・認証し、共有Bridge設定に実行プロファイルを用意してください。
+Python 3.11以上とuvを使います。生成AIのCLI（Codex・Claude Codeなど）は別にインストールしてログインしてください。
 
 ```shell
 cd <repository>
 uv tool install .
-tkn-codex-chat-note --help
-tkn-codex-chat-note config init
+tkn-genai-chat-note --help
+tkn-genai-chat-note config init
 ```
 
-ソースやリソースの更新後は、検証済みの依存関係を固定してインストール済みCLIへ反映します。
+ソースやリソースを更新したら `uv tool install . --reinstall` でインストール済みCLIへ反映します。
 
 ### 2.1. 設定
 
-設定先は `~/.tkn/codex_chat_note_pipeline/config.yaml`。優先順位は既定値 → ユーザー設定 → 作業ディレクトリの `.tkn/config.yaml` → `--config` → CLIオプションです。`config init` は編集済みファイルを保護し、`--force` を明示した場合だけバックアップして置換します。
+設定ファイルは `~/.tkn/genai_chat_note_pipeline/config.yaml` です。優先順位は、既定値 → ユーザー設定 → 作業ディレクトリの `.tkn/config.yaml` → `--config` → CLIオプションです。`config init` は編集済みのファイルを守り、`--force` を付けたときだけバックアップして置き換えます。
 
 ```yaml
-schema_version: "9.0.0"
+schema_version: "10.0.0"
 sources:
   my-pc:
     enabled: true
@@ -100,150 +83,198 @@ sources:
     reviews:
       language: ja
       utc_offset_minutes: 540
-      max_calls: 12
-      input_characters: 50000
-      raw_characters: 16000
-      raw_requests: 8
+genai_profiles:
+  codex-default:
+    provider: codex
+    model: null
+    timeout_seconds: 1800
 generation:
-  active_profile: codex
-  profiles:
-    codex:
-      bridge_profile: codex-default
+  genai_profile: codex-default
 runtime_minutes: 230
 model_timeout_seconds: 1800
 ```
 
-`reviews` は各sourceの設定です。言語は `ja` / `en`、時差540分は日本時間です。レビューは `data_root/reviews`、実行状態は `state_root/reviews` に保存します。ルートを省略すると `~/.tkn/codex_chat_note_pipeline/<kind>/codex/<source_id>` を使用します。source IDと使用中のRaw/data/stateの保存先は維持してください。
+source IDと、使っているRaw・data・stateの保存先は変えないでください。保存先を省略すると `~/.tkn/genai_chat_note_pipeline/<kind>/codex/<source_id>` を使います。ほかの項目は[設定例](src/tkn_genai_chat_note/resources/config.example.yaml)を参照してください。
 
-生成プロファイルは取得元とは独立です。接続・モデル・認証は通常 `~/.tkn/genai_bridge/config.yaml` の参照先に置き、`--profile <name>` で選択します。[設定例](src/tkn_codex_chat_note/resources/config.example.yaml)にレビュー上限・利用量レポートの項目も掲載しています。
+`actions link` には、読むアーカイブとVaultの約束を設定します。Vaultのフォルダ名・Frontmatterの項目名・status・見出し・記録の行の形は、すべて設定で変えられます。
+
+```yaml
+archives:
+  codex-my-pc:
+    root: C:/path/to/archives/Codex/my-pc-windows
+  claude-code-my-pc:
+    root: C:/path/to/archives/Claude Code/my-pc-windows
+utc_offset_minutes: 540
+path_aliases:
+  - ["D:/path/to/work", "C:/path/to/work"]  # 同じ場所を指す別の書き方。先頭が正
+vault:
+  root: C:/path/to/vault
+  actions:
+    dir: actions
+    frontmatter:
+      id: noteId
+      repositories: repositories
+```
 
 ```shell
-tkn-codex-chat-note config list
-tkn-codex-chat-note config list --json
+tkn-genai-chat-note config list
+tkn-genai-chat-note config list --json
 ```
+
+### 2.2. 生成AIの接続（genai_profiles）
+
+呼び出すCLIやモデルは、この設定ファイルのルートの `genai_profiles` に書きます。[tkn_genai_bridge](https://github.com/tuckn/tkn_genai_bridge) はこのCLIの依存ライブラリ（commitで版を固定）として入ります。Bridge CLIの別途のインストールや、Bridgeの共通の設定ファイル（`~/.tkn/genai_bridge/config.yaml`）は読みません。
+
+```yaml
+genai_profiles:
+  codex-high:
+    provider: codex
+    model: null  # null：そのCLIの既定のモデル。固定するときは、そのCLIで使えるモデル名
+    reasoning_effort: high
+    timeout_seconds: 1800
+  claude-default:
+    provider: claude-code
+    model: null
+
+generation:
+  genai_profile: codex-high  # 期間レビューが使う接続。実行ごとに --profile <名前> で変えられます
+```
+
+- 各項目はBridgeのprofile（`provider`・`model`・`reasoning_effort`・`timeout_seconds`・`cli`・`ollama`・`azure`・`pricing` など）です。項目は[Bridgeの設定仕様](https://github.com/tuckn/tkn_genai_bridge/blob/main/docs/reference/configuration.md)を参照してください。
+- `codex-default`・`claude-default`・`copilot-default`・`antigravity-default` は既定で使えます。
+- CLI型（Codex・Claude Code・GitHub Copilot・Antigravity）は、そのCLIの既存のログインを使います。このCLI用の別のログインや、トークンの転記は要りません。
+- API型（Azure OpenAI・Ollama）は、このCLIの予算 `limits`（呼び出し回数・費用・トークン）を同じ項目に書けます。APIキーは値を書かず、Bridgeの `api_key_env` で環境変数の名前だけを指定します。
+- 利用量レポートの参考価格は、`usage_report.price_scenarios.<名前>` に `genai_profile` と `model` を書くと、その接続の `pricing` を使います。
+
+### 2.3. 0.47.0（tkn_codex_chat_note_pipeline）からの移行
+
+0.47.0までは、設定が `~/.tkn/codex_chat_note_pipeline/config.yaml` にあり、生成AIの接続はBridgeの共通の設定を名前で読んでいました（`generation.profiles.<名前>.bridge_profile`）。`config migrate` で新しい設定を作ります。
+
+```shell
+tkn-genai-chat-note config migrate --dry-run
+tkn-genai-chat-note config migrate
+tkn-genai-chat-note config list
+```
+
+- 旧い設定と、そこから参照しているBridgeの共通の設定（既定 `~/.tkn/genai_bridge/config.yaml`、`--bridge-config` で変更）を一度だけ読み、新しい場所に `schema_version: "10.0.0"` の設定を書きます。旧いファイルは変えません。コメントは引き継ぎません。
+- 参照していたBridgeのprofileは、内容を変えずに `genai_profiles` へ写します（写した結果が元と一致するかを確かめます）。`limits`・`pricing`・`overrides` も移します。
+- 保存先を省略していたsourceで、旧い既定の場所（`~/.tkn/codex_chat_note_pipeline/<kind>/codex/<source_id>`）にデータがあるものは、その場所を設定に書きます。設定を移さずに使うと、空の保存先を作らずに止まります。
+- 旧い設定に書いた `cache_root` はそのまま残ります。cacheは作り直せるので、新しい名前の場所に変えてもかまいません。
+- 旧いCLIは `uv tool uninstall tkn-codex-chat-note-pipeline` で外せます。Task Schedulerに登録している場合は、プログラムを `tkn-genai-chat-note.exe` に変えてください。
 
 ## 3. 実行する
 
-共通オプション（`--source`、`--config`、`--profile` など）はコマンドの後ろに指定できます。従来の前置き形式も使用できます。同じオプションを複数回指定した場合は後の値が優先されます。`--profile` と `--provider`、`--quiet` と `--verbose` は、指定位置にかかわらず併用できません。
+共通オプション（`--source`・`--config`・`--profile` など）は、コマンドの前にも後ろにも書けます。同じオプションを複数回書いた場合は後の値を使います。`--profile` と `--provider`、`--quiet` と `--verbose` は一緒に使えません。
 
-### 3.1. 定期実行
+### 3.1. 会話とActionを対応づける試行
 
 ```shell
-tkn-codex-chat-note scheduled-run --dry-run
-tkn-codex-chat-note scheduled-run
+tkn-genai-chat-note actions link --dry-run
+tkn-genai-chat-note actions link --dry-run --days 14 --as-of 2026-11-05
 ```
 
-毎回Rawを保存・正規化し、締まった期間のレビューを生成します。初回に管理領域を初期化するので、別途 `clone` は不要です。週次は翌月曜、月次は翌月1日、年次は翌年1月1日以降の実行で生成します。未実行・中断した分は次回に再開します。
+archiverのアーカイブ（`archives`）から直近の会話を読み、Vaultの作業ノート（`vault.actions`）と対応づけて、結果を `processes.state_root/actions-link/<実行ID>/` に書きます（`report.md`・`report.json`・`links.jsonl`）。Vaultには何も書かず、生成AIも使いません。この版では `--dry-run` が必須です。
 
-保存済みの全履歴を起点に、終了済み期間のレビューを確認し、不足分を生成します。初回実行日による制限はありません。日次・週次・月次・年次に別々のタスクを登録する必要はありません。
+使う手がかりは次の4つです。
+
+| 手がかり | 強さ | 内容 |
+| --- | --- | --- |
+| A | 強 | 会話中にAIがActionのファイルを開いた・変えた（サブエージェントを含む） |
+| B | 強 | ActionのNotesの記録の行の根拠に、その会話のセッションIDがある（`同上` は前の行の根拠） |
+| C | 強 | 本人の発言にActionのWikiLink・ファイル名・title・`aliases` がある |
+| D | 中 | 作業フォルダの最後のフォルダ名が、対象のActionの `repositories`（なければtitle）に1件だけ一致する |
+
+- 対象のActionは、statusが作業中、期間内に更新日時が変わった、または期間内の会話が開いた・変えたもの（終了したものを除く）。A・B・Cは対象の外のActionにも対応づけ、そう表示します。
+- Dが複数のActionに一致した会話は「曖昧」とし、段階1で生成AIに選ばせます。
+- 会話ごとに「会話の要点」（本人の発言、各ターンの最後の回答、ツール実行、開いたVaultのノート、commitなどの事実）をJSONで作り、`processes.data_root/digests/` に置きます。アーカイブの同じ版からは作り直さず再利用します。消してもかまいません。
+- 本人の発言の判定：Claude Codeは `turnOrigin` が `human` 以外の発言（別のセッションからの依頼など）、sidechain、引数のないスラッシュコマンド、アプリが書いた行を除きます。`turnOrigin` のない古い記録は確度を1段下げて含めます。Codexは、アプリが足すブロック（`<external_…>`・`<user_action>` など）だけの発言を除きます。貼り付け（`<pasted_content>`）は本人の発言に含めます。
+- 根拠ID：`<アプリ>/<source_id>/<セッションID>@<版のSHA-256の先頭12桁>#L<行>`。アーカイブの版は変わらないので、元の行に戻れます。
+
+### 3.2. 定期実行
+
+```shell
+tkn-genai-chat-note scheduled-run --dry-run
+tkn-genai-chat-note scheduled-run
+```
+
+0.48.0の `scheduled-run` は、各sourceのRawの取得（archiverのアーカイブなら読み取り）と正規化だけを行い、生成AIを呼びません。期間レビューは作りません。段階1以降、ここに新しい処理を足します。
 
 | Task Schedulerの項目 | 設定例 |
-|---|---|
-| プログラム | インストール済み `tkn-codex-chat-note.exe` の絶対パス |
+| --- | --- |
+| プログラム | インストール済み `tkn-genai-chat-note.exe` の絶対パス |
 | 引数 | `scheduled-run --config "C:/path/to/config.yaml"` |
 | 開始場所 | 設定で意図した作業ディレクトリ |
-| トリガー | 毎日1回（例：03:00） |
+| トリガー | 毎日1回（archiverの後。例：archiverが02:00なら04:00） |
 | 実行ユーザー | 生成AIの認証を設定したユーザー |
 | その他 | 未実行分をすぐ実行、多重実行しない |
 
-[登録スクリプト例](scripts/register-review-task.ps1)は `-WhatIf` で確認できます。CLIのインストールはタスクを登録しません。実行時刻はWindows側の時計です。共有BridgeのCLI認証を使う場合は「ログオンしているときのみ実行」から確認してください。
+[登録スクリプト例](scripts/register-scheduled-task.ps1)は `-WhatIf` で確認できます。CLIのインストールはタスクを登録しません。
 
-### 3.2. 保存・正規化だけを実行する
-
-```shell
-tkn-codex-chat-note clone --dry-run
-tkn-codex-chat-note clone
-tkn-codex-chat-note pull
-tkn-codex-chat-note raw ingest
-```
-
-`clone` は初期化・保存・正規化、`pull` は初期化済み領域の更新です。どちらも生成AIを呼びません。`raw ingest` はRaw保存だけでcatalogを更新しません。通常は `scheduled-run`、保存だけなら `clone` / `pull` を使用します。`raw_root` を `tkn-genai-chat-archiver` が保管している場合、`raw ingest` はエラーで止まります（取得はそのツールの `capture` で行います）。
-
-### 3.3. レビューを個別に作る
+### 3.3. 期間レビューを手動で作る
 
 ```shell
-tkn-codex-chat-note review-notes build --source my-pc --period weekly --dry-run
-tkn-codex-chat-note review-notes build --source my-pc --period weekly
-tkn-codex-chat-note review-notes build --source my-pc --period monthly
-tkn-codex-chat-note review-notes build --source my-pc --period yearly
-tkn-codex-chat-note review-notes due
-# 設定に期間を指定せず、保存済みの全履歴から終了済み期間を生成
-tkn-codex-chat-note review-notes due --source my-pc
+tkn-genai-chat-note pull
+tkn-genai-chat-note review-notes due --dry-run --full-output
+tkn-genai-chat-note review-notes due
+tkn-genai-chat-note review-notes build --source my-pc --period weekly --date 2026-05-18
+tkn-genai-chat-note review-notes validate "C:/path/to/data/reviews/weekly/2026/2026-W21.json"
 ```
 
-`due` はsourceごとの保存済みcanonical eventsの最古日時を、設定されたタイムゾーンで開始日に変換します。既存設定の `start_date` と保存済みの初回実行日は対象範囲を制限しません。実行日（または `--as-of`）までの終了済み週・月・年が対象です。進行中の期間は対象外です。catalogがなければ先に `pull` が必要です。レビューに使える日付付きの記録がなければ対象は0件です。記録のない週・月・年は `skipped-empty` としてスキップし、空のノートは作成しません。既存の空ノートは保持します。`--dry-run` で書き込み・推論なしに確認でき、上限で中断した場合は同じコマンドの再実行で続行できます。
+`due` は保存済みの全履歴から締まった期間を探し、まだないレビューを作ります。`build` は指定した期間だけを作ります。どちらも保存済みcatalogを読むので、必要なら先に `pull` してください。上限・保護・再開の詳細は[Review Noteの仕様](docs/reference/review-note-format_ja.md)を参照してください。
 
-直前の同種ノート（週次なら前週、月次なら前月、年次なら前年）がある場合、今回の内容と関連する最大6項目を比較資料として参照します。今回の出典を必須とし、過去の未解決事項は自動で持ち越しません。`sources.<id>.reviews.previous_period: false` で無効化できます。既存の統合・校正に資料を加える方式で、専用のモデル呼出しはありませんが、入力量や校正の分割・修復回数は増える場合があります。
-
-省略時は直近の締まった期間です。`--date YYYY-MM-DD` で対象期間内の日付を指定できます。未確定期間は生成しません。`--source` を省略すると有効なsourceをそれぞれ処理します。手動の `review-notes` は保存済みcatalogを使用するため、必要なら先に `pull` してください。
-
-### 3.4. 確認する
+### 3.4. 保存・正規化だけを実行する
 
 ```shell
-tkn-codex-chat-note status
-tkn-codex-chat-note provenance validate
-tkn-codex-chat-note review-notes validate "C:/path/to/data/reviews/weekly/2026/2026-W21.json"
-tkn-codex-chat-note build-report --no-open
+tkn-genai-chat-note clone --dry-run
+tkn-genai-chat-note clone
+tkn-genai-chat-note pull
 ```
 
-`build-report` は保存済み利用量からHTMLとJSONを作ります。生成AIや価格検索は行いません。通常はHTMLを開き、`--no-open` は起動を抑制します。過去の利用量と各sourceのレビュー利用量を読み、取得できないトークン数・費用は不明として扱います。
+`clone` は初期化・保存・正規化、`pull` は初期化済みの領域の更新です。どちらも生成AIを呼びません。`raw ingest` はRawの保存だけで、archiverが保管している `raw_root` では止まります（取得はarchiverの `capture` で行います）。
+
+### 3.5. 確認する
+
+```shell
+tkn-genai-chat-note status
+tkn-genai-chat-note provenance validate
+tkn-genai-chat-note build-report --no-open
+```
+
+`build-report` は保存済みの利用量からHTMLとJSONを作ります。生成AIや価格の検索は行いません。取得できないトークン数・費用は不明として扱います。
 
 ## 4. 仕様
 
-- `--dry-run` は推論・ネットワーク・出力・cache・state・ロックの作成を行いません。レビューの予定は保存済みcatalogに基づきます。
-- レビューの `max_calls` と `runtime_minutes` はsourceごとの1回の実行に適用されます。複数sourceではその分の上限が加算されます。途中結果はcacheから再利用します。
-- 編集・レビュー済みのReview Noteを保護します。`--force` は再生成、`--allow-edited` は未確認の手編集のみバックアップ後に置換します。確認済みノートの保護は解除しません。
-- 成功終了は0、失敗・保護で処理できない項目ありは1、レビューの時間・回数上限による未完了は2です。不足情報付きの成功は履歴全体の完全性を保証しません。
-- レビュー実行中はsource・対象期間の準備、モデル呼び出しの開始・応答受信と経過秒、cache再利用、期間ごとの結果を逐次表示します。回数上限と時間上限を区別し、上限停止時は未完了・残り期間数・再実行による再開をWARNINGで示します。残り期間数は資料があり生成・更新が必要な期間だけを数え、途中停止した期間を含みます。上限停止後も推論なしで残りを調べ、空の期間と変更のない生成済み期間は除外します。`--dry-run` の `pendingPeriods` は生成・更新の予定件数です。資料の読み取り失敗・破損・正規化失敗は記録なしと区別し、エラーとして通知します。日時のない会話記録は `undatedEventCount` と `historyIssues` で別途報告し、日時が分かる資料の処理は続けます。同じ日時不足のERRORはsourceごとに検出時の1回だけ表示し、終了時に汎用エラーとして重複表示しません。元ログの発言にも日時がなければ、再実行だけでは解消しません。旧形式のチャット開始日時は発言日時として自動補完しません。日時不明の記録が残る間は全完了とせず終了コード1にします。週・月・年を特定できないため、日時不明の記録を `pendingPeriods` には加算しません。`--quiet` でエラー以外の表示を抑制できます。
-- 全コマンドの最終結果はstdoutへ既定で `key=value`、`--json` 指定時はJSONで出力します。進捗・警告・診断はstderrです。`--full-output` は形式を変えず、表示する詳細を増やします。
-- Session Noteの生成・検証、専用言語プロファイル、`pull --limit`、`--idle-minutes` は廃止しました。旧生成物を読み込まず、削除もしません。
+- `--dry-run` は推論・ネットワーク・出力・cache・state・ロックの作成を行いません。
+- 成功は終了コード0、失敗・保護で処理できない項目ありは1、引数の誤りや上限による未完了は2、中断は130です。
+- 期間レビューの `max_calls` と `runtime_minutes` は、sourceごとの1回の実行に適用します。
 
 ### 4.1. CLIの結果表示
 
-処理・検証・設定操作を含む全コマンドが最終結果を標準出力へ返します。通常は1行1項目の `key=value` 一覧です。入れ子は `.`、配列は `[0]` などの添字、空の配列・マッピングは `[]`・`{}`、真偽値は `true`・`false`、未設定値は `null` で表示します。文字列にJSONの引用符を付けず、Windowsパスの `\` を重ねたり、長いパスを省略したりしません。改行などの制御文字はエスケープします。
+すべてのコマンドが、最終結果を標準出力へ返します。通常は1行1項目の `key=value` 一覧、`--json` を付けると1つのJSONです。進捗・警告・診断は標準エラーです。`--full-output` は形式を変えずに、表示する詳細を増やします。機械で読む場合は必ず `--json` を付けてください。
 
 ```shell
-tkn-codex-chat-note clone --dry-run
-tkn-codex-chat-note review-notes due --dry-run --full-output
+tkn-genai-chat-note status --json
+tkn-genai-chat-note review-notes due --dry-run --json --full-output
 ```
 
-結果の `status`・`exitCode`、件数、`failed`・`historyIssues`、要確認の `threads`・`results` と理由、保存した `reportPath` / `reportPaths` を確認してください。変更なし・除外・空期間などの詳細は件数にまとめる場合があります。`omittedDetailsCount` と `detailsHint` があるときは、保存済みレポート、または同じコマンドの `--full-output` で詳細を確認できます。書き込みコマンドの再実行は再度処理するため、保存済みレポートがあればそちらを参照してください。
+`--quiet` / `--verbose` は標準エラーのログの量だけを変えます。表示の形式は、TTY・パイプ・リダイレクトで自動では変わりません。詳細は[CLI出力契約](docs/reference/cli-output.md)を参照してください。
 
-機械処理で読む場合は、必ず `--json` を付けます。通常の一覧を文字列解析しないでください。
+### 4.2. 保存先の名前
 
-```shell
-tkn-codex-chat-note status --json
-tkn-codex-chat-note review-notes due --dry-run --json --full-output
-```
-
-`--json` と `--full-output` はコマンドの前・途中・後ろに指定できます。`--json` は1回の結果を1つのJSON documentで出し、引数・設定・実行時エラーや中断も可能な限り同じ形式にします。対象パスは `targets`、`sourcePaths`、`jsonPath`・`notePath` などの独立した項目で確認できます。ログ・見出し・カラーはJSONに混ぜません。
-
-`--quiet` / `--verbose` はstderrのログ量だけを変え、最終結果は抑制しません。TTY・パイプ・リダイレクトでも形式は自動変更しません。終了コードは0が成功、1が処理・設定・検証失敗、2が引数エラーまたは上限等による未完了、130が中断です。`--help` と `--version` は通常の案内を表示します。
-
-表示オプションは成果物の種類や生成有無を変えません。CLIの表示形式と、Python APIの戻り値、保存するJSON・manifest・ノート・レポートの形式は別の契約です。
-
-[CLI出力契約](docs/reference/cli-output.md)に項目とコマンドごとの詳細を記載しています。
-
-### 4.2. config 8から9への更新
-
-トップレベルの `reviews` を各 `sources.<id>.reviews` へ移し、`reviews.data_root`・`reviews.state_root`・`reviews.session_note_limit` を削除します。レビューは各sourceのdata/state配下になります。`generation.session_note_profile`・`idle_minutes`・`installed_at` も削除し、`schema_version` を `9.0.0` にします。
-
-旧設定は自動上書きせず、更新方法を表示します。以前のsource横断レビューは新しいsource別レビューへ自動移行しません。旧レビュー・Session Noteは既存の場所に残ります。storage 5のRaw・正規化イベントはそのまま利用できます。保存先自体を移す場合は `storage migrate --from-config <old-config> --dry-run` で計画を確認してください。
+0.48.0で名前を変えましたが、既存の保存先の所有の印（storage 5のマーカーとstore.json）は変えていません。0.47.0で作った保存先・利用量レポートはそのまま使えます。
 
 ### 4.3. tkn-genai-chat-archiverのアーカイブを読む
 
-`raw_root` に `.tkn-genai-chat-archive.json` があると、そのフォルダは `tkn-genai-chat-archiver` が保管するRawアーカイブとして扱い、このCLIは読むだけにします。設定の変更は不要です。既存のRawをそのツールの `legacy adopt` で引き継いだ場合も同じです。
+`raw_root` に `.tkn-genai-chat-archive.json` があると、そのフォルダはarchiverが保管するRawのアーカイブとして扱い、このCLIは読むだけにします。
 
 - アーカイブの所有マーカーの `profile` が `codex`、`sourceId` が設定のsource IDと一致しなければ、何も書かずに止まります。
-- 確定したmanifest（`manifests/*.jsonl`）だけを読み、相対パスごとの最新の版を使います。使う前に保存ファイルと展開後の内容のサイズ・SHA-256を照合します。
-- Codexが圧縮した `.jsonl.zst` も読みます。同じ内容の `x.jsonl` と `x.jsonl.zst` は1つの会話の入力として扱い、先に保存した版の参照を使い続けます。そのため、圧縮だけでは正規化イベントやレビューの根拠は変わりません。
-- 圧縮された版は `cache_root` 配下に展開して再利用します。`--dry-run` では一時フォルダに展開し、終了時に消します。
-- アプリ状態（`.codex-global-state.json`）と会話タイトル（`session_index.jsonl`）も、アーカイブの最新版を読みます。タイトルの版がなければ `source_root` から読みます。
-- `raw_root` には何も書きません（コピー・`manifest.jsonl`・`metadata/`・所有マーカー・ロックのいずれも作りません）。`raw ingest` と `storage migrate` はエラーで止まります。
-- 取り込みの新しさは、アーカイブを最後に更新した時点までです。`scheduled-run` の前に `tkn-genai-chat-archiver capture` を実行してください。
+- 確定したmanifest（`manifests/*.jsonl`）だけを読み、相対パスごとの最新の版を使います。使う前に、保存ファイルと展開後の内容のサイズ・SHA-256を照合します。
+- Codexが圧縮した `.jsonl.zst` も読みます。同じ内容の `x.jsonl` と `x.jsonl.zst` は1つの会話として扱います。
+- `raw_root` には何も書きません。取り込みの新しさは、アーカイブを最後に更新した時点までです。
 
 詳細は[Data contract](docs/reference/data-contract.md#archive-managed-raw)を参照してください。
 
+- [設計案：役割の作り替え](docs/design/role-redesign_ja.md)
 - [Review Note仕様（日本語）](docs/reference/review-note-format_ja.md)
 - [Review Note contract（English）](docs/reference/review-note-format.md)
 - [Data contract](docs/reference/data-contract.md)
@@ -255,8 +286,8 @@ tkn-codex-chat-note review-notes due --dry-run --json --full-output
 uv sync --group dev
 uv run python -m pytest
 uv run python -m ruff check .
-uv run python -m mypy src/tkn_codex_chat_note
+uv run python -m mypy src/tkn_genai_chat_note
 uv build
 ```
 
-テストは一時ディレクトリと合成ログを使用します。実データや実モデルでの生成品質評価は別に行ってください。
+テストは一時ディレクトリと合成データを使います。実データや実モデルでの品質の評価は別に行ってください。

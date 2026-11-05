@@ -80,5 +80,5 @@ def write_chat(
 
 
 def config(root: Path):
-    from tkn_codex_chat_note.runtime import InferenceConfig
+    from tkn_genai_chat_note.runtime import InferenceConfig
     return InferenceConfig()

@@ -11,12 +11,12 @@ from pydantic import ValidationError
 from test_config import write_yaml
 from test_storage_layout import snapshot
 
-from tkn_codex_chat_note.cli import main
-from tkn_codex_chat_note.config import AppConfig, config_document, load_app_config, resolve_app_config, write_config
-from tkn_codex_chat_note.pipeline import pipeline_status, run_pipeline
-from tkn_codex_chat_note.provenance import validate_provenance
-from tkn_codex_chat_note.runtime import PipelineError
-from tkn_codex_chat_note.storage_migration import migrate_storage
+from tkn_genai_chat_note.cli import main
+from tkn_genai_chat_note.config import AppConfig, config_document, load_app_config, resolve_app_config, write_config
+from tkn_genai_chat_note.pipeline import pipeline_status, run_pipeline
+from tkn_genai_chat_note.provenance import validate_provenance
+from tkn_genai_chat_note.runtime import PipelineError
+from tkn_genai_chat_note.storage_migration import migrate_storage
 
 
 def multi_config(root: Path) -> AppConfig:
@@ -93,7 +93,7 @@ def test_duplicate_yaml_key_is_rejected_without_writes(tmp_path: Path) -> None:
 
 
 def test_sources_merge_by_id_without_an_implicit_default_source(tmp_path: Path) -> None:
-    global_path = Path.home() / ".tkn/codex_chat_note_pipeline/config.yaml"
+    global_path = Path.home() / ".tkn/genai_chat_note_pipeline/config.yaml"
     write_yaml(
         global_path,
         {
@@ -209,7 +209,7 @@ def test_disabled_and_selected_sources_are_not_processed(tmp_path: Path) -> None
     assert report["sourceId"] == first.source_id and report["ok"]
     assert not second.raw_root.exists() and not second.state_root.exists()
     second.source_settings.enabled = False
-    from tkn_codex_chat_note.storage import validate_storage
+    from tkn_genai_chat_note.storage import validate_storage
 
     validate_storage(config)
     run_pipeline(config, mode="clone")
@@ -222,7 +222,7 @@ def test_disabled_and_selected_sources_are_not_processed(tmp_path: Path) -> None
 
 
 def test_one_source_error_does_not_hide_other_source_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import tkn_codex_chat_note.pipeline as pipeline
+    import tkn_genai_chat_note.pipeline as pipeline
 
     config = multi_config(tmp_path)
     source_chats(config)
@@ -298,7 +298,7 @@ def test_storage_5_relocation_accepts_old_and_multi_source_configs(tmp_path: Pat
 
 def test_case_collision_in_lower_layer_cannot_be_hidden(tmp_path: Path) -> None:
     write_yaml(
-        Path.home() / ".tkn/codex_chat_note_pipeline/config.yaml",
+        Path.home() / ".tkn/genai_chat_note_pipeline/config.yaml",
         {
             "sources": {"pc": {}, "PC": {}},
         },
@@ -310,7 +310,7 @@ def test_case_collision_in_lower_layer_cannot_be_hidden(tmp_path: Path) -> None:
 
 
 def test_processing_error_is_saved_in_its_source_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import tkn_codex_chat_note.pipeline as pipeline
+    import tkn_genai_chat_note.pipeline as pipeline
 
     config = multi_config(tmp_path)
     source_chats(config)

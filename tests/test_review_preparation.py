@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from test_reviews import config_for, seed
 
-from tkn_codex_chat_note.review_evidence import period_evidence, raw_supplement
-from tkn_codex_chat_note.review_model import period_for
-from tkn_codex_chat_note.review_preparation import routine_index, tool_excerpt
+from tkn_genai_chat_note.review_evidence import period_evidence, raw_supplement
+from tkn_genai_chat_note.review_model import period_for
+from tkn_genai_chat_note.review_preparation import routine_index, tool_excerpt
 
 
 def event(text: str, kind: str = "tool_result") -> dict:

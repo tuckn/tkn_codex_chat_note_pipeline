@@ -127,7 +127,7 @@ def invoke_structured(
     if usage_observer:
         usage_observer({"type": "usage-start", **record})
     try:
-        with Runtime(profile, profile_name=getattr(config, "inference_options", {}).get("bridge_profile")) as runtime:
+        with Runtime(profile, profile_name=getattr(config, "inference_options", {}).get("genai_profile")) as runtime:
             request = GenerationRequest(prompt=prompt, output_schema=schema, schema_name="review_note")
             result = runtime.generate(request)
         update_usage(record, result.record)

@@ -9,10 +9,11 @@ import pytest
 from pydantic import ValidationError
 from tkn_genai_bridge.providers import litellm as bridge_backend
 
-from tkn_codex_chat_note import api_inference
-from tkn_codex_chat_note.api_inference import ApiClient, ApiError, strict_schema
-from tkn_codex_chat_note.api_settings import ApiLimits, AzureSettings
-from tkn_codex_chat_note.config import GenerationConfig
+from tkn_genai_chat_note import api_inference
+from tkn_genai_chat_note.api_inference import ApiClient, ApiError, strict_schema
+from tkn_genai_chat_note.api_settings import ApiLimits, AzureSettings
+from tkn_genai_chat_note.config import GenerationConfig
+from tkn_genai_chat_note.genai_profiles import GenAIProfileConfig
 
 AZURE = {
     "endpoint": "https://example.openai.azure.com/openai/v1/",
@@ -160,15 +161,12 @@ def test_azure_endpoint_credentials_and_untrusted_hosts_rejected(endpoint):
 def test_limits_and_provider_config_validate_offline():
     with pytest.raises(ValidationError):
         ApiLimits(input_tokens=60000, output_tokens=16000, context_tokens=65536)
-    cfg = GenerationConfig(
-        active_provider="azure-openai",
-        providers={"azure-openai": {"model": "example-model", "azure": AZURE, "limits": {}}},
-    )
-    assert cfg.profiles["azure-openai"].model == "example-model"
+    profile = GenAIProfileConfig.model_validate(
+        {"provider": "azure-openai", "model": "example-model", "azure": {"endpoint": AZURE["endpoint"]},
+         "limits": {}})
+    assert profile.model == "example-model" and profile.limits == ApiLimits()
     with pytest.raises(ValidationError):
-        GenerationConfig(
-            active_provider="azure-openai", providers={"azure-openai": {"model": "example"}}
-        )
+        GenAIProfileConfig.model_validate({"provider": "azure-openai", "model": "example"})
 
 
 def test_ollama_explicit_context_digest_and_usage(fake_http):
@@ -204,7 +202,7 @@ def test_ollama_explicit_context_digest_and_usage(fake_http):
 
 
 def test_complete_review_schema_transport_shape():
-    from tkn_codex_chat_note.review_model import ReviewDraft
+    from tkn_genai_chat_note.review_model import ReviewDraft
 
     schema = strict_schema(ReviewDraft.model_json_schema())
 
@@ -239,7 +237,7 @@ def test_all_citations_are_bound_once_in_transport_schema():
 
 
 def test_short_wire_ids_round_trip_without_rewriting_narrative(fake_http):
-    from tkn_codex_chat_note.api_inference import alias_prompt, remap_event_ids
+    from tkn_genai_chat_note.api_inference import alias_prompt, remap_event_ids
 
     calls, replies = fake_http
     identifier = "long-source-hash:L000001"
@@ -268,14 +266,13 @@ def test_schema_property_names_are_not_removed():
 def test_azure_dry_run_never_authenticates_or_writes(tmp_path, monkeypatch):
     from test_multi_sources import multi_config, source_chats
 
-    from tkn_codex_chat_note.pipeline import run_pipeline
+    from tkn_genai_chat_note.pipeline import run_pipeline
 
     cfg = multi_config(tmp_path)
     source_chats(cfg)
-    cfg.generation = GenerationConfig(
-        active_provider="azure-openai",
-        providers={"azure-openai": {"model": "example-model", "azure": AZURE, "limits": {}}},
-    )
+    cfg.genai_profiles = {"azure": GenAIProfileConfig.model_validate(
+        {"provider": "azure-openai", "model": "example-model", "azure": {"endpoint": AZURE["endpoint"]}})}
+    cfg.generation = GenerationConfig(genai_profile="azure")
     before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     with (patch.object(ApiClient, "invoke", side_effect=AssertionError("API invocation")),
           patch.object(bridge_backend, "azure_headers", side_effect=AssertionError("authentication"))):

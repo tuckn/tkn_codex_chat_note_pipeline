@@ -13,18 +13,18 @@ import pytest
 from archive_fixtures import ArchiveRun, adopt_legacy, later, tree, write_marker
 from chat_fixtures import write_chat
 
-from tkn_codex_chat_note.archive_reader import (
+from tkn_genai_chat_note.archive_reader import (
     ArchiveContent,
     ArchiveError,
     chat_source_inputs,
     load_archive_index,
 )
-from tkn_codex_chat_note.config import AppConfig
-from tkn_codex_chat_note.pipeline import run_pipeline
-from tkn_codex_chat_note.provenance import validate_provenance
-from tkn_codex_chat_note.raw_capture import RawCaptureError, ingest_raw_sources
-from tkn_codex_chat_note.runtime import PipelineError
-from tkn_codex_chat_note.storage_migration import migrate_storage
+from tkn_genai_chat_note.config import AppConfig
+from tkn_genai_chat_note.pipeline import run_pipeline
+from tkn_genai_chat_note.provenance import validate_provenance
+from tkn_genai_chat_note.raw_capture import RawCaptureError, ingest_raw_sources
+from tkn_genai_chat_note.runtime import PipelineError
+from tkn_genai_chat_note.storage_migration import migrate_storage
 
 SOURCE = "windows"
 
@@ -41,7 +41,7 @@ def config_for(tmp_path: Path, **settings: Any) -> AppConfig:
             }
         },
         cache_root=tmp_path / "cache",
-        generation={"profiles": {"codex": {"provider": "codex", "model": "test"}}},
+        genai_profiles={"codex": {"provider": "codex", "model": "test"}}, generation={"genai_profile": "codex"},
     )
 
 
@@ -176,11 +176,11 @@ def test_dry_run_decodes_outside_every_configured_root(tmp_path: Path) -> None:
     assert not config.data_root.exists() and not config.state_root.exists() and not config.cache_root.exists()
 
 
-def test_scheduled_run_reads_archive_and_builds_due_review(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from test_review_sources import response
-
-    import tkn_codex_chat_note.reviews as reviews
-    from tkn_codex_chat_note.review_generation import ReviewGenerator
+def test_scheduled_run_reads_archive_without_generating_reviews(tmp_path: Path,
+                                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    import tkn_genai_chat_note.reviews as reviews
+    from tkn_genai_chat_note.pipeline import run_scheduled
+    from tkn_genai_chat_note.review_generation import ReviewGenerator
 
     config = config_for(tmp_path, reviews={"start_date": date(2026, 5, 18)})
     write_marker(config.raw_root, SOURCE)
@@ -189,18 +189,18 @@ def test_scheduled_run_reads_archive_and_builds_due_review(tmp_path: Path, monke
                                                  started_at="2026-05-19T00:00:00Z"), encoding="zstd")
     run.commit()
     before = tree(config.raw_root)
-    original = ReviewGenerator.__init__
 
-    def fake(self: ReviewGenerator, *args: Any, **kwargs: Any) -> None:
-        original(self, *args, **{**kwargs, "generate": response})
+    def forbidden(*_: Any, **__: Any) -> None:
+        raise AssertionError("scheduled-run must not generate reviews")
 
-    monkeypatch.setattr(ReviewGenerator, "__init__", fake)
+    monkeypatch.setattr(ReviewGenerator, "__init__", forbidden)
     monkeypatch.setattr(reviews, "review_today", lambda _: date(2026, 5, 25))
 
-    result = reviews.run_scheduled(config)
+    result = run_scheduled(config)
 
-    assert result["ok"] and result["capture"]["normalizedThreadCount"] == 1, result
-    assert result["reviews"]["generatedCount"] == 1
+    assert result["ok"] and result["normalizedThreadCount"] == 1, result
+    assert result["reviewsScheduled"] is False and "reviews" not in result
+    assert not config.review_data_root.exists()
     assert tree(config.raw_root) == before
 
 

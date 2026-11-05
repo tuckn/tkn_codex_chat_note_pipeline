@@ -1,11 +1,11 @@
-# Register a daily CLI trigger; the CLI decides which calendar reviews are due.
+# Register a daily `scheduled-run` trigger; the CLI decides what to process.
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)][string]$CliPath,
     [Parameter(Mandatory)][string]$ConfigPath,
     [Parameter(Mandatory)][string]$WorkingDirectory,
     [ValidatePattern('^([01][0-9]|2[0-3]):[0-5][0-9]$')][string]$At = '03:00',
-    [string]$TaskName = 'TknCodexChatReviews'
+    [string]$TaskName = 'TknGenAIChatNote'
 )
 $ErrorActionPreference = 'Stop'
 $resolvedCli = (Resolve-Path -LiteralPath $CliPath).Path
@@ -25,6 +25,6 @@ $action = New-ScheduledTaskAction -Execute $resolvedCli -Argument $taskArguments
 $trigger = New-ScheduledTaskTrigger -Daily -At $triggerTime
 $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 12)
-if ($PSCmdlet.ShouldProcess($TaskName, "Register daily review task at $At; $resolvedCli $taskArguments")) {
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Preserve Codex Raw and generate closed weekly, monthly and yearly reviews.'
+if ($PSCmdlet.ShouldProcess($TaskName, "Register daily task at $At; $resolvedCli $taskArguments")) {
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Run tkn-genai-chat-note scheduled-run once a day.'
 }

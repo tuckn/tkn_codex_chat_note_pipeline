@@ -8,12 +8,12 @@ from typing import Any
 import pytest
 from chat_fixtures import write_chat
 
-from tkn_codex_chat_note.catalog import thread_key
-from tkn_codex_chat_note.config import AppConfig
-from tkn_codex_chat_note.pipeline import pipeline_status, run_pipeline
-from tkn_codex_chat_note.provenance import validate_provenance
-from tkn_codex_chat_note.runtime import PipelineError
-from tkn_codex_chat_note.storage import pipeline_storage
+from tkn_genai_chat_note.catalog import thread_key
+from tkn_genai_chat_note.config import AppConfig
+from tkn_genai_chat_note.pipeline import pipeline_status, run_pipeline
+from tkn_genai_chat_note.provenance import validate_provenance
+from tkn_genai_chat_note.runtime import PipelineError
+from tkn_genai_chat_note.storage import pipeline_storage
 
 
 def config_for(tmp_path: Path) -> AppConfig:
@@ -241,8 +241,8 @@ def test_corrupted_raw_is_repaired_from_available_original(tmp_path: Path) -> No
 def test_changing_optional_app_metadata_does_not_stop_ingestion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import tkn_codex_chat_note.catalog as catalog
-    from tkn_codex_chat_note.raw_capture import RawCaptureError
+    import tkn_genai_chat_note.catalog as catalog
+    from tkn_genai_chat_note.raw_capture import RawCaptureError
 
     config = config_for(tmp_path)
     app_state(config, projects={}, assignments={}, projectless=[])
@@ -399,7 +399,7 @@ def test_branch_append_updates_canonical_and_archived_alias_preserves_identity(t
 
 @pytest.mark.parametrize("trigger_turn", [True, False])
 def test_agent_communication_metadata_is_control_data_retained_in_raw(tmp_path: Path, trigger_turn: bool) -> None:
-    from tkn_codex_chat_note.chat_logs import read_thread_source
+    from tkn_genai_chat_note.chat_logs import read_thread_source
 
     config = config_for(tmp_path)
     original = config.sessions_root / "one.jsonl"

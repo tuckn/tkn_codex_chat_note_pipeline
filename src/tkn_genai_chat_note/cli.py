@@ -1,4 +1,4 @@
-"""Command-line interface for Tkn Codex Chat Note Pipeline."""
+"""Command-line interface for Tkn GenAI Chat Note Pipeline."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from .console_logging import ColorFormatter, ConsoleFilter, log_success, support
 from .output import emit, public_result, with_target_paths
 from .runtime import PipelineError
 
-LOGGER = logging.getLogger("tkn_codex_chat_note")
+LOGGER = logging.getLogger("tkn_genai_chat_note")
 _NamespaceT = TypeVar("_NamespaceT")
 
 
@@ -40,11 +40,12 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
                         help="Include every item in the final result (text or --json)")
     parser.add_argument("--config", type=Path, help="Explicit YAML config path")
     selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("--profile", help="Named generation profile (generation.active_profile)")
+    selection.add_argument("--profile",
+                           help="GenAI profile name under genai_profiles (default: generation.genai_profile)")
     selection.add_argument(
         "--provider",
         choices=("codex", "claude-code", "github-copilot", "antigravity", "ollama", "azure-openai"),
-        help="Compatibility selector: requires a unique profile for this provider; prefer --profile",
+        help="Compatibility selector: requires a unique genai_profiles entry for this provider; prefer --profile",
     )
     parser.add_argument("--source", help="Select one enabled source_id from sources")
     parser.add_argument("--model")
@@ -114,8 +115,9 @@ class _CommandParser(argparse.ArgumentParser):
 def build_parser() -> argparse.ArgumentParser:
     parser = _CommandParser(
         runtime_defaults=True,
-        prog="tkn-codex-chat-note",
-        description="Preserve Codex Raw, normalize events, and generate weekly, monthly and yearly reviews.",
+        prog="tkn-genai-chat-note",
+        description="Read archived Codex and Claude Code chats and prepare proposals for existing notes. "
+                    "Calendar reviews remain as manual commands.",
         epilog="Results: key=value on stdout, or --json. Progress/diagnostics: stderr. "
                "Exit codes: 0 success, 1 failure, 2 arguments/incomplete, 130 interrupted.",
     )
@@ -130,6 +132,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="List effective values and their sources",
         description="Read-only configuration listing as key=value lines; does not write files.",
     )
+    migrate_config = sub.add_parser(
+        "migrate",
+        help="Convert a schema-9 config, or the previous location's config, into this version's file",
+        description="Reads the old configuration (and the shared Bridge configuration it references) once, "
+                    "never modifies them, and writes --config or the default user config path.",
+    )
+    migrate_config.add_argument("--from-config", type=Path,
+                                help="Old configuration (default: the previous application's user config)")
+    migrate_config.add_argument("--bridge-config", type=Path,
+                                help="Shared Bridge configuration referenced by bridge_profile entries")
+    migrate_config.add_argument("--dry-run", action="store_true", help="Show the converted file without writing")
+    migrate_config.add_argument("--force", action="store_true", help="Back up and replace an existing target")
     for name, help_text in (
         ("clone", "Initialize and process all available history; resume safely when repeated"),
         ("pull", "Capture new/changed logs and refresh canonical events without inference"),
@@ -138,10 +152,23 @@ def build_parser() -> argparse.ArgumentParser:
             name, help=help_text, description=help_text + ". Writes by default; no inference."
         )
         command.add_argument("--dry-run", action="store_true", help="Inspect without writes or inference")
+    actions = commands.add_parser("actions", help="Match conversations with Action notes (stage 0: dry run only)")
+    action_sub = actions.add_subparsers(dest="actions_command", required=True)
+    link = action_sub.add_parser(
+        "link",
+        help="Match recent conversations to Action notes with clues A-D; write a report, never the Vault",
+        description="Reads tkn-genai-chat-archiver archives and the Vault's Action notes. With --dry-run it "
+                    "writes only its report under processes.state_root and the digest cache under "
+                    "processes.data_root. It never writes the Vault and never calls generative AI.",
+    )
+    link.add_argument("--dry-run", action="store_true", help="Required in this version: report only")
+    link.add_argument("--days", type=int, help="Days back from --as-of (default: processes.actions.lookback_days)")
+    link.add_argument("--as-of", type=date.fromisoformat, help="Last local date of the window (default: today)")
     usage_report = commands.add_parser("build-report", help="Build an offline token usage and reference-cost report")
     usage_report.add_argument("--dry-run", action="store_true", help="Aggregate without writing or opening")
     usage_report.add_argument("--no-open", action="store_true", help="Write the report without opening a browser")
-    scheduled = commands.add_parser("scheduled-run", help="Capture Raw and build reviews when calendar periods close")
+    scheduled = commands.add_parser(
+        "scheduled-run", help="Daily unattended run: capture and normalize without inference (no reviews)")
     scheduled.add_argument("--dry-run", action="store_true", help="Plan without writes or inference")
     reviews = commands.add_parser("review-notes", help="Build source-cited weekly, monthly and yearly reviews")
     review_sub = reviews.add_subparsers(dest="review_command", required=True)
@@ -263,6 +290,19 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
                 LOGGER.info("Configuration backup: %s", report["backupPath"])
             save({"command": "config init", **report})
             return 0
+        if args.config_command == "migrate":
+            if _overrides(args):
+                raise PipelineError("runtime configuration options cannot be used with config migrate")
+            from .config_migration import migrate_config
+
+            report = migrate_config(from_config=args.from_config, target=args.config,
+                                    bridge_config=args.bridge_config, dry_run=args.dry_run, force=args.force)
+            for note in report.get("notes", []):
+                LOGGER.info("%s", note)
+            if report["status"] in {"created", "replaced"}:
+                log_success(LOGGER, "Configuration %s: %s", report["status"], report["configPath"])
+            save({"command": "config migrate", **report})
+            return 0
         LOGGER.info("Showing resolved configuration")
         resolution = resolve_app_config(
             explicit_path=args.config,
@@ -273,11 +313,12 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
             "command": "config list",
             "config": config_document(resolved),
             "generationResolved": {
-                "profile": resolved.generation.active_profile,
+                "profile": resolved.generation.genai_profile,
                 "provider": resolved.provider,
                 "model": resolved.model,
                 "reasoningEffort": resolved.reasoning_effort,
-                "inferenceOptions": resolved.active_provider_config.inference_options(),
+                "inferenceOptions": resolved.active_provider_config.inference_options(
+                    resolved.generation.genai_profile),
             },
             "storage": {
                 "layoutVersion": 5,
@@ -303,7 +344,7 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
         save(report)
         return 0
 
-    from .pipeline import pipeline_status, run_pipeline
+    from .pipeline import pipeline_status, run_pipeline, run_scheduled
 
     config = load_app_config(explicit_path=args.config, overrides=_overrides(args))
     targets["sources"] = {
@@ -314,20 +355,17 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
     if args.source is not None:
         selected = config.enabled_source_configs(args.source)
         config = selected[0]
-    if args.command in {"review-notes", "scheduled-run"}:
-        from .reviews import run_reviews, run_scheduled, validate_review
+    if args.command == "review-notes":
+        from .reviews import run_reviews, validate_review
 
-        if args.command == "review-notes" and args.review_command == "validate":
+        if args.review_command == "validate":
             save(validate_review(args.artifact.expanduser().absolute()))
             return 0
-        if args.command == "scheduled-run":
-            result = run_scheduled(config, dry_run=args.dry_run, config_path=args.config)
-        else:
-            result = run_reviews(config, kind=getattr(args, "period", None), day=getattr(args, "date", None),
-                                 as_of=getattr(args, "as_of", None), dry_run=args.dry_run,
-                                 force=args.force, allow_edited=args.allow_edited)
+        result = run_reviews(config, kind=getattr(args, "period", None), day=getattr(args, "date", None),
+                             as_of=getattr(args, "as_of", None), dry_run=args.dry_run,
+                             force=args.force, allow_edited=args.allow_edited)
         save(result)
-        review_result = result.get("reviews", result)
+        review_result = result
         LOGGER.info("Review notes: generated %s; rendered %s; planned %s; skipped empty %s; "
                     "model calls %s; cache hits %s",
                     review_result.get("generatedCount", 0), review_result.get("renderedCount", 0),
@@ -337,18 +375,6 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
             LOGGER.info("Run report: %s", review_result["reportPath"])
         for path in review_result.get("reportPaths", []):
             LOGGER.info("Run report: %s", path)
-        # Review errors are logged at detection. Capture reports need their own
-        # diagnostic because scheduled capture runs without a progress callback.
-        for source_result in result.get("sourceResults", [result]):
-            capture = source_result.get("capture", {})
-            for path in capture.get("reportPaths", []):
-                LOGGER.info("capture report: %s", path)
-            if capture.get("reportPath"):
-                LOGGER.info("capture report: %s", capture["reportPath"])
-            if capture and not capture["ok"]:
-                LOGGER.error("Source %s: capture/normalization failed; reviews were not started for this "
-                             "source; inspect the capture report",
-                             capture.get("sourceId", "unknown"))
         if not result["complete"] and review_result.get("pendingPeriods", 0):
             LOGGER.warning("Review generation incomplete; %s pending periods. "
                            "Rerun the same command to resume. Exit code: %s",
@@ -362,6 +388,19 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
         elif result["ok"] and not args.dry_run:
             LOGGER.info("Review generation complete; no pending periods")
         return 1 if not result["ok"] else 0 if result["complete"] else 2
+    if args.command == "actions":
+        from .action_links import link_actions
+
+        if args.days is not None and args.days < 1:
+            raise PipelineError("--days must be 1 or more")
+        LOGGER.info("Matching conversations with Action notes (no Vault writes, no generative AI)")
+        result = link_actions(config, dry_run=args.dry_run, as_of=args.as_of, days=args.days)
+        save(result)
+        decisions = result["decisions"]
+        log_success(LOGGER, "actions link: %s conversations; linked %s, ambiguous %s, unlinked %s",
+                    result["conversationCount"], decisions["linked"], decisions["ambiguous"], decisions["unlinked"])
+        LOGGER.info("Report: %s", result["reportPath"])
+        return 0
     if args.command == "build-report":
         from .usage_report import build_usage_report
 
@@ -395,8 +434,11 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
         save(pipeline_status(config))
         return 0
     LOGGER.info("%s %s", "Planning" if args.dry_run else "Starting", args.command)
-    report = run_pipeline(config, mode=args.command, dry_run=args.dry_run,
-                          config_path=args.config, progress=_progress)
+    if args.command == "scheduled-run":
+        report = run_scheduled(config, dry_run=args.dry_run, config_path=args.config, progress=_progress)
+    else:
+        report = run_pipeline(config, mode=args.command, dry_run=args.dry_run,
+                              config_path=args.config, progress=_progress)
     for report_path in report.get("reportPaths", []):
         LOGGER.info("Run report: %s", report_path)
     if report.get("reportPath"):
@@ -417,7 +459,7 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
         LOGGER.error("%s; inspect the saved report for failures", summary)
         return 1
     if (report.get("generationStop") or not report["ok"]
-        or (not args.dry_run and args.command in {"clone", "pull"} and not report["complete"])):
+        or (not args.dry_run and args.command in {"clone", "pull", "scheduled-run"} and not report["complete"])):
         LOGGER.warning("%s; incomplete, next pull resumes pending work", summary)
         return 2
     log_success(LOGGER, "%s; %s", summary, "plan validated (no report saved)" if args.dry_run else "completed")
@@ -425,7 +467,8 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
 
 
 def _command_name(args: argparse.Namespace) -> str:
-    keys = ("command", "config_command", "review_command", "storage_command", "provenance_command", "raw_command")
+    keys = ("command", "config_command", "actions_command", "review_command", "storage_command",
+            "provenance_command", "raw_command")
     return " ".join(str(getattr(args, key)) for key in keys if getattr(args, key, None))
 
 
@@ -444,7 +487,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(argv)
         json_output = bool(args.json)
         _configure_logging(args)
-        targets["configPaths"] = [str(Path.home() / ".tkn/codex_chat_note_pipeline/config.yaml"),
+        targets["configPaths"] = [str(Path.home() / ".tkn/genai_chat_note_pipeline/config.yaml"),
                                   str(Path.cwd() / ".tkn/config.yaml")]
         for key in ("config", "artifact", "from_config"):
             path = getattr(args, key, None)

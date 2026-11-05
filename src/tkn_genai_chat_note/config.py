@@ -14,12 +14,13 @@ from typing import Annotated, Any, Literal, Self
 
 import yaml
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from tkn_genai_bridge import TokenPricing
+from tkn_genai_bridge.models import PROVIDER_NAMES
 
-from .api_settings import ApiLimits, AzurePricing, AzureSettings, normalize_azure_generation
-from .bridge_settings import BridgeProfileConfig
 from .config_validation import validate_config_layer
-from .inference import InferenceProvider, validate_ollama_base_url
-from .report_settings import UsageReportSettings
+from .genai_profiles import GenAIProfileConfig, default_genai_profiles
+from .process_settings import ArchiveSettings, ProcessSettings, VaultSettings
+from .report_settings import GenAIPriceScenario, UsageReportSettings
 from .review_settings import ReviewSettings
 from .runtime import (
     DEFAULT_MODEL_TIMEOUT_SECONDS,
@@ -30,12 +31,14 @@ from .runtime import (
     atomic_write_text,
 )
 
-CONFIG_SCHEMA_VERSION: Literal["9.0.0"] = "9.0.0"
-_CONFIG_SCHEMA_VERSION_PARTS = (9, 0, 0)
+CONFIG_SCHEMA_VERSION: Literal["10.0.0"] = "10.0.0"
+_CONFIG_SCHEMA_VERSION_PARTS = (10, 0, 0)
 _CONFIG_SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
-APP_DIRECTORY_NAME = "codex_chat_note_pipeline"
+APP_DIRECTORY_NAME = "genai_chat_note_pipeline"
+# 0.47.0 and earlier were named tkn_codex_chat_note_pipeline. Their configuration and
+# default storage live under this directory until the user moves them.
+LEGACY_APP_DIRECTORY_NAME = "codex_chat_note_pipeline"
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
-ReasoningEffort = Literal["low", "medium", "high", "xhigh", "max", "ultra"]
 LEGACY_GENERATION_KEYS = frozenset(
     {
         "provider",
@@ -47,13 +50,11 @@ LEGACY_GENERATION_KEYS = frozenset(
         "ollama_base_url",
     }
 )
-PROVIDER_TRANSPORT_DEFAULTS: dict[InferenceProvider, tuple[str, str]] = {
-    "codex": ("executable", "codex"),
-    "claude-code": ("executable", "claude"),
-    "github-copilot": ("executable", "copilot"),
-    "antigravity": ("executable", "agy"),
-    "ollama": ("endpoint", "http://127.0.0.1:11434"),
-    "azure-openai": ("endpoint", ""),
+# Command-line selectors of the review generation connection.
+TRANSPORT_OPTIONS = {
+    "codex_executable": "codex",
+    "claude_executable": "claude-code",
+    "copilot_executable": "github-copilot",
 }
 
 
@@ -72,165 +73,26 @@ def default_app_root() -> Path:
     return Path.home() / ".tkn" / APP_DIRECTORY_NAME
 
 
+def legacy_app_root() -> Path:
+    return Path.home() / ".tkn" / LEGACY_APP_DIRECTORY_NAME
+
+
+def legacy_global_config_path() -> Path:
+    return legacy_app_root() / "config.yaml"
+
+
 def default_user_cache_root() -> Path:
     configured = os.getenv("XDG_CACHE_HOME")
     base = Path(configured).expanduser() if configured else Path.home() / ".cache"
     return base / APP_DIRECTORY_NAME
 
 
-class AuthenticationSettings(BaseModel):
-    """Optional browser authentication account selection; never credentials."""
-
-    model_config = ConfigDict(extra="forbid")
-    tenant_id: str | None = None
-
-    @field_validator("tenant_id")
-    @classmethod
-    def tenant_guid(cls, value: str | None) -> str | None:
-        return AzureSettings.guid(value)
-
-
-def normalize_generation(value: Any) -> Any:
-    """Normalize old provider-keyed layers before merging; never rewrite input files."""
-    if not isinstance(value, dict):
-        return value
-    result = normalize_azure_generation(value)
-    if {"active_provider", "providers"}.intersection(result) and {"active_profile", "profiles"}.intersection(result):
-        raise ValueError("generation cannot contain both legacy provider keys and named profile keys")
-    if "active_provider" in result:
-        result["active_profile"] = result.pop("active_provider")
-    if "providers" in result:
-        entries = result.pop("providers")
-        if not isinstance(entries, dict):
-            raise ValueError("generation.providers must be a mapping")
-        for name, settings in entries.items():
-            if name not in PROVIDER_TRANSPORT_DEFAULTS:
-                raise ValueError(f"unsupported legacy inference provider: {name}")
-            if not isinstance(settings, dict):
-                continue
-            if "provider" in settings:
-                raise ValueError("legacy providers entries cannot override their provider identity")
-            settings["provider"] = name
-            if "base_url" in settings:
-                if "endpoint" in settings:
-                    raise ValueError("cannot contain both base_url and endpoint")
-                settings["endpoint"] = settings.pop("base_url")
-            if "azure" in settings:
-                azure = settings.pop("azure")
-                if not isinstance(azure, dict):
-                    raise ValueError("legacy azure must be a mapping")
-                tenant = azure.pop("tenant_id", None)
-                if tenant is not None:
-                    azure["authentication"] = {"tenant_id": tenant}
-                if set(azure).intersection(settings):
-                    raise ValueError("conflicting legacy azure and profile settings")
-                settings.update(azure)
-        result["profiles"] = entries
-    return result
-
-
-class ProviderConfig(BaseModel):
-    """One named generation profile with an explicit transport provider."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    provider: InferenceProvider
-    model: str
-    reasoning_effort: ReasoningEffort = "high"
-    executable: str | None = None
-    endpoint: str | None = None
-    authentication: AuthenticationSettings | None = None
-    pricing: dict[str, AzurePricing] = Field(default_factory=dict)
-    limits: ApiLimits | None = None
-    model_digest: str | None = None
-
-    @field_validator("model")
-    @classmethod
-    def require_model(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("model must not be empty")
-        return value.strip()
-
-    @field_validator("executable")
-    @classmethod
-    def require_executable(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not value.strip():
-            raise ValueError("provider executable must not be empty")
-        return value.strip()
-
-    @model_validator(mode="after")
-    def validate_transport(self) -> Self:
-        if self.provider == "azure-openai":
-            if self.endpoint is None:
-                raise ValueError("azure-openai requires endpoint")
-            if self.executable is not None or self.model_digest is not None:
-                raise ValueError("azure-openai does not support executable/model_digest")
-            self.endpoint = AzureSettings.endpoint_url(self.endpoint)
-            if self.limits is None:
-                self.limits = ApiLimits()
-        else:
-            if self.authentication is not None or self.pricing:
-                raise ValueError("authentication/pricing require azure-openai provider")
-            if self.provider == "ollama":
-                if self.executable is not None:
-                    raise ValueError("ollama does not support executable")
-                self.endpoint = validate_ollama_base_url(
-                    self.endpoint if self.endpoint is not None else "http://127.0.0.1:11434")
-            else:
-                if self.endpoint is not None or self.limits is not None or self.model_digest is not None:
-                    raise ValueError("endpoint/limits/model_digest are only supported for API providers")
-                if self.executable is None:
-                    self.executable = PROVIDER_TRANSPORT_DEFAULTS[self.provider][1]
-        return self
-
-    @property
-    def azure(self) -> AzureSettings | None:
-        # Preserve the internal API/cache contract across this configuration-only migration.
-        if self.provider != "azure-openai":
-            return None
-        assert self.endpoint is not None
-        return AzureSettings(endpoint=self.endpoint, pricing=self.pricing,
-                             tenant_id=self.authentication.tenant_id if self.authentication else None)
-
-    def inference_options(self) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        if self.provider == "antigravity":
-            result["cli_executable"] = self.executable
-        if self.azure is not None:
-            result["azure"] = self.azure.model_dump(mode="json")
-        if self.limits is not None:
-            result["limits"] = self.limits.model_dump(mode="json")
-        if self.model_digest is not None:
-            result["model_digest"] = self.model_digest
-        return result
-
-
-def _default_profiles() -> dict[str, BridgeProfileConfig | ProviderConfig]:
-    return {"codex": BridgeProfileConfig(bridge_profile="codex-default")}
-
-
 class GenerationConfig(BaseModel):
-    """Named execution profiles for calendar reviews."""
+    """Select the genai_profiles entry used by calendar review generation."""
 
     model_config = ConfigDict(extra="forbid")
 
-    active_profile: str = "codex"
-    profiles: dict[str, BridgeProfileConfig | ProviderConfig] = Field(default_factory=_default_profiles)
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_legacy(cls, value: Any) -> Any:
-        return normalize_generation(value)
-
-    @model_validator(mode="after")
-    def validate_profiles(self) -> Self:
-        if any(not name.strip() or name != name.strip() for name in self.profiles):
-            raise ValueError("profile names must be nonempty with no surrounding whitespace")
-        if self.active_profile not in self.profiles:
-            raise ValueError(f"active_profile {self.active_profile!r} must have a matching entry under profiles")
-        return self
+    genai_profile: str = Field(default="codex-default", min_length=1)
 
 
 def validate_source_id(value: str) -> str:
@@ -275,14 +137,21 @@ class AppConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["9.0.0"] = CONFIG_SCHEMA_VERSION
+    schema_version: Literal["10.0.0"] = CONFIG_SCHEMA_VERSION
     sources: dict[SourceId, CodexSourceConfig] = Field(default_factory=lambda: {DEFAULT_SOURCE_ID: CodexSourceConfig()})
     cache_root: Path = Field(default_factory=default_user_cache_root)
     report_path: Path = Field(default_factory=lambda: default_app_root() / "reports")
     usage_report: UsageReportSettings = Field(default_factory=UsageReportSettings)
+    genai_profiles: dict[str, GenAIProfileConfig] = Field(default_factory=default_genai_profiles)
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     runtime_minutes: int = Field(default=DEFAULT_RUNTIME_MINUTES, gt=0)
     model_timeout_seconds: int = Field(default=DEFAULT_MODEL_TIMEOUT_SECONDS, gt=0)
+    # Note processes (role redesign): tkn-genai-chat-archiver archives, the Vault and work folders.
+    archives: dict[SourceId, ArchiveSettings] = Field(default_factory=dict)
+    utc_offset_minutes: int = Field(default=540, ge=-720, le=840)
+    path_aliases: list[list[str]] = Field(default_factory=list)
+    processes: ProcessSettings = Field(default_factory=ProcessSettings)
+    vault: VaultSettings = Field(default_factory=VaultSettings)
 
     _selected_source: str | None = PrivateAttr(default=None)
 
@@ -291,6 +160,39 @@ class AppConfig(BaseModel):
         if len({name.casefold() for name in self.sources}) != len(self.sources):
             raise ValueError("source_id keys must be unique ignoring case")
         return self
+
+    @model_validator(mode="after")
+    def path_alias_groups(self) -> Self:
+        if any(len(group) < 2 or any(not item.strip() for item in group) for group in self.path_aliases):
+            raise ValueError("each path_aliases entry must list two or more nonempty folder prefixes")
+        return self
+
+    @model_validator(mode="after")
+    def resolve_genai_references(self) -> Self:
+        if any(not name.strip() or name != name.strip() for name in self.genai_profiles):
+            raise ValueError("genai_profiles names must be nonempty with no surrounding whitespace")
+        if self.generation.genai_profile not in self.genai_profiles:
+            raise ValueError(f"generation.genai_profile {self.generation.genai_profile!r} "
+                             "must name an entry under genai_profiles")
+        for name, scenario in self.usage_report.price_scenarios.items():
+            if not isinstance(scenario, GenAIPriceScenario):
+                continue
+            profile = self.genai_profiles.get(scenario.genai_profile)
+            if profile is None:
+                raise ValueError(f"usage_report.price_scenarios.{name}.genai_profile "
+                                 f"{scenario.genai_profile!r} is not defined under genai_profiles")
+            if scenario.model not in profile.bridge.pricing:
+                raise ValueError(f"genai_profiles.{scenario.genai_profile} has no pricing for {scenario.model!r} "
+                                 f"(usage_report.price_scenarios.{name})")
+        return self
+
+    def price_scenario_pricing(self) -> dict[str, TokenPricing]:
+        """Reference prices by scenario name; named profiles supply their confirmed rates."""
+        return {
+            name: (self.genai_profiles[scenario.genai_profile].bridge.pricing[scenario.model]
+                   if isinstance(scenario, GenAIPriceScenario) else scenario)
+            for name, scenario in self.usage_report.price_scenarios.items()
+        }
 
     def for_source(self, source_id: str) -> Self:
         if source_id not in self.sources:
@@ -418,12 +320,12 @@ class AppConfig(BaseModel):
         return self.source_state_root / "reports"
 
     @property
-    def provider(self) -> InferenceProvider:
+    def provider(self) -> str:
         return self.active_provider_config.provider
 
     @property
-    def active_provider_config(self) -> ProviderConfig | BridgeProfileConfig:
-        return self.generation.profiles[self.generation.active_profile]
+    def active_provider_config(self) -> GenAIProfileConfig:
+        return self.genai_profiles[self.generation.genai_profile]
 
     @property
     def model(self) -> str:
@@ -433,7 +335,7 @@ class AppConfig(BaseModel):
     def reasoning_effort(self) -> str:
         return self.active_provider_config.reasoning_effort
 
-    def _provider_executable(self, provider: InferenceProvider, default: str) -> str:
+    def _provider_executable(self, provider: str, default: str) -> str:
         settings = self.active_provider_config if self.provider == provider else None
         return settings.executable if settings is not None and settings.executable is not None else default
 
@@ -471,12 +373,12 @@ class AppConfig(BaseModel):
     def inference_config(self) -> InferenceConfig:
         return InferenceConfig(
             provider=self.provider,
-            generation_profile=self.generation.active_profile,
+            generation_profile=self.generation.genai_profile,
             codex_bin=self.codex_executable,
             claude_bin=self.claude_executable,
             copilot_bin=self.copilot_executable,
             ollama_base_url=self.ollama_base_url,
-            inference_options=self.active_provider_config.inference_options(),
+            inference_options=self.active_provider_config.inference_options(self.generation.genai_profile),
             model=self.model,
             reasoning_effort=self.reasoning_effort,
             runtime_minutes=self.runtime_minutes,
@@ -541,15 +443,12 @@ def _mark_sources(sources: dict[str, str], value: dict[str, Any], label: str) ->
 def _deep_merge(target: dict[str, Any], update: dict[str, Any]) -> None:
     for key, value in update.items():
         current = target.get(key)
-        if (key == "profiles" and isinstance(value, dict) and isinstance(current, dict)):
+        if key == "genai_profiles" and isinstance(value, dict) and isinstance(current, dict):
+            # Profiles merge by name; a different provider replaces the whole connection.
             for name, settings in value.items():
                 previous = current.get(name)
                 if (isinstance(settings, dict) and isinstance(previous, dict)
-                        and (("provider" in settings and settings["provider"] != previous.get("provider"))
-                             or ("bridge_profile" in settings and "bridge_profile" not in previous)
-                             or ("provider" in settings and "bridge_profile" in previous))):
-                    current[name] = deepcopy(settings)
-                elif isinstance(settings, dict) and isinstance(previous, dict):
+                        and settings.get("provider", previous.get("provider")) == previous.get("provider")):
                     _deep_merge(previous, settings)
                 else:
                     current[name] = deepcopy(settings)
@@ -561,24 +460,8 @@ def _deep_merge(target: dict[str, Any], update: dict[str, Any]) -> None:
             target[key] = value
 
 
-def _without_null_provider_settings(value: dict[str, Any]) -> dict[str, Any]:
-    generation = value.get("generation")
-    providers = generation.get("profiles") if isinstance(generation, dict) else None
-    if isinstance(providers, dict):
-        for settings in providers.values():
-            if isinstance(settings, dict):
-                for key in tuple(settings):
-                    if settings[key] is None:
-                        settings.pop(key)
-    return value
-
-
 def _default_config_document() -> dict[str, Any]:
-    # Resolve shared references only after application layers have selected them.
-    reference = BridgeProfileConfig.model_construct(bridge_profile="codex-default")
-    defaults = AppConfig(generation=GenerationConfig.model_construct(profiles={"codex": reference}))
-    document = _without_null_provider_settings(defaults.model_dump(mode="python", by_alias=True))
-    document["generation"]["profiles"] = {"codex": {"bridge_profile": "codex-default"}}
+    document = AppConfig().model_dump(mode="python", by_alias=True)
     # Defer source defaults until validation: an explicit map must not acquire a
     # hidden built-in source. Later layers merge declared sources by stable ID.
     document.pop("sources")
@@ -593,8 +476,8 @@ def _reject_legacy_generation_config(value: dict[str, Any], path: Path) -> None:
         detail = f"; retired keys: {', '.join(legacy_keys)}" if legacy_keys else ""
         raise PipelineError(
             f"configuration schema v1 is no longer supported: {path}{detail}; "
-            f'set schema_version: "{CONFIG_SCHEMA_VERSION}" and move generation settings under '
-            "generation.active_profile and generation.profiles"
+            f'set schema_version: "{CONFIG_SCHEMA_VERSION}", define connections under genai_profiles '
+            "and select one with generation.genai_profile"
         )
 
 
@@ -630,15 +513,24 @@ def _inspect_config_schema(value: dict[str, Any], path: Path) -> dict[str, Any]:
     major, minor, _patch = parts
     if major in {7, 8}:
         raise PipelineError(
-            "configuration requires schema 9: move reviews settings under sources.<id>.reviews; "
+            "configuration requires schema 9 first: move reviews settings under sources.<id>.reviews; "
             "review data/state now use each source root's reviews subdirectory; remove "
             "generation.session_note_profile, idle_minutes, installed_at and reviews.session_note_limit. "
-            "Preserve source IDs and raw/data/state roots. Existing artifacts are not deleted."
+            "Preserve source IDs and raw/data/state roots. Existing artifacts are not deleted. "
+            f"Then convert schema 9 to {CONFIG_SCHEMA_VERSION} with `config migrate --dry-run`."
+        )
+    if major == 9:
+        raise PipelineError(
+            f"configuration schema {raw_version} reads the shared tkn_genai_bridge configuration, which is no "
+            f"longer used: {path}; schema {CONFIG_SCHEMA_VERSION} defines connections in this file under "
+            "genai_profiles and selects one with generation.genai_profile. Run "
+            "`tkn-genai-chat-note config migrate --dry-run` to preview a converted file; the old configuration "
+            "and data are not modified"
         )
     if major != current_major:
         direction = "newer" if major > current_major else "older"
         action = (
-            "upgrade tkn-codex-chat-note"
+            "upgrade tkn-genai-chat-note"
             if major > current_major
             else "migrate the configuration explicitly; no migration path is available"
         )
@@ -651,7 +543,7 @@ def _inspect_config_schema(value: dict[str, Any], path: Path) -> dict[str, Any]:
         raise PipelineError(
             f"unsupported newer configuration schema_version {raw_version!r}: {path}; "
             f"this application supports schema versions through {CONFIG_SCHEMA_VERSION}; "
-            "upgrade tkn-codex-chat-note"
+            "upgrade tkn-genai-chat-note"
         )
     migration: dict[str, Any] | None = None
     if minor < current_minor:
@@ -690,6 +582,27 @@ def _resolve_paths(value: dict[str, Any], base: Path) -> dict[str, Any]:
     for key in ("raw_root", "data_root", "state_root", "cache_root", "report_path"):
         if result.get(key) is not None:
             result[key] = resolve(result[key])
+    for section, keys in (("processes", ("data_root", "state_root")), ("vault", ("root",))):
+        settings = result.get(section)
+        if isinstance(settings, dict):
+            for key in keys:
+                if isinstance(settings.get(key), str) and settings[key].strip():
+                    settings[key] = resolve(settings[key])
+    archives = result.get("archives")
+    if isinstance(archives, dict):
+        for settings in archives.values():
+            if isinstance(settings, dict) and isinstance(settings.get("root"), str) and settings["root"].strip():
+                settings["root"] = resolve(settings["root"])
+    profiles = result.get("genai_profiles")
+    if isinstance(profiles, dict):
+        for settings in profiles.values():
+            cli = settings.get("cli") if isinstance(settings, dict) else None
+            executable = cli.get("executable") if isinstance(cli, dict) else None
+            # A bare command name stays a PATH lookup; a path is relative to its config file.
+            if isinstance(cli, dict) and isinstance(executable, str) and (
+                    Path(executable).is_absolute() or executable.startswith("~")
+                    or "/" in executable or "\\" in executable):
+                cli["executable"] = str(resolve(executable))
     source_map = result.get("sources")
     if isinstance(source_map, dict):
         if len({str(key).casefold() for key in source_map}) != len(source_map):
@@ -740,18 +653,6 @@ def _without_retired_user_prompt(
     return result, True
 
 
-def _new_provider_override(provider: InferenceProvider, model: str, effort: str | None) -> dict[str, Any]:
-    if provider == "azure-openai":
-        raise PipelineError("configure azure-openai model (deployment) and endpoint in a config file first")
-    transport_key, transport_value = PROVIDER_TRANSPORT_DEFAULTS[provider]
-    return {
-        "provider": provider,
-        "model": model,
-        "reasoning_effort": effort or "high",
-        transport_key: transport_value,
-    }
-
-
 def _apply_runtime_overrides(
     merged: dict[str, Any],
     overrides: dict[str, Any],
@@ -762,86 +663,69 @@ def _apply_runtime_overrides(
     if "schema_version" in overrides:
         raise PipelineError("schema_version is configuration-source metadata and cannot be a CLI override")
     resolved = _resolve_paths(overrides, working)
-    generation_options = {key: resolved.pop(key) for key in tuple(resolved)
-                          if key in LEGACY_GENERATION_KEYS or key == "profile"}
-    if "generation" in resolved:
-        resolved["generation"] = normalize_generation(resolved["generation"])
+    options = {key: resolved.pop(key) for key in tuple(resolved)
+               if key in LEGACY_GENERATION_KEYS or key == "profile"}
     _deep_merge(merged, resolved)
     _mark_sources(sources, resolved, "CLI option")
-    if not generation_options:
+    if not options:
         return
+    profiles = merged.get("genai_profiles")
     generation = merged.get("generation")
-    if not isinstance(generation, dict) or not isinstance(generation.get("profiles"), dict):
-        raise PipelineError("generation.profiles must be a YAML mapping")
-    profiles = generation["profiles"]
-    requested = generation_options.get("profile")
-    provider = generation_options.get("provider")
+    if not isinstance(profiles, dict) or not isinstance(generation, dict):
+        raise PipelineError("genai_profiles and generation must be YAML mappings")
+    requested = options.get("profile")
+    provider = options.get("provider")
     if requested is not None and provider is not None:
         raise PipelineError("use either --profile or --provider, not both")
-    name = str(requested or generation.get("active_profile", "codex"))
-    model = generation_options.get("model")
-    effort = generation_options.get("reasoning_effort")
+    name = str(requested or generation.get("genai_profile", "codex-default"))
     if provider is not None:
-        if provider not in PROVIDER_TRANSPORT_DEFAULTS:
+        if provider not in PROVIDER_NAMES:
             raise PipelineError(f"unsupported inference provider: {provider}")
-        def configured_provider(item: Any) -> str | None:
-            if not isinstance(item, dict):
-                return None
-            if "bridge_profile" in item:
-                return BridgeProfileConfig.model_validate(item).provider
-            return str(item["provider"]) if "provider" in item else None
-
-        matches = [key for key, item in profiles.items() if configured_provider(item) == provider]
+        matches = [key for key, item in profiles.items()
+                   if isinstance(item, dict) and item.get("provider", "codex") == provider]
+        declared = [key for key in matches if any(
+            path.startswith(f"genai_profiles.{key}.") and label != "built-in defaults"
+            for path, label in sources.items())]
+        # A connection the user configured wins over a built-in default of the same provider.
+        matches = declared or matches
         if len(matches) > 1:
-            raise PipelineError(f"multiple profiles use {provider!r}: {', '.join(matches)}; select --profile")
+            raise PipelineError(f"multiple genai_profiles use {provider!r}: {', '.join(matches)}; select --profile")
         if matches:
             name = matches[0]
         else:
-            if model is None:
-                raise PipelineError(f"provider {provider!r} is not configured; add a profile or pass --model")
+            if provider == "azure-openai":
+                raise PipelineError("define an azure-openai connection under genai_profiles first")
             name = str(provider)
             if name in profiles:
-                raise PipelineError(f"profile name {name!r} already belongs to another provider; configure --profile")
-            profiles[name] = _new_provider_override(provider, str(model), str(effort) if effort else None)
-            _mark_sources(sources, {"generation": {"profiles": {name: profiles[name]}}}, "CLI option")
+                raise PipelineError(f"GenAI profile name {name!r} already belongs to another provider; use --profile")
+            profiles[name] = {"provider": provider}
+            _mark_sources(sources, {"genai_profiles": {name: profiles[name]}}, "CLI option")
     if name not in profiles:
-        raise PipelineError(f"unknown generation profile: {name}; configure generation.profiles.{name}")
+        raise PipelineError(f"unknown GenAI profile: {name}; define genai_profiles.{name}")
     settings = profiles[name]
     if not isinstance(settings, dict):
-        raise PipelineError(f"generation.profiles.{name} must be a YAML mapping")
-    if "bridge_profile" in settings:
-        if any(key in generation_options for key in (
-            "codex_executable", "claude_executable", "copilot_executable", "ollama_base_url"
-        )):
-            raise PipelineError("configure transport options in the shared Bridge profile")
-        generation["active_profile"] = name
-        if requested is not None:
-            sources["generation.active_profile"] = "CLI option"
-        for field, value in (("model", model), ("reasoning_effort", effort)):
-            if value is not None:
-                settings.setdefault("overrides", {})[field] = value
-                sources[f"generation.profiles.{name}.overrides.{field}"] = "CLI option"
-        return
+        raise PipelineError(f"genai_profiles.{name} must be a YAML mapping")
     if requested is not None or provider is not None:
-        generation["active_profile"] = name
-        sources["generation.active_profile"] = "CLI option"
-    for field, value in (("model", model), ("reasoning_effort", effort)):
+        generation["genai_profile"] = name
+        sources["generation.genai_profile"] = "CLI option"
+    for field, value in (("model", options.get("model")), ("reasoning_effort", options.get("reasoning_effort"))):
         if value is not None:
             settings[field] = value
-            sources[f"generation.profiles.{name}.{field}"] = "CLI option"
-    transport_options = {
-        "codex_executable": ("codex", "executable"),
-        "claude_executable": ("claude-code", "executable"),
-        "copilot_executable": ("github-copilot", "executable"),
-        "ollama_base_url": ("ollama", "endpoint"),
-    }
-    for option, (kind, field) in transport_options.items():
-        if option not in generation_options:
-            continue
-        if settings.get("provider") != kind:
-            raise PipelineError(f"--{option.replace('_', '-')} requires an active {kind} profile")
-        settings[field] = generation_options[option]
-        sources[f"generation.profiles.{name}.{field}"] = "CLI option"
+            sources[f"genai_profiles.{name}.{field}"] = "CLI option"
+    kind = settings.get("provider", "codex")
+    for option, required in TRANSPORT_OPTIONS.items():
+        if option in options:
+            if kind != required:
+                raise PipelineError(f"--{option.replace('_', '-')} requires an active {required} GenAI profile")
+            cli = settings.get("cli")
+            settings["cli"] = {**(cli if isinstance(cli, dict) else {}), "executable": options[option]}
+            sources[f"genai_profiles.{name}.cli.executable"] = "CLI option"
+    if "ollama_base_url" in options:
+        if kind != "ollama":
+            raise PipelineError("--ollama-base-url requires an active ollama GenAI profile")
+        ollama = settings.get("ollama")
+        settings["ollama"] = {**(ollama if isinstance(ollama, dict) else {}), "base_url": options["ollama_base_url"]}
+        sources[f"genai_profiles.{name}.ollama.base_url"] = "CLI option"
 
 
 def resolve_app_config(
@@ -853,7 +737,7 @@ def resolve_app_config(
     """Load defaults, global, project, explicit, then CLI overrides."""
 
     working = (cwd or Path.cwd()).absolute()
-    legacy_global = Path.home() / ".tkn" / "genai_chat_note_pipeline" / "config.yaml"
+    legacy_global = legacy_global_config_path()
     if (
         not global_config_path().exists()
         and legacy_global.is_file()
@@ -861,9 +745,9 @@ def resolve_app_config(
         and not project_config_path(working).exists()
     ):
         raise PipelineError(
-            f"legacy user configuration found: {legacy_global}; copy it to {global_config_path()} "
-            "and update to schema 7, preserving source IDs and final storage paths, "
-            "or pass an explicit schema-7 --config; no legacy config or data is modified"
+            f"configuration of the previous application name found: {legacy_global}; run "
+            "`tkn-genai-chat-note config migrate --dry-run`, then without --dry-run, to write "
+            f"{global_config_path()}; the old configuration and data are not modified"
         )
     merged = _default_config_document()
     sources: dict[str, str] = {}
@@ -886,7 +770,6 @@ def resolve_app_config(
             "migration": None,
         }
     ]
-    declared_profiles = False
     for kind, path in layer_specs:
         if path is None:
             continue
@@ -911,16 +794,9 @@ def resolve_app_config(
                 remove_configured=False,
             )
             try:
-                if "generation" in layer:
-                    layer["generation"] = normalize_generation(layer["generation"])
                 validate_config_layer(AppConfig, layer)
             except ValueError as exc:
                 raise PipelineError(f"invalid configuration layer {path}: {exc}") from exc
-            raw_generation = raw_layer.get("generation")
-            if isinstance(raw_generation, dict) and ("profiles" in raw_generation or "providers" in raw_generation):
-                if not declared_profiles and "profiles" in raw_generation:
-                    merged["generation"]["profiles"] = {}
-                declared_profiles = True
             resolved_layer = _resolve_paths(layer, path.parent)
             _deep_merge(merged, resolved_layer)
             _mark_sources(sources, resolved_layer, f"{kind}: {path}")
@@ -969,7 +845,7 @@ def config_example_text() -> str:
     """Read the application-owned example distributed in the package."""
 
     try:
-        return files("tkn_codex_chat_note").joinpath(CONFIG_EXAMPLE_RESOURCE).read_text(encoding="utf-8")
+        return files(__package__ or "").joinpath(CONFIG_EXAMPLE_RESOURCE).read_text(encoding="utf-8")
     except (FileNotFoundError, OSError) as exc:
         raise PipelineError(f"packaged config example is unavailable: {exc}") from exc
 
@@ -982,12 +858,11 @@ def initialize_user_config(
     """Create the user config safely from the packaged example."""
 
     target = (path or global_config_path()).expanduser().absolute()
-    legacy_global = Path.home() / ".tkn" / "genai_chat_note_pipeline" / "config.yaml"
+    legacy_global = legacy_global_config_path()
     if path is None and not target.exists() and legacy_global.is_file():
         raise PipelineError(
-            f"legacy user configuration found: {legacy_global}; copy it to {target} "
-            "and update to schema 7 with top-level sources and existing final storage paths; "
-            "use --config <new-path> config init only to create a separate configuration"
+            f"configuration of the previous application name found: {legacy_global}; use "
+            "`config migrate` to move it here, or `--config <new-path> config init` for a separate file"
         )
     example = config_example_text()
     expected = example.encode("utf-8")
@@ -1029,8 +904,28 @@ def initialize_user_config(
     }
 
 
+def validate_config_file_document(value: Any, path: Path) -> AppConfig:
+    """Validate one configuration file's content as if it were the only user layer."""
+    if not isinstance(value, dict):
+        raise PipelineError(f"config must contain a YAML mapping: {path}")
+    value = {str(key): item for key, item in value.items()}
+    _reject_legacy_generation_config(value, path)
+    _inspect_config_schema(value, path)
+    layer, _removed = _without_retired_user_prompt(_config_properties(value), remove_configured=False)
+    try:
+        validate_config_layer(AppConfig, layer)
+    except ValueError as exc:
+        raise PipelineError(f"invalid configuration layer {path}: {exc}") from exc
+    merged = _default_config_document()
+    _deep_merge(merged, _resolve_paths(layer, path.parent))
+    try:
+        return AppConfig.model_validate(merged)
+    except Exception as exc:
+        raise PipelineError(f"invalid configuration: {exc}") from exc
+
+
 def config_document(config: AppConfig) -> dict[str, Any]:
-    document = _without_null_provider_settings(config.model_dump(mode="json", by_alias=True))
+    document = config.model_dump(mode="json", by_alias=True)
     for source_id, settings in document["sources"].items():
         for kind, path in config.source_storage_paths(source_id).items():
             if kind != "cache":

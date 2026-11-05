@@ -1,6 +1,6 @@
 # Data contract: chat evidence and calendar reviews
 
-CLI 0.47.0 · config 9.0.0 · storage 5 · catalog/provenance 1.0.0 · Review Note 1.0.0
+CLI 0.48.0 · config 10.0.0 · storage 5 · catalog/provenance 1.0.0 · Review Note 1.0.0
 
 Terminal results follow the [CLI output contract](cli-output.md): copyable
 `key=value` by default, explicit `--json`, independent `--full-output` detail.
@@ -25,10 +25,31 @@ rewrites a Vault, Skill, memory or AGENTS.md automatically.
 
 `raw ingest` only captures source files. `clone` initializes storage, captures and
 normalizes; `pull` refreshes an initialized store. These commands do not call a model.
-`scheduled-run` captures and normalizes, then generates closed, due review periods.
-A successful normalization does not imply that reviews have been generated. When
+`scheduled-run` captures and normalizes without inference; since 0.48.0 it no longer generates
+reviews. `review-notes due` builds closed periods when run explicitly. A successful normalization
+does not imply that reviews have been generated. When
 tkn-genai-chat-archiver manages raw_root, these commands read its archive instead of
 capturing (see [Archive-managed Raw](#archive-managed-raw)) and `raw ingest` is refused.
+
+## Note processes (stage 0): digests and the link report
+
+`actions link --dry-run` reads tkn-genai-chat-archiver archives (`archives`, read only through
+the archiver's `ArchiveView`) and the Vault's Action notes (`vault`, read only). It writes only
+below `processes.data_root` and `processes.state_root`, which must not overlap an archive or the
+Vault. It calls no generative AI.
+
+- Session digests: `<data_root>/digests/<app>/<source_id>/<key>.json`, one per archived conversation
+  file, schemaVersion 1.0.0. `file` names the archive, relative path, decoded content SHA-256 and line
+  count; `session` holds sessionRef, kind, parentSessionId, normalized cwd and repo, title, local dates,
+  `userRequests`, `excludedUserMessages`, `assistantFinals`, `toolEvents`, `vaultTouches` and `facts`;
+  `coverage` counts parser warnings and ignored record types. A digest is reused only for the same
+  content SHA-256, settings and application version; it is a cache and may be deleted.
+- Evidence IDs: `<app>/<source_id>/<session_id>@<first 12 hex of the version's content SHA-256>#L<line>`.
+  Archived versions never change, so an ID resolves to one line of one version.
+- Report: `<state_root>/actions-link/<runId>/report.md` (for people), `report.json` (summary counts,
+  per-conversation rows and per-Action links; schemaVersion 1.0.0) and `links.jsonl` (one row per
+  conversation with its clues, evidence IDs and decision `linked`, `ambiguous` or `unlinked`).
+  `<state_root>/actions-link/last-run.json` names the latest report.
 
 ## Source identity and configuration
 
@@ -47,11 +68,15 @@ independently; sources are not merged into one calendar note. Review settings be
 `sources.<id>.reviews`. Review outputs are `<data_root>/reviews`; review state is
 `<state_root>/reviews`. Review-specific output roots are not configurable.
 
-Configuration 9 rejects earlier schemas during ordinary commands with migration guidance.
-Move top-level reviews into each source, remove its data_root/state_root/session_note_limit,
-and remove generation.session_note_profile, idle_minutes and installed_at. Preserve source
-IDs and final Raw/data/state paths. Existing storage 5 needs no rewrite. Historical combined
-review stores are not automatically converted to source-local stores.
+Configuration 10 rejects earlier schemas during ordinary commands with migration guidance.
+Schema 10 defines every GenAI connection in this file under `genai_profiles` (tkn_genai_bridge
+profiles plus this application's `limits` and Ollama `model_digest`) and selects the review
+connection with `generation.genai_profile`; no shared Bridge configuration is read. `config
+migrate` converts a schema-9 file (copying the referenced shared Bridge profiles once) and moves
+the previous application's user config; it never modifies the old files. Schemas 7/8 first need
+the schema-9 changes: move top-level reviews into each source, remove its data_root/state_root/
+session_note_limit, and remove generation.session_note_profile, idle_minutes and installed_at.
+Preserve source IDs and final Raw/data/state paths. Existing storage 5 needs no rewrite.
 
 ## Stable identities and references
 
@@ -165,8 +190,10 @@ snapshot hashes/lengths and current artifacts; it does not prove semantic accura
 
 ## Storage and migration
 
-Omitted source roots resolve to `~/.tkn/codex_chat_note_pipeline/<kind>/codex/<source_id>`.
-Configured roots are final paths. Roots may share a parent but must not overlap one another
+Omitted source roots resolve to `~/.tkn/genai_chat_note_pipeline/<kind>/codex/<source_id>`.
+0.47.0 and earlier (named tkn_codex_chat_note_pipeline) used `~/.tkn/codex_chat_note_pipeline`;
+when an omitted root is still only there, processing stops instead of starting an empty store,
+and `config migrate` pins such roots explicitly. Configured roots are final paths. Roots may share a parent but must not overlap one another
 or input directories. Ownership markers bind source identity; locks protect actual roots.
 
 - Raw: sessions/, archived_sessions/, manifest.jsonl and metadata/. An archive-managed
@@ -203,10 +230,11 @@ The [Review Note contract](review-note-format.md) specifies period boundaries, f
 bounded Raw verification, categories, candidate projections, publication and protection.
 JSON is authoritative for higher-period generation; Markdown is a human rendering.
 
-Generation profiles select shared tkn_genai_bridge profiles. Effective generation settings
-and Bridge version bind cache identity; profile-label and price-only changes do not.
-The shared Bridge configuration is resolved explicitly, with no implicit application-CWD
-Bridge config. Authentication is lazy and never runs during dry-run.
+`generation.genai_profile` selects a root `genai_profiles` entry, which tkn_genai_bridge (a pinned
+library dependency) runs directly. Effective generation settings and Bridge version bind cache
+identity; profile-name and price-only changes do not. CLI providers reuse their own login; API
+providers name the environment variable of a key and never store it. Authentication is lazy
+and never runs during dry-run.
 
 Review call/time and API limits apply per source invocation. Cached validated stages do
 not consume calls. Budget exhaustion defers unfinished work for a later invocation.
@@ -217,7 +245,7 @@ Review usage records live under each source's state_root/reviews/usage. build-re
 these plus historical source journals/reports, deduplicating recorded attempts. It keeps
 known subtotals distinct from missing totals, and cached/reasoning tokens as subsets.
 Price scenarios are reference estimates, not actual invoices. Cost calculation uses Bridge
-pricing. Reports contain index.html, usage.json and usage.csv, without prompt/answer bodies.
+pricing; a scenario either states rates inline or references `genai_profile` and `model`. Reports contain index.html, usage.json and usage.csv, without prompt/answer bodies.
 
 Dry-run is read-only: no inference, authentication, network, directories, locks, reports,
 cache or state writes. It describes saved evidence and planned work, not a persisted update.

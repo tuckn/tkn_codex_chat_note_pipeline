@@ -8,13 +8,14 @@ from typing import Any
 
 import pytest
 
-from tkn_codex_chat_note.cli import build_parser, main
-from tkn_codex_chat_note.config import AppConfig, load_app_config, write_config
-from tkn_codex_chat_note.provenance import ProvenanceStore, json_bytes
-from tkn_codex_chat_note.review_evidence import period_evidence, review_path
-from tkn_codex_chat_note.review_model import ReviewDraft, closed_periods, period_for
-from tkn_codex_chat_note.reviews import run_reviews, run_scheduled, validate_review
-from tkn_codex_chat_note.runtime import PipelineError, atomic_write_json
+from tkn_genai_chat_note.cli import build_parser, main
+from tkn_genai_chat_note.config import AppConfig, load_app_config, write_config
+from tkn_genai_chat_note.pipeline import run_scheduled
+from tkn_genai_chat_note.provenance import ProvenanceStore, json_bytes
+from tkn_genai_chat_note.review_evidence import period_evidence, review_path
+from tkn_genai_chat_note.review_model import ReviewDraft, closed_periods, period_for
+from tkn_genai_chat_note.reviews import run_reviews, validate_review
+from tkn_genai_chat_note.runtime import PipelineError, atomic_write_json
 
 
 def config_for(root: Path, **settings: Any) -> AppConfig:
@@ -22,7 +23,8 @@ def config_for(root: Path, **settings: Any) -> AppConfig:
         sources={"windows": {"source_root": root / "codex", "raw_root": root / "raw",
                              "data_root": root / "data", "state_root": root / "state", "reviews": settings}},
         cache_root=root / "cache",
-        generation={"profiles": {"codex": {"provider": "codex", "model": "test-model"}}},
+        genai_profiles={"codex": {"provider": "codex", "model": "test-model"}},
+        generation={"genai_profile": "codex"},
     )
 
 
@@ -328,7 +330,7 @@ def test_budget_resume_reuses_completed_stages(tmp_path: Path) -> None:
 
 
 def test_interrupted_pair_commit_recovers_without_inference(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import tkn_codex_chat_note.reviews as reviews
+    import tkn_genai_chat_note.reviews as reviews
 
     config = config_for(tmp_path)
     seed(config, [("2026-05-19T00:00:00Z", "Question")])
@@ -390,20 +392,28 @@ def test_review_config_paths_and_cli_defaults(tmp_path: Path, monkeypatch: pytes
     assert not config.review_state_root.exists()
 
 
-def test_scheduled_capture_does_not_generate_before_due(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import tkn_codex_chat_note.pipeline as pipeline
+def test_scheduled_run_only_captures_and_normalizes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import tkn_genai_chat_note.pipeline as pipeline
+    import tkn_genai_chat_note.reviews as reviews
 
-    config = config_for(tmp_path)
-    seed(config, [])
-    calls: list[str] = []
+    config = config_for(tmp_path, start_date=date(2026, 5, 18))
+    seed(config, [("2026-05-19T00:00:00Z", "A due week exists")])
+    calls: list[dict[str, Any]] = []
 
-    def run(*_: Any, mode: str, **__: Any) -> dict[str, Any]:
-        calls.append(mode)
+    def run(*_: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
         return {"ok": True, "complete": True}
 
+    def forbidden(*_: Any, **__: Any) -> dict[str, Any]:
+        raise AssertionError("scheduled-run must not generate reviews")
+
     monkeypatch.setattr(pipeline, "run_pipeline", run)
+    monkeypatch.setattr(reviews, "run_reviews", forbidden)
+    monkeypatch.setattr(reviews, "review_today", lambda _: date(2026, 5, 25))
     result = run_scheduled(config)
-    assert result["ok"] and calls == ["clone"]
+    assert result["ok"] and result["reviewsScheduled"] is False
+    assert [c["mode"] for c in calls] == ["clone"]
+    assert "limit" not in calls[0]
 
 
 def test_intelligence_and_improvement_candidates_keep_status_and_citations(tmp_path: Path) -> None:
@@ -439,7 +449,7 @@ def test_intelligence_and_improvement_candidates_keep_status_and_citations(tmp_p
 def test_generated_schema_resource_matches_contract(profile: str) -> None:
     from importlib.resources import files
 
-    resource = files("tkn_codex_chat_note").joinpath("profiles", profile, "output.schema.json")
+    resource = files("tkn_genai_chat_note").joinpath("profiles", profile, "output.schema.json")
     schema = json.loads(resource.read_text("utf-8"))
     assert schema == ReviewDraft.model_json_schema()
 
@@ -453,8 +463,8 @@ def test_invalid_review_structure_has_actionable_error(tmp_path: Path, period: A
 
 
 def test_review_usage_is_included_in_offline_report(tmp_path: Path) -> None:
-    from tkn_codex_chat_note.usage_records import UsageJournal, new_record
-    from tkn_codex_chat_note.usage_report import collect_usage
+    from tkn_genai_chat_note.usage_records import UsageJournal, new_record
+    from tkn_genai_chat_note.usage_report import collect_usage
 
     config = config_for(tmp_path)
     journal = UsageJournal(config.review_state_root / "usage/run", {"sourceId": "reviews", "runId": "run",
@@ -466,30 +476,8 @@ def test_review_usage_is_included_in_offline_report(tmp_path: Path) -> None:
     assert report["records"][0]["inputTokens"] is None
 
 
-def test_scheduled_due_run_only_captures_normalizes_and_reviews(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import tkn_codex_chat_note.pipeline as pipeline
-    import tkn_codex_chat_note.reviews as reviews
-
-    config = config_for(tmp_path, start_date=date(2026, 5, 18))
-    seed(config, [])
-    calls: list[dict[str, Any]] = []
-
-    def run(*_: Any, **kwargs: Any) -> dict[str, Any]:
-        calls.append(kwargs)
-        return {"ok": True, "complete": True}
-
-    monkeypatch.setattr(pipeline, "run_pipeline", run)
-    monkeypatch.setattr(reviews, "review_today", lambda _: date(2026, 5, 25))
-    result = run_scheduled(config)
-    assert result["ok"]
-    assert [c["mode"] for c in calls] == ["clone"]
-    assert "limit" not in calls[0]
-
-
 def test_review_repair_resumes_without_repeating_evidence(tmp_path: Path) -> None:
-    from tkn_codex_chat_note.review_generation import ReviewBudgetStop, ReviewGenerator
+    from tkn_genai_chat_note.review_generation import ReviewBudgetStop, ReviewGenerator
 
     config = config_for(tmp_path, max_calls=1).enabled_source_configs()[0]
     period = period_for("weekly", date(2026, 5, 19))
@@ -517,7 +505,7 @@ def test_review_repair_resumes_without_repeating_evidence(tmp_path: Path) -> Non
 
 
 def test_repair_does_not_accept_unavailable_citations(tmp_path: Path) -> None:
-    from tkn_codex_chat_note.review_generation import ReviewGenerator
+    from tkn_genai_chat_note.review_generation import ReviewGenerator
 
     config = config_for(tmp_path).enabled_source_configs()[0]
     generator = ReviewGenerator(config, "bad", generate=lambda *_: {"items": [item("invented")], "rawRequests": []})
@@ -547,7 +535,7 @@ def test_all_periods_have_a_final_editorial_pass(tmp_path: Path, kind: Any, day:
 
 
 def test_editorial_change_reuses_extraction_but_rebuilds_final_output(tmp_path: Path) -> None:
-    from tkn_codex_chat_note.review_generation import ReviewGenerator
+    from tkn_genai_chat_note.review_generation import ReviewGenerator
 
     config = config_for(tmp_path).enabled_source_configs()[0]
     seed(config, [("2026-05-19T00:00:00Z", "Keep the recorded question")])
@@ -582,7 +570,7 @@ def test_editorial_pass_resumes_after_budget_without_repeating_extraction(tmp_pa
 
 @pytest.mark.parametrize("language", ["ja", "en"])
 def test_editorial_render_keeps_citations_tables_and_bounded_source_quotes(tmp_path: Path, language: str) -> None:
-    from tkn_codex_chat_note.review_render import render_review
+    from tkn_genai_chat_note.review_render import render_review
 
     config = config_for(tmp_path, language=language)
     source_text = "PRIVATE_FULL_SOURCE_SENTINEL " + "X" * 400
@@ -602,7 +590,7 @@ def test_editorial_render_keeps_citations_tables_and_bounded_source_quotes(tmp_p
 
 
 def test_editorial_pass_cannot_introduce_unknown_evidence(tmp_path: Path) -> None:
-    from tkn_codex_chat_note.review_generation import ReviewGenerator
+    from tkn_genai_chat_note.review_generation import ReviewGenerator
 
     config = config_for(tmp_path).enabled_source_configs()[0]
     generator = ReviewGenerator(config, "invalid", generate=lambda *_: {"items": [item("absent")], "rawRequests": []})

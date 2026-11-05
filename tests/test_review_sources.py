@@ -9,13 +9,13 @@ from typing import Any
 import pytest
 from chat_fixtures import write_chat
 
-from tkn_codex_chat_note.cli import build_parser
-from tkn_codex_chat_note.config import AppConfig
-from tkn_codex_chat_note.pipeline import run_pipeline
-from tkn_codex_chat_note.provenance import validate_provenance
-from tkn_codex_chat_note.review_evidence import period_evidence
-from tkn_codex_chat_note.review_model import period_for
-from tkn_codex_chat_note.reviews import run_reviews, run_scheduled, validate_review
+from tkn_genai_chat_note.cli import build_parser
+from tkn_genai_chat_note.config import AppConfig
+from tkn_genai_chat_note.pipeline import run_pipeline, run_scheduled
+from tkn_genai_chat_note.provenance import validate_provenance
+from tkn_genai_chat_note.review_evidence import period_evidence
+from tkn_genai_chat_note.review_model import period_for
+from tkn_genai_chat_note.reviews import run_reviews, validate_review
 
 
 def configured(root: Path, *names: str) -> AppConfig:
@@ -24,7 +24,7 @@ def configured(root: Path, *names: str) -> AppConfig:
         "data_root": root / name / "data", "state_root": root / name / "state",
         "reviews": {"start_date": date(2026, 5, 18)},
     } for name in names}, cache_root=root / "cache",
-        generation={"profiles": {"codex": {"provider": "codex", "model": "test"}}})
+        genai_profiles={"codex": {"provider": "codex", "model": "test"}}, generation={"genai_profile": "codex"})
 
 
 def response(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
@@ -45,8 +45,8 @@ def response(prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
 
 def test_capture_and_normalization_do_not_infer_or_touch_existing_notes(tmp_path: Path,
                                                                       monkeypatch: pytest.MonkeyPatch) -> None:
-    import tkn_codex_chat_note.api_inference as api
-    import tkn_codex_chat_note.inference as inference
+    import tkn_genai_chat_note.api_inference as api
+    import tkn_genai_chat_note.inference as inference
 
     def forbidden(*args: Any, **kwargs: Any) -> Any:
         pytest.fail("capture/normalization must not call a model")
@@ -102,26 +102,33 @@ def test_two_sources_produce_independent_reviews_and_state(tmp_path: Path) -> No
     assert again["modelCalls"] == 0 and again["generatedCount"] == 0
 
 
-def test_scheduled_run_initializes_normalizes_and_generates_due_review(tmp_path: Path,
-                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
-    import tkn_codex_chat_note.reviews as reviews
-    from tkn_codex_chat_note.review_generation import ReviewGenerator
+def test_scheduled_run_initializes_and_normalizes_while_due_reviews_stay_manual(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tkn_genai_chat_note.reviews as reviews
+    from tkn_genai_chat_note.review_generation import ReviewGenerator
 
     config = configured(tmp_path, "pc")
     source = config.enabled_source_configs()[0]
     write_chat(source.sessions_root / "one.jsonl", thread_id="one", cwd=tmp_path,
                request="Scheduled review", started_at="2026-05-19T00:00:00Z")
     original = ReviewGenerator.__init__
+    generated: list[str] = []
 
     def fake(self: ReviewGenerator, *args: Any, **kwargs: Any) -> None:
+        generated.append("review")
         original(self, *args, **{**kwargs, "generate": response})
 
     monkeypatch.setattr(ReviewGenerator, "__init__", fake)
     monkeypatch.setattr(reviews, "review_today", lambda _: date(2026, 5, 25))
     result = run_scheduled(config)
-    assert result["ok"] and result["capture"]["normalizedThreadCount"] == 1
-    assert result["reviews"]["generatedCount"] == 1
+    assert result["ok"] and result["normalizedThreadCount"] == 1
+    assert result["reviewsScheduled"] is False and not generated
+    assert not source.review_data_root.exists()
     assert not (source.data_root / "session-notes").exists()
+    # The explicit catch-up command remains available.
+    manual = run_reviews(config)
+    assert manual["generatedCount"] == 1 and generated
 
 
 def test_catalog_rows_from_another_source_are_not_reviewed(tmp_path: Path) -> None:

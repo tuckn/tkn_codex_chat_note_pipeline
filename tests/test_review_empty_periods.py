@@ -10,8 +10,8 @@ from typing import Any
 import pytest
 from test_reviews import FakeGenerator, config_for, seed
 
-from tkn_codex_chat_note.reviews import run_reviews
-from tkn_codex_chat_note.runtime import PipelineError, atomic_write_json
+from tkn_genai_chat_note.reviews import run_reviews
+from tkn_genai_chat_note.runtime import PipelineError, atomic_write_json
 
 
 @pytest.mark.parametrize("kind", ["weekly", "monthly", "yearly"])
@@ -95,7 +95,7 @@ def test_existing_empty_notes_are_preserved(tmp_path: Path, force: bool) -> None
 def test_unavailable_source_is_not_reported_as_empty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, problem: str,
 ) -> None:
-    import tkn_codex_chat_note.review_evidence as evidence
+    import tkn_genai_chat_note.review_evidence as evidence
 
     config = config_for(tmp_path)
     seed(config, [("2026-05-19T00:00:00Z", "Question")])
@@ -176,7 +176,7 @@ def test_exact_call_limit_with_only_empty_periods_left_is_complete(tmp_path: Pat
 def test_cli_does_not_claim_completion_for_undated_history(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import tkn_codex_chat_note.cli as cli
+    import tkn_genai_chat_note.cli as cli
 
     config = config_for(tmp_path)
     seed(config, [("", "Undated message")])
@@ -194,8 +194,8 @@ def test_cli_does_not_claim_completion_for_undated_history(
 
 
 def test_failed_evidence_preparation_is_not_an_empty_period(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import tkn_codex_chat_note.reviews as reviews
-    from tkn_codex_chat_note.review_evidence import EvidenceSet
+    import tkn_genai_chat_note.reviews as reviews
+    from tkn_genai_chat_note.review_evidence import EvidenceSet
 
     config = config_for(tmp_path)
     seed(config, [("2026-05-19T00:00:00Z", "Saved question")])

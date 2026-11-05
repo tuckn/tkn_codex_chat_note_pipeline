@@ -195,7 +195,7 @@ def _build(config: AppConfig, period: Period, generator: ReviewGenerator, index:
                      "completeHistory": False, "inputCount": len(evidence.selected),
                      "weeklyInputs": evidence.weekly_inputs, "monthlyInputs": evidence.monthly_inputs,
                      "gaps": sorted(set(evidence.gaps))},
-        "generation": {"profile": config.generation.active_profile, "provider": config.provider,
+        "generation": {"profile": config.generation.genai_profile, "provider": config.provider,
                        "model": config.model, "settingsSha256": generator.signature,
                        "qualityAudit": generator.quality_report, "promptTemplatesSha256": generator.request_signature},
     }
@@ -376,22 +376,3 @@ def validate_review(path: Path) -> dict[str, Any]:
         return _validate_review(path)
     except (KeyError, TypeError, AttributeError) as exc:
         raise PipelineError(f"invalid review document structure: {exc}") from exc
-
-
-def run_scheduled(config: AppConfig, *, dry_run: bool = False, config_path: Path | None = None) -> dict[str, Any]:
-    from .pipeline import run_pipeline
-
-    sources = config.enabled_source_configs()
-    validate_source_layout(config)
-    if len(sources) > 1:
-        results = [run_scheduled(source, dry_run=dry_run, config_path=config_path) for source in sources]
-        return {"ok": all(r["ok"] for r in results), "complete": all(r["complete"] for r in results),
-                "sourceResults": results,
-                "reviews": _combine_reviews([r["reviews"] for r in results if "reviews" in r])}
-    config = sources[0]
-    _validate_roots(config)
-    capture = run_pipeline(config, mode="clone", dry_run=dry_run, config_path=config_path)
-    if not capture["ok"]:
-        return {"ok": False, "complete": False, "capture": capture}
-    reviews = run_reviews(config, dry_run=dry_run)
-    return {"ok": reviews["ok"], "complete": reviews["complete"], "capture": capture, "reviews": reviews}

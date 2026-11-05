@@ -18,7 +18,7 @@ class ReviewProfile:
             raise PipelineError("unsupported review profile language")
         self.language = language
         self.name = "default-jp" if language == "ja" else "default-en"
-        self.root = files("tkn_codex_chat_note").joinpath("profiles", self.name)
+        self.root = files("tkn_genai_chat_note").joinpath("profiles", self.name)
 
     def text(self, name: str) -> str:
         return self.root.joinpath(name).read_text("utf-8")

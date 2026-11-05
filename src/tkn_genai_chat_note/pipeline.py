@@ -13,7 +13,7 @@ from .config import AppConfig
 from .provenance import ProvenanceStore
 from .raw_capture import RawCaptureError, archive_managed
 from .runtime import PipelineError, atomic_write_json, now_iso, now_local
-from .storage import legacy_storage_pending, pipeline_storage, read_json
+from .storage import legacy_storage_pending, pipeline_storage, read_json, validate_source_layout
 
 Progress = Callable[[dict[str, Any]], None]
 
@@ -240,6 +240,23 @@ def run_pipeline(
         ],
         "reportPaths": [report["reportPath"] for report in reports if report.get("reportPath")],
     }
+
+
+def run_scheduled(
+    config: AppConfig,
+    *,
+    dry_run: bool = False,
+    config_path: Path | None = None,
+    progress: Progress | None = None,
+) -> dict[str, Any]:
+    """Daily unattended run: capture and normalize every enabled source without inference.
+
+    Calendar review generation was removed from scheduled runs in 0.48.0. `review-notes due`
+    remains available for an explicit catch-up.
+    """
+    validate_source_layout(config)
+    report = run_pipeline(config, mode="clone", dry_run=dry_run, config_path=config_path, progress=progress)
+    return {**report, "reviewsScheduled": False}
 
 
 def pipeline_status(config: AppConfig, *, source_id: str | None = None) -> dict[str, Any]:

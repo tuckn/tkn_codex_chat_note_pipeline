@@ -5,17 +5,17 @@ from copy import deepcopy
 
 import pytest
 import yaml
-from test_bridge_settings import application, fingerprint, shared
+from test_genai_profiles import application, fingerprint
 from test_usage_report import record, saved
 from tkn_genai_bridge import ProviderError, ResponseMetadata, TokenCounts, TokenPricing, Usage
 from tkn_genai_bridge.providers.base import ProviderResponse
 
-from tkn_codex_chat_note.api_inference import ApiClient, ApiError
-from tkn_codex_chat_note.config import load_app_config
-from tkn_codex_chat_note.cost_policy import reservation_cost
-from tkn_codex_chat_note.report_settings import BridgePriceScenario
-from tkn_codex_chat_note.runtime import PipelineError
-from tkn_codex_chat_note.usage_report import _normalize, build_usage_report, reference_cost
+from tkn_genai_chat_note.api_inference import ApiClient, ApiError
+from tkn_genai_chat_note.config import load_app_config
+from tkn_genai_chat_note.cost_policy import reservation_cost
+from tkn_genai_chat_note.report_settings import GenAIPriceScenario
+from tkn_genai_chat_note.runtime import PipelineError
+from tkn_genai_chat_note.usage_report import _normalize, build_usage_report, reference_cost
 
 PRICE = {"currency": "JPY", "pricing_date": "2026-01-01", "input_per_million": 30,
          "output_per_million": 180}
@@ -27,8 +27,8 @@ PROFILE = {"provider": "azure-openai", "model": "deployment", "max_output_tokens
 def configured(tmp_path, **price_updates):
     profile = deepcopy(PROFILE)
     profile["pricing"]["deployment"].update(price_updates)
-    shared({"shared-notes": profile})
-    cfg = load_app_config(explicit_path=application(tmp_path), cwd=tmp_path)
+    path = application(tmp_path, selected="shared-notes", entries={"shared-notes": profile})
+    cfg = load_app_config(explicit_path=path, cwd=tmp_path)
     return cfg, ApiClient(cfg.inference_config())
 
 
@@ -102,12 +102,12 @@ def test_price_update_changes_amount_without_regenerating_notes_or_input_estimat
     assert ApiClient(override.inference_config()).pricing is None
 
 
-def test_conflicting_legacy_and_shared_prices_rejected(tmp_path):
-    configured(tmp_path)
-    app = application(tmp_path, pricing={"deployment": {"input_jpy_per_million": 1,
-                      "output_jpy_per_million": 2, "pricing_date": "2026-01-01"}})
-    with pytest.raises(PipelineError, match="conflicting"):
-        load_app_config(explicit_path=app, cwd=tmp_path)
+def test_application_pricing_keys_are_not_accepted_beside_bridge_pricing(tmp_path):
+    profile = deepcopy(PROFILE)
+    profile["input_jpy_per_million"] = 1
+    path = application(tmp_path, selected="shared-notes", entries={"shared-notes": profile})
+    with pytest.raises(PipelineError, match="unknown configuration key"):
+        load_app_config(explicit_path=path, cwd=tmp_path)
 
 
 def test_reservation_also_covers_expensive_cache_reads_and_overflow():
@@ -135,16 +135,21 @@ def test_claude_uncached_counts_preserve_raw_and_total_without_double_counting()
 def test_report_shared_scenario_resolves_and_preserves_price_snapshot(tmp_path):
     configured(tmp_path)
     cfg, _, _ = saved(tmp_path)
+    cfg.genai_profiles = load_app_config(explicit_path=tmp_path / "app.yaml", cwd=tmp_path).genai_profiles
     cfg.usage_report.price_scenarios = {
-        "shared": BridgePriceScenario(bridge_profile="shared-notes", model="deployment")}
+        "shared": GenAIPriceScenario(genai_profile="shared-notes", model="deployment")}
     result = build_usage_report(cfg, no_open=True)
     with open(result["jsonPath"], encoding="utf-8") as stream:
         data = json.load(stream)
     assert data["records"][0]["referenceCosts"]["shared"] == pytest.approx(0.066)
     assert data["records"][0]["referenceCostDetails"]["shared"]["basis"] == "scenario"
     assert data["priceScenarios"]["shared"]["currency"] == "JPY"
-    with pytest.raises(ValueError, match="no pricing"):
-        BridgePriceScenario(bridge_profile="shared-notes", model="unknown")
+    path = tmp_path / "app.yaml"
+    value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    value["usage_report"] = {"price_scenarios": {"bad": {"genai_profile": "shared-notes", "model": "unknown"}}}
+    path.write_text(yaml.safe_dump(value), encoding="utf-8")
+    with pytest.raises(PipelineError, match="no pricing"):
+        load_app_config(explicit_path=path, cwd=tmp_path)
 
 
 def test_report_scenarios_load_shared_references_and_legacy_yaml_dates(tmp_path):
@@ -152,18 +157,18 @@ def test_report_scenarios_load_shared_references_and_legacy_yaml_dates(tmp_path)
     path = tmp_path / "app.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     data["usage_report"] = {"price_scenarios": {
-        "shared": {"bridge_profile": "shared-notes", "model": "deployment"},
+        "shared": {"genai_profile": "shared-notes", "model": "deployment"},
         "legacy": yaml.safe_load("pricing_date: 2026-01-01\ninput_per_million: 30\noutput_per_million: 180\n"),
     }}
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
     cfg = load_app_config(explicit_path=path, cwd=tmp_path)
-    assert cfg.usage_report.price_scenarios["shared"].pricing.currency == "JPY"
+    assert cfg.price_scenario_pricing()["shared"].currency == "JPY"
     assert cfg.usage_report.price_scenarios["legacy"].pricing_date == "2026-01-01"
 
 
 @pytest.mark.parametrize("scope, expected_input", [("total", 300), ("uncached", 1000)])
 def test_partial_usage_survives_failure_journal_and_report(tmp_path, scope, expected_input):
-    from tkn_codex_chat_note.generation_usage import usage_totals
+    from tkn_genai_chat_note.generation_usage import usage_totals
 
     _, client = configured(tmp_path)
     usage = Usage(completeness="partial", input_tokens_scope=scope, known_subtotal=TokenCounts(
@@ -195,7 +200,7 @@ def test_partial_usage_survives_failure_journal_and_report(tmp_path, scope, expe
 
 
 def test_complete_usage_and_known_subtotal_are_not_added_twice():
-    from tkn_codex_chat_note.cost_policy import usage_fields
+    from tkn_genai_chat_note.cost_policy import usage_fields
 
     usage = Usage(input_tokens=100, output_tokens=20, known_subtotal=TokenCounts(input_tokens=60, output_tokens=10))
     values = usage_fields(usage)

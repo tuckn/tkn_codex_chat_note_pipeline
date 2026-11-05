@@ -115,7 +115,7 @@ class ApiClient:
         self.limits = ApiLimits.model_validate(self.options.get("limits", {}))
         self.azure = self.options["azure"] if config.provider == "azure-openai" else None
         self.profile = self._profile()
-        self.runtime = Runtime(self.profile, profile_name=self.options.get("bridge_profile"))
+        self.runtime = Runtime(self.profile, profile_name=self.options.get("genai_profile"))
         self.allowed_ids: list[str] = []
         self.stage = "unknown"
         self.records: list[dict[str, Any]] = []

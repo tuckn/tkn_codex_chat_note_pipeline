@@ -2259,45 +2259,6 @@ wheels = [
 ]
 
 [[package]]
-name = "tkn-codex-chat-note-pipeline"
-version = "0.47.0"
-source = { editable = "." }
-dependencies = [
-    { name = "httpx" },
-    { name = "jinja2" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "tiktoken" },
-    { name = "tkn-genai-bridge" },
-    { name = "zstandard" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.28,<1" },
-    { name = "jinja2", specifier = ">=3.1,<4" },
-    { name = "pydantic", specifier = ">=2.10,<3" },
-    { name = "pyyaml", specifier = ">=6,<7" },
-    { name = "tiktoken", specifier = ">=0.12,<1" },
-    { name = "tkn-genai-bridge", url = "https://github.com/tuckn/tkn_genai_bridge/archive/9cf534e47159901c3bb05bb802695fad746cc338.zip" },
-    { name = "zstandard", specifier = ">=0.23,<1" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "mypy", specifier = ">=1.15,<2" },
-    { name = "pytest", specifier = ">=8.3,<9" },
-    { name = "ruff", specifier = ">=0.11,<1" },
-]
-
-[[package]]
 name = "tkn-genai-bridge"
 version = "0.10.0"
 source = { url = "https://github.com/tuckn/tkn_genai_bridge/archive/9cf534e47159901c3bb05bb802695fad746cc338.zip" }
@@ -2323,6 +2284,95 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "referencing", specifier = ">=0.36,<1" },
+]
+
+[[package]]
+name = "tkn-genai-chat-archiver"
+version = "0.2.0"
+source = { editable = "../tkn_genai_chat_archiver" }
+dependencies = [
+    { name = "pyyaml" },
+    { name = "zstandard" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pyyaml", specifier = ">=6,<7" },
+    { name = "zstandard", specifier = ">=0.23,<1" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.15,<2" },
+    { name = "pytest", specifier = ">=8.3,<9" },
+    { name = "ruff", specifier = ">=0.11,<1" },
+    { name = "types-pyyaml", specifier = ">=6" },
+]
+
+[[package]]
+name = "tkn-genai-chat-note-pipeline"
+version = "0.48.0"
+source = { editable = "." }
+dependencies = [
+    { name = "httpx" },
+    { name = "jinja2" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "tiktoken" },
+    { name = "tkn-genai-bridge" },
+    { name = "tkn-genai-chat-archiver" },
+    { name = "tkn-genai-chat-search" },
+    { name = "zstandard" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "jinja2", specifier = ">=3.1,<4" },
+    { name = "pydantic", specifier = ">=2.10,<3" },
+    { name = "pyyaml", specifier = ">=6,<7" },
+    { name = "tiktoken", specifier = ">=0.12,<1" },
+    { name = "tkn-genai-bridge", url = "https://github.com/tuckn/tkn_genai_bridge/archive/9cf534e47159901c3bb05bb802695fad746cc338.zip" },
+    { name = "tkn-genai-chat-archiver", editable = "../tkn_genai_chat_archiver" },
+    { name = "tkn-genai-chat-search", editable = "../tkn_genai_chat_search" },
+    { name = "zstandard", specifier = ">=0.23,<1" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.15,<2" },
+    { name = "pytest", specifier = ">=8.3,<9" },
+    { name = "ruff", specifier = ">=0.11,<1" },
+]
+
+[[package]]
+name = "tkn-genai-chat-search"
+version = "0.1.0"
+source = { editable = "../tkn_genai_chat_search" }
+dependencies = [
+    { name = "pyyaml" },
+    { name = "zstandard" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pyyaml", specifier = ">=6,<7" },
+    { name = "zstandard", specifier = ">=0.23,<1" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.15,<2" },
+    { name = "pytest", specifier = ">=8.3,<9" },
+    { name = "ruff", specifier = ">=0.11,<1" },
+    { name = "types-pyyaml", specifier = ">=6" },
 ]
 
 [[package]]

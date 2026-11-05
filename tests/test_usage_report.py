@@ -8,14 +8,14 @@ from pathlib import Path
 import pytest
 from test_pipeline_workflow import config_for
 
-from tkn_codex_chat_note import inference
-from tkn_codex_chat_note.cli import main
-from tkn_codex_chat_note.config import load_app_config
-from tkn_codex_chat_note.generation_usage import usage_totals
-from tkn_codex_chat_note.report_settings import PriceScenario, UsageReportSettings
-from tkn_codex_chat_note.runtime import PipelineError, atomic_write_json
-from tkn_codex_chat_note.usage_records import UsageJournal, new_record
-from tkn_codex_chat_note.usage_report import build_usage_report, collect_usage, reference_cost
+from tkn_genai_chat_note import inference
+from tkn_genai_chat_note.cli import main
+from tkn_genai_chat_note.config import load_app_config
+from tkn_genai_chat_note.generation_usage import usage_totals
+from tkn_genai_chat_note.report_settings import PriceScenario, UsageReportSettings
+from tkn_genai_chat_note.runtime import PipelineError, atomic_write_json
+from tkn_genai_chat_note.usage_records import UsageJournal, new_record
+from tkn_genai_chat_note.usage_report import build_usage_report, collect_usage, reference_cost
 
 
 def stream(**usage):
@@ -221,9 +221,9 @@ def test_invalid_prices_rejected(overrides):
 
 
 def test_new_settings_resolve_relative_to_config_and_accept_old_schema(tmp_path, monkeypatch):
-    monkeypatch.setattr("tkn_codex_chat_note.config.global_config_path", lambda: tmp_path / "absent")
+    monkeypatch.setattr("tkn_genai_chat_note.config.global_config_path", lambda: tmp_path / "absent")
     path = tmp_path / "config.yaml"
-    path.write_text('schema_version: "9.0.0"\nreport_path: reports\nusage_report:\n  utc_offset_minutes: 540\n')
+    path.write_text('schema_version: "10.0.0"\nreport_path: reports\nusage_report:\n  utc_offset_minutes: 540\n')
     before = path.read_bytes()
     cfg = load_app_config(explicit_path=path, cwd=tmp_path)
     assert cfg.report_path == tmp_path / "reports"
@@ -233,8 +233,8 @@ def test_new_settings_resolve_relative_to_config_and_accept_old_schema(tmp_path,
 
 def test_build_report_cli_routes_without_running_pipeline(tmp_path, monkeypatch, capsys):
     cfg, _, _ = saved(tmp_path)
-    monkeypatch.setattr("tkn_codex_chat_note.cli.load_app_config", lambda **kw: cfg)
-    monkeypatch.setattr("tkn_codex_chat_note.pipeline.run_pipeline", lambda *a, **k: pytest.fail("pipeline run"))
+    monkeypatch.setattr("tkn_genai_chat_note.cli.load_app_config", lambda **kw: cfg)
+    monkeypatch.setattr("tkn_genai_chat_note.pipeline.run_pipeline", lambda *a, **k: pytest.fail("pipeline run"))
     assert main(["--json", "build-report", "--dry-run"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["dryRun"] and result["recordCount"] == 1
@@ -248,8 +248,8 @@ def test_review_records_usage_and_repeated_build_does_not_double_count(tmp_path,
     from tkn_genai_bridge import Runtime, Usage
     from tkn_genai_bridge.providers.base import ProviderResponse
 
-    from tkn_codex_chat_note.pipeline import run_pipeline
-    from tkn_codex_chat_note.reviews import run_reviews
+    from tkn_genai_chat_note.pipeline import run_pipeline
+    from tkn_genai_chat_note.reviews import run_reviews
 
     cfg = config_for(tmp_path)
     write_chat(cfg.sessions_root / "one.jsonl", thread_id="one", cwd=tmp_path,

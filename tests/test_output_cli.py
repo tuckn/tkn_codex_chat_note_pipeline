@@ -12,20 +12,20 @@ from typing import Any
 
 import pytest
 
-from tkn_codex_chat_note import cli
-from tkn_codex_chat_note.config import load_app_config
-from tkn_codex_chat_note.output import public_result, with_target_paths
+from tkn_genai_chat_note import cli
+from tkn_genai_chat_note.config import load_app_config
+from tkn_genai_chat_note.output import public_result, with_target_paths
 
 COPY_PATH = r"C:\path to\日本語" + "\\long-folder" * 30 + "\\file.json"
 
 
 @pytest.fixture
 def fake_commands(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    import tkn_codex_chat_note.pipeline as pipeline
-    import tkn_codex_chat_note.provenance as provenance
-    import tkn_codex_chat_note.reviews as reviews
-    import tkn_codex_chat_note.storage_migration as storage
-    import tkn_codex_chat_note.usage_report as usage
+    import tkn_genai_chat_note.pipeline as pipeline
+    import tkn_genai_chat_note.provenance as provenance
+    import tkn_genai_chat_note.reviews as reviews
+    import tkn_genai_chat_note.storage_migration as storage
+    import tkn_genai_chat_note.usage_report as usage
 
     value = {"ok": True, "complete": True, "status": "success", "threadCounts": {}, "failed": [],
              "configPath": COPY_PATH, "backupPath": None,
@@ -35,7 +35,7 @@ def fake_commands(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(cli, "load_app_config", lambda **_: config)
     for module, name in (
         (pipeline, "run_pipeline"), (pipeline, "pipeline_status"), (reviews, "run_reviews"),
-        (reviews, "run_scheduled"), (reviews, "validate_review"), (provenance, "validate_provenance"),
+        (pipeline, "run_scheduled"), (reviews, "validate_review"), (provenance, "validate_provenance"),
         (storage, "migrate_storage"), (usage, "build_usage_report"), (cli, "initialize_user_config"),
     ):
         monkeypatch.setattr(module, name, lambda *a, **kw: copy.deepcopy(value))
@@ -192,7 +192,7 @@ def test_real_capture_dry_run_preserves_every_file(
     from chat_fixtures import write_chat
     from test_pipeline_workflow import config_for
 
-    from tkn_codex_chat_note.config import write_config
+    from tkn_genai_chat_note.config import write_config
 
     config = config_for(tmp_path)
     path = tmp_path / "config.yaml"
@@ -234,7 +234,7 @@ def test_projection_preserves_history_issues_nested_sources_and_paths() -> None:
 def test_subprocess_pipe_and_redirect_use_explicit_format_only(tmp_path: Path, json_mode: bool) -> None:
     env = dict(os.environ, USERPROFILE=str(tmp_path / "user"), HOME=str(tmp_path / "user"),
                XDG_CACHE_HOME=str(tmp_path / "cache"), PYTHONIOENCODING="utf-8")
-    args = [sys.executable, "-m", "tkn_codex_chat_note", "config", "list", "--quiet",
+    args = [sys.executable, "-m", "tkn_genai_chat_note", "config", "list", "--quiet",
             *(["--json"] if json_mode else [])]
     piped = subprocess.run(args, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
     assert piped.returncode == 0, piped.stderr
@@ -250,7 +250,7 @@ def test_subprocess_pipe_and_redirect_use_explicit_format_only(tmp_path: Path, j
     assert not (tmp_path / "user").exists() and not (tmp_path / "cache").exists()
 
 
-@pytest.mark.parametrize("args,expected", [(["--json", "--version"], "0.47.0"),
+@pytest.mark.parametrize("args,expected", [(["--json", "--version"], "0.48.0"),
                                          (["raw", "ingest", "--json", "--help"], "--full-output")])
 def test_help_and_version_keep_guidance_even_with_json(
     capsys: pytest.CaptureFixture[str], args: list[str], expected: str,

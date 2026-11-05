@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from tkn_codex_chat_note.cli import build_parser
+from tkn_genai_chat_note.cli import build_parser
 
 
 @pytest.mark.parametrize("command", [

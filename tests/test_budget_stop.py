@@ -5,7 +5,7 @@ import pytest
 from test_api_inference import SCHEMA, settings
 from tkn_genai_bridge.providers import litellm as bridge_backend
 
-from tkn_codex_chat_note.api_inference import ApiBudgetExceeded, ApiClient
+from tkn_genai_chat_note.api_inference import ApiBudgetExceeded, ApiClient
 
 
 def test_budget_stop_remains_sticky_even_if_a_cheaper_request_would_fit(monkeypatch):

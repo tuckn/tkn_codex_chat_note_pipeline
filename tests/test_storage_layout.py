@@ -9,11 +9,11 @@ import pytest
 from chat_fixtures import write_chat
 from test_pipeline_workflow import config_for
 
-from tkn_codex_chat_note.config import AppConfig, write_config
-from tkn_codex_chat_note.pipeline import pipeline_status, run_pipeline
-from tkn_codex_chat_note.provenance import validate_provenance
-from tkn_codex_chat_note.runtime import PipelineError
-from tkn_codex_chat_note.storage_migration import migrate_storage
+from tkn_genai_chat_note.config import AppConfig, write_config
+from tkn_genai_chat_note.pipeline import pipeline_status, run_pipeline
+from tkn_genai_chat_note.provenance import validate_provenance
+from tkn_genai_chat_note.runtime import PipelineError
+from tkn_genai_chat_note.storage_migration import migrate_storage
 
 
 def snapshot(root: Path) -> dict[str, bytes | None]:
@@ -96,7 +96,7 @@ def test_migration_rejects_conflicts_without_overwriting(tmp_path: Path, dry_run
 def test_migration_recovers_write_failure_and_interruption(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interrupt: bool
 ) -> None:
-    import tkn_codex_chat_note.storage_migration as migration
+    import tkn_genai_chat_note.storage_migration as migration
 
     config, source_config, source = legacy_store(tmp_path)
     before = snapshot(source)
@@ -158,7 +158,7 @@ def test_explicit_paths_are_final_and_defaults_are_source_scoped(
 ) -> None:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     config = AppConfig()
-    assert config.data_root == tmp_path / ".tkn/codex_chat_note_pipeline/data/codex/windows"
+    assert config.data_root == tmp_path / ".tkn/genai_chat_note_pipeline/data/codex/windows"
     config.source_settings.raw_root = tmp_path / "arbitrary/location"
     assert config.raw_root == tmp_path / "arbitrary/location"
     assert config.source_cache_root == config.cache_root / "codex/windows"
@@ -243,7 +243,7 @@ def test_shared_v4_store_is_split_without_copying_another_sources_provenance(tmp
 
 
 def test_migrated_legacy_locators_resolve_inside_copied_store(tmp_path: Path) -> None:
-    from tkn_codex_chat_note.references import resolve_store_ref
+    from tkn_genai_chat_note.references import resolve_store_ref
 
     config, old_config, old = legacy_store(tmp_path)
     migrate_storage(config, from_config=old_config, dry_run=False)
@@ -307,8 +307,8 @@ def test_legacy_default_roots(schema: str, monkeypatch: pytest.MonkeyPatch) -> N
 
     import yaml
 
-    from tkn_codex_chat_note.config import config_document
-    from tkn_codex_chat_note.storage_migration import _source_store
+    from tkn_genai_chat_note.config import config_document
+    from tkn_genai_chat_note.storage_migration import _source_store
 
     # Keep the synthetic legacy layout below the Windows path length limit.
     with TemporaryDirectory(prefix="tkn-") as temporary:

@@ -10,14 +10,14 @@ import pytest
 from chat_fixtures import write_chat
 from test_reviews import FakeGenerator, config_for, item, seed, weekly
 
-from tkn_codex_chat_note.chat_logs import clean_user_text, read_thread_source
-from tkn_codex_chat_note.chat_titles import load_chat_titles
-from tkn_codex_chat_note.pipeline import run_pipeline
-from tkn_codex_chat_note.review_evidence import period_evidence, raw_supplement
-from tkn_codex_chat_note.review_model import period_for
-from tkn_codex_chat_note.review_profiles import ReviewProfile
-from tkn_codex_chat_note.review_render import render_review
-from tkn_codex_chat_note.review_sources import citation_view, coverage_groups
+from tkn_genai_chat_note.chat_logs import clean_user_text, read_thread_source
+from tkn_genai_chat_note.chat_titles import load_chat_titles
+from tkn_genai_chat_note.pipeline import run_pipeline
+from tkn_genai_chat_note.review_evidence import period_evidence, raw_supplement
+from tkn_genai_chat_note.review_model import period_for
+from tkn_genai_chat_note.review_profiles import ReviewProfile
+from tkn_genai_chat_note.review_render import render_review
+from tkn_genai_chat_note.review_sources import citation_view, coverage_groups
 
 ADMIN = '<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>'
 
@@ -146,7 +146,7 @@ def test_citation_timestamp_keeps_original_fraction_and_offset(tmp_path):
 
 
 def test_lower_reviews_do_not_reintroduce_administrative_citation_targets(tmp_path):
-    from tkn_codex_chat_note.runtime import atomic_write_json
+    from tkn_genai_chat_note.runtime import atomic_write_json
 
     cfg = config_for(tmp_path)
     seed(cfg, [("2026-05-19T00:00:00Z", "Question")])

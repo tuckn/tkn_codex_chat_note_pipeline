@@ -383,7 +383,7 @@ def _discover(
                 started_at=started,
                 used=raw_entities,
                 generated=[normalized_entity],
-                agent={"software": "tkn-codex-chat-note-pipeline", "parserVersion": PARSER_VERSION},
+                agent={"software": "tkn-genai-chat-note-pipeline", "parserVersion": PARSER_VERSION},
             )
             atomic_write_json(activity_marker, {"activityId": activity})
         if diagnostics["invalidLines"] or any(

@@ -1,0 +1,127 @@
+schema_version: "10.0.0"
+# One shared cache base; codex/source_id partitions are automatic.
+cache_root: ~/.cache/genai_chat_note_pipeline
+
+# Every source is a local Codex directory. Map keys are stable source_id values.
+# Recommended: lowercase ASCII kebab-case, e.g. laptop-windows or laptop-wsl-ubuntu.
+# Allowed: ASCII letters/digits/._-, starting with a letter/digit. No spaces or Unicode.
+# No trailing dot, Windows reserved names, or case-only duplicate IDs.
+sources:
+  my-windows-note-pc:
+    enabled: true
+    source_root: ~/.codex
+    include_archived: true
+
+    # Optional final directories; no codex/source_id suffix is added.
+    # Omit roots for ~/.tkn/genai_chat_note_pipeline/<kind>/codex/<source_id>.
+    # When upgrading, explicitly retain the old final raw/data/state paths.
+    raw_root: C:/path/to/codex/raw
+    data_root: C:/path/to/codex/data
+    state_root: C:/path/to/codex/state
+    # Reviews use data_root/reviews and state_root/reviews.
+    reviews:
+      language: ja  # ja or en; one content contract
+      utc_offset_minutes: 540  # Fixed UTC offset; 540 = Japan. No daylight-saving adjustment.
+      previous_period: true  # Related items from the immediately preceding same-kind review; false disables.
+      max_calls: 12  # One source per review command; includes Raw checks and merges. Cached stages do not count.
+      input_characters: 50000  # Per-call prompt ceiling; large periods are batched.
+      raw_characters: 16000  # Maximum original text returned per batch's Raw check.
+      raw_requests: 8  # Maximum evidence IDs requested per batch; 0 disables Raw drill-down.
+
+  my-wsl-ubuntu:
+    enabled: false
+    source_root: '//wsl$/Ubuntu/home/<user>/.codex'
+    include_archived: true
+
+# GenAI connections, defined in this file (no shared tkn_genai_bridge configuration is read).
+# Each entry is a tkn_genai_bridge profile: provider, model, reasoning_effort, timeout_seconds,
+# cli / ollama / azure transport settings and pricing. CLI providers (codex, claude-code,
+# github-copilot, antigravity) reuse that CLI's existing login. API providers name the
+# environment variable that holds a key; never write a key or password here.
+# codex-default, claude-default, copilot-default and antigravity-default exist by default.
+genai_profiles:
+  codex-default:
+    provider: codex
+    model: null  # null: the CLI's default model. Fix one with a model name available to that CLI.
+    timeout_seconds: 1800  # Review stages can take long; Bridge's own default is 300.
+
+  # azure-notes:
+  #   provider: azure-openai
+  #   model: <deployment-name>
+  #   reasoning_effort: high
+  #   azure:
+  #     endpoint: https://<resource>.openai.azure.com/openai/v1
+  #     auth: interactive_browser  # or api_key, reading api_key_env (default AZURE_OPENAI_API_KEY)
+  #     token_scope: https://ai.azure.com/.default
+  #   pricing:
+  #     <deployment-name>:
+  #       currency: JPY
+  #       pricing_date: "2026-01-01"
+  #       input_per_million: 0
+  #       output_per_million: 0
+  #   limits:  # This application's budget for API providers (azure-openai, ollama).
+  #     input_tokens: 60000
+  #     output_tokens: 16000
+  #     context_tokens: 100000
+  #     chunk_characters: 120000
+  #     max_calls: 30
+  #     max_cost_jpy: 100
+
+generation:
+  # Connection used by calendar reviews (`review-notes`). Override per run with --profile <name>.
+  genai_profile: codex-default
+runtime_minutes: 230
+model_timeout_seconds: 1800
+
+# Offline usage reports; no inference or price lookup occurs during build-report.
+report_path: ~/.tkn/genai_chat_note_pipeline/reports
+usage_report:
+  utc_offset_minutes: 0  # Use 540 for Japan; execution dates, not original chat dates.
+  price_scenarios: {}
+  # Reference cost for the same token counts; not an invoice or model prediction.
+  # Reference the confirmed rates of a genai_profiles entry, for example:
+  # price_scenarios:
+  #   comparison-model:
+  #     genai_profile: azure-notes
+  #     model: <deployment-name>
+
+# --- Note processes (role redesign; stage 0 runs `actions link --dry-run` only) ---
+# tkn-genai-chat-archiver archive roots to read (profiles codex and claude-code). Read only;
+# each root's profile and source ID come from its ownership marker.
+archives: {}
+#  codex-my-pc:
+#    root: C:/path/to/archives/Codex/my-pc-windows
+#  claude-code-my-pc:
+#    root: C:/path/to/archives/Claude Code/my-pc-windows
+utc_offset_minutes: 540  # Local dates of conversations; 540 = Japan. No daylight-saving adjustment.
+# Folder prefixes that name the same place (drive letters, junctions, WSL mounts); the first is canonical.
+path_aliases: []
+#  - ["D:/path/to/work", "C:/path/to/work"]
+processes:
+  data_root: ~/.tkn/genai_chat_note_pipeline/processes/data  # Session digests; a cache rebuilt from archives.
+  state_root: ~/.tkn/genai_chat_note_pipeline/processes/state  # Reports. Must not lie in an archive or the Vault.
+  actions:
+    lookback_days: 14
+# The Vault's conventions. Nothing here is written by stage 0.
+vault:
+  root: null  # C:/path/to/vault
+  actions:
+    dir: actions  # Action notes, relative to root (subfolders are read too).
+    frontmatter:  # Frontmatter keys; null when the Vault does not use one.
+      id: null
+      title: title
+      status: status
+      updated: updated
+      aliases: aliases
+      repositories: repositories  # Repository (folder) names the Action works on; clue D.
+    statuses:
+      in_progress: [InProgress]
+      not_started: [NotStarted]
+      closed: [Completed, Done, Closed]
+    sections:
+      notes: '^#{2,6}\s+(?:\d+\.\s*)?Notes\b'  # Heading of the record lines.
+    # record_line: a regular expression with the named group `evidence` (default: the Japanese
+    # `- YYYY-MM-DD <種類>（<主体>）：<結論>。根拠：<根拠>` form).
+    same_evidence: [同上]  # Evidence text that repeats the previous line's evidence.
+    min_name_chars: 8  # Shortest title or alias that counts as a mention in a request (clue C).
+    require_status: true  # Notes without a status (an inbox or index) are not linked.

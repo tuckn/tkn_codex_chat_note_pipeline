@@ -4,7 +4,7 @@ const test = require("node:test");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const resources = path.join(__dirname, "../src/tkn_codex_chat_note/resources");
+const resources = path.join(__dirname, "../src/tkn_genai_chat_note/resources");
 class Element {
   constructor(tag) { this.tag = tag; this.children = []; this.options = []; this.style = {}; this.attrs = {}; this.events = {}; this.value = ""; this.content = ""; }
   set textContent(v) { this.children = []; this.content = String(v ?? ""); }

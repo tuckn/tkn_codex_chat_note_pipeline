@@ -15,11 +15,18 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from .config import AppConfig, CodexSourceConfig, _read_layer, _resolve_paths, validate_source_id
+from .config import (
+    AppConfig,
+    CodexSourceConfig,
+    _read_layer,
+    _resolve_paths,
+    legacy_app_root,
+    validate_source_id,
+)
 from .initialization import ROOT_KINDS, ROOT_OWNERSHIP_MARKER, _ownership_marker_document
 from .provenance import validate_provenance
 from .raw_capture import SOURCE_ID_PATTERN, _mirror_relative, archive_managed
-from .runtime import PipelineError, atomic_write_bytes
+from .runtime import DEFAULT_SOURCE_ID, PipelineError, atomic_write_bytes
 from .storage import STORAGE_VERSION, _root_lock, read_json, validate_storage
 
 
@@ -155,19 +162,32 @@ def _read_source_store(path: Path, selected_id: str | None = None) -> SourceStor
             raise ValueError(f"{field} must be a non-empty path string")
     if "source_id" in document and not isinstance(document["source_id"], str):
         raise ValueError("source_id must be a string")
-    if not re.fullmatch(r"(?:2|[2-9]\.[0-9]+\.[0-9]+)", version):
-        raise PipelineError("migration source requires a standalone schema-2/3/4/5/6/7/8/9 configuration")
+    if not re.fullmatch(r"(?:2|(?:[2-9]|10)\.[0-9]+\.[0-9]+)", version):
+        raise PipelineError("migration source requires a standalone schema-2/3/4/5/6/7/8/9/10 configuration")
     major, minor = (2, 0) if version == "2" else tuple(int(part) for part in version.split(".")[:2])
-    if minor > {2: 2, 3: 0, 4: 1, 5: 0, 6: 0, 7: 2, 8: 4, 9: 0}[major]:
+    if minor > {2: 2, 3: 0, 4: 1, 5: 0, 6: 0, 7: 2, 8: 4, 9: 0, 10: 0}[major]:
         raise PipelineError("unsupported migration source config version")
-    if major in {5, 6, 7, 8, 9}:
+    if major in {5, 6, 7, 8, 9, 10}:
         if major in {5, 6}:
             document = _legacy_sources(document, major)
         if major < 9:
             for key in ("reviews", "idle_minutes", "installed_at"):
                 document.pop(key, None)
-            if isinstance(document.get("generation"), dict):
-                document["generation"].pop("session_note_profile", None)
+        if major < 10:
+            # Storage needs only sources; older generation settings referenced the shared Bridge file.
+            document.pop("generation", None)
+            usage_report = document.get("usage_report")
+            if isinstance(usage_report, dict):
+                usage_report.pop("price_scenarios", None)
+        if major in {7, 8, 9}:
+            # Omitted roots of these versions resolved under the previous application directory.
+            if not isinstance(document.get("sources"), dict):
+                document["sources"] = {DEFAULT_SOURCE_ID: {}}  # The built-in source of these versions.
+            for identity, settings in document["sources"].items():
+                if isinstance(settings, dict):
+                    for kind in ("raw", "data", "state"):
+                        if settings.get(kind + "_root") is None:
+                            settings[kind + "_root"] = legacy_app_root() / kind / "codex" / str(identity)
         config = AppConfig.model_validate(_resolve_paths(document, path.parent))
         if selected_id is not None:
             config = config.for_source(selected_id)

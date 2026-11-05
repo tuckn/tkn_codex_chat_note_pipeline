@@ -17,16 +17,16 @@ CLIの結果は既定で `key=value` 一覧です。機械処理で読む場合�
 [CLI出力契約](cli-output.md)を参照してください。保存するReview NoteのJSONは変更しません。
 
 ```shell
-tkn-codex-chat-note pull
-tkn-codex-chat-note review-notes build --period weekly --date 2026-05-18 --dry-run --full-output
-tkn-codex-chat-note review-notes build --period weekly --date 2026-05-18
-tkn-codex-chat-note review-notes build --period monthly --date 2026-05-01
-tkn-codex-chat-note review-notes build --period yearly --date 2026-01-01
+tkn-genai-chat-note pull
+tkn-genai-chat-note review-notes build --period weekly --date 2026-05-18 --dry-run --full-output
+tkn-genai-chat-note review-notes build --period weekly --date 2026-05-18
+tkn-genai-chat-note review-notes build --period monthly --date 2026-05-01
+tkn-genai-chat-note review-notes build --period yearly --date 2026-01-01
 ```
 
 実行時点で締まった期間だけ生成します。`--date`を省略すると直近の締まった期間です。週は月曜〜日曜、月は暦月、年は暦年。週番号にはISO週年を使います（例：2027年1月1日は2026-W53）。期間は開始を含み、終了を含みません。既定の固定UTCオフセット540分は日本時間です。夏時間は自動調整しません。
 
-`build` / `due` は保存済みcatalogを読むため、取得元を再走査しません。`raw ingest`だけではcatalogや正規化イベントは更新されません。最新の入力が必要な場合は `pull` か `scheduled-run` を使用します。
+`build` / `due` は保存済みcatalogを読むため、取得元を再走査しません。`raw ingest`だけではcatalogや正規化イベントは更新されません。最新の入力が必要な場合は `pull`（毎日の `scheduled-run` も同じ取得・正規化を行います）を使用します。
 
 ## 入力とRaw照合
 
@@ -75,10 +75,10 @@ JSONの主要フィールドは次のとおりです。
 `basis` は `observed`（記録で確認）、`reported`（発言・報告）、`inferred`（推測）、`proposed`（提案）です。参照IDが存在することは、その根拠が主張を意味的に支持することの保証ではありません。元の会話でAIが報告した成功も、実環境で再検証した結果とは区別します。
 
 ```shell
-tkn-codex-chat-note review-notes validate "C:\path\to\reviews\weekly\2026\2026-W21.json"
+tkn-genai-chat-note review-notes validate "C:\path\to\reviews\weekly\2026\2026-W21.json"
 ```
 
-検証はJSON構造、期間、引用IDと推移的参照を確認します。原資料全体の真正性・意味的正しさを監査するものではありません。モデルの項目契約は [output.schema.json](../../src/tkn_codex_chat_note/profiles/default-jp/output.schema.json)、生成指針は [prompt.md](../../src/tkn_codex_chat_note/profiles/default-jp/prompt.md) です。
+検証はJSON構造、期間、引用IDと推移的参照を確認します。原資料全体の真正性・意味的正しさを監査するものではありません。モデルの項目契約は [output.schema.json](../../src/tkn_genai_chat_note/profiles/default-jp/output.schema.json)、生成指針は [prompt.md](../../src/tkn_genai_chat_note/profiles/default-jp/prompt.md) です。
 
 ## Frontmatterと日英プロファイル
 
@@ -115,7 +115,7 @@ JSONは新規生成時からcreated・updatedを任意の追加メタデータ�
 Windowsパスはシングルクォート、file URIは通常の文字列です。英語コメントで項目をグループ化します。
 単一値の未設定はコロンのみ、空のdescriptionは `""` です。詳細な出典一覧と校正履歴はJSONに保持します。
 
-ノートの資源は `src/tkn_codex_chat_note/profiles/default-jp/` と `default-en/` にあります。
+ノートの資源は `src/tkn_genai_chat_note/profiles/default-jp/` と `default-en/` にあります。
 設定の `sources.<id>.reviews.language: ja` / `en` が自動で選択します。
 
 | ファイル | 用途 |
@@ -131,14 +131,14 @@ Windowsパスはシングルクォート、file URIは通常の文字列です�
 | instructions.json | 原文の最終照合、概要、行分割の補助指示 |
 | output.schema.json | モデルの項目契約。PydanticのReviewDraftと一致することを起動時に検証 |
 
-[日本語Markdownテンプレート](../../src/tkn_codex_chat_note/profiles/default-jp/template.md)と
-[英語Markdownテンプレート](../../src/tkn_codex_chat_note/profiles/default-en/template.md)を独立して変更できます。
+[日本語Markdownテンプレート](../../src/tkn_genai_chat_note/profiles/default-jp/template.md)と
+[英語Markdownテンプレート](../../src/tkn_genai_chat_note/profiles/default-en/template.md)を独立して変更できます。
 生成・校正の方針は実績のある英語の指示文を両方に保持し、リクエストのLanguageで出力言語を指定します。
 日英の本文・タイトルはそれぞれのテンプレートで定義します。
 プロファイルはパッケージに同梱する資源です。変更をインストール済みCLIへ反映するには `uv tool install . --reinstall` を使います。
-`generation.profiles` はBridgeの実行設定であり、このノート用profilesとは別です。
+生成に使う接続（`generation.genai_profile` で選ぶ `genai_profiles`）は、このノート用profilesとは別の設定です。
 
-入力・生成条件が同じで表示資源だけが古い場合、通常のreview-notes／scheduled-runで保存済みJSONから更新します。
+入力・生成条件が同じで表示資源だけが古い場合、通常の `review-notes` の実行で保存済みJSONから更新します。
 結果は `rendered`（集計は `renderedCount`）、モデル呼出しは0回です。dry-runは `planned` と理由を返すだけです。
 旧出力をバックアップし、編集済み・確認済みノートは保持します。JSON・日時を表示変更に合わせて書き換えません。
 プロンプト・リクエスト枠・補助指示の変更は生成の更新対象です。変更したリクエストのcacheを流用しません。
@@ -146,7 +146,7 @@ Windowsパスはシングルクォート、file URIは通常の文字列です�
 
 ## 定期実行と再開
 
-Windows Task Schedulerから毎日 `scheduled-run` を実行します。Rawを毎回保存・正規化し、締まった期間のレビューを生成します。取得・正規化は推論を行いません。週次は月曜以降、月次は翌月1日以降、年次は翌年1月1日以降の最初の実行が対象です。
+0.48.0から `scheduled-run` はRawの取得・正規化だけを行い、レビューを生成しません。締まった期間のレビューは `review-notes due` を明示して実行したときに作ります。週次は月曜以降、月次は翌月1日以降、年次は翌年1月1日以降の実行が対象です。生成済みのReview Noteは残します。
 
 `due` 初回の実行日、または設定した `sources.<id>.reviews.start_date` を含む暦期間から始めます。開始日が月・年の途中でも、その月・年のレビューには保存済みの期間全体を使います。開始日以前の締まった期間は自動で全件生成しません。設定変更で開始日を過去にするとバックフィル対象が増えます。
 
@@ -191,7 +191,7 @@ Markdownでは共通の留保を冒頭にまとめ、個別の判断に影響す
 空の期間は推論しません。編集指示だけの変更では、モデル・抽出条件・入力が同じなら抽出cacheを再利用します。
 モデルや抽出条件が変わると通常の自動cache再利用はしません。
 生成方針の変更は入力fingerprintに反映され、再生成は既存の編集・確認済みノート保護に従います。
-統合指針は [synthesis-prompt.md](../../src/tkn_codex_chat_note/profiles/default-jp/synthesis-prompt.md) です。
+統合指針は [synthesis-prompt.md](../../src/tkn_genai_chat_note/profiles/default-jp/synthesis-prompt.md) です。
 
 ## 自動校正（0.33）
 
@@ -210,7 +210,7 @@ Markdownでは共通の留保を冒頭にまとめ、個別の判断に影響す
 JSONの `generation.qualityAudit` に確認方法・件数・抜粋の限界・各判断を保存します。意味の正しさの保証ではありません。`review-notes validate` は従来どおりローカルの構造検証で、モデルを呼びません。この項目のない旧ノートも読めます。
 
 空でないレビューには根拠校正が最低1回増え、完全一致しない抽出項目があれば欠落照合が増え、概要があれば本文との照合が概要1件につき1回増えます。回数は最終案と根拠量に依存するため、dry-runの初期バッチ数だけでは確定しません。取得できた失敗・修復を含む利用量を記録します。本文以外のモデル実行環境の入力、推論・出力も消費するため、復元候補が多いと費用は大きく増えます。`max_calls` により複数回の定期実行にまたがる場合もあります。
-[校正プロンプト](../../src/tkn_codex_chat_note/profiles/default-jp/quality-prompt.md)を参照してください。
+[校正プロンプト](../../src/tkn_genai_chat_note/profiles/default-jp/quality-prompt.md)を参照してください。
 
 ## 簡潔さの検証（0.34）
 

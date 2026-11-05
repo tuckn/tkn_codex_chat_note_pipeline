@@ -7,6 +7,20 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.48.0 - 2026-11-05
+
+Stage 0 of the role redesign: the CLI moves from calendar reviews toward source-cited proposals for existing notes (see `docs/design/role-redesign_ja.md`).
+
+- Rename the project to `tkn_genai_chat_note_pipeline`: distribution `tkn-genai-chat-note-pipeline`, package `tkn_genai_chat_note`, CLI `tkn-genai-chat-note`, user directory `~/.tkn/genai_chat_note_pipeline`, cache `~/.cache/genai_chat_note_pipeline`. Storage-5 ownership markers and store identities are unchanged; usage reports written by 0.47.0 are still recognized.
+- `scheduled-run` only captures and normalizes; it no longer generates weekly, monthly or yearly reviews. `review-notes build`, `due` and `validate` remain as manual commands without new features. Existing Review Notes are not deleted.
+- Configuration schema 10.0.0: GenAI connections are defined in this file under `genai_profiles` (tkn_genai_bridge profiles plus `limits` and Ollama `model_digest`), selected by `generation.genai_profile` and `--profile`. The shared Bridge configuration (`bridge_profile`) is no longer read. Price scenarios reference `genai_profile` and `model`. Schema 9 is rejected with guidance.
+- Add `config migrate`: convert a schema-9 file, copying each referenced shared Bridge profile once (checked to be identical), and move the previous user config to the new location. Old files are never modified. Omitted storage roots that still live under the previous default directory are pinned; processing stops instead of starting an empty store there.
+- `--provider` prefers a connection the user declared over a built-in default of the same provider.
+- Rename the Task Scheduler example to `scripts/register-scheduled-task.ps1` (default task name `TknGenAIChatNote`).
+- Add `actions link --dry-run`: read recent Codex and Claude Code conversations from tkn-genai-chat-archiver archives, build session digests (the person's requests, final answers, paired tool executions, Vault notes opened or changed, facts) and match conversations with Action notes by clues A-D only. The report goes to `processes.state_root`; nothing is written to the Vault and no generative AI is used.
+- Configuration adds `archives`, `utc_offset_minutes`, `path_aliases`, `processes` and `vault` (all Vault conventions are settings).
+- Depend on `tkn-genai-chat-archiver` (`ArchiveView`) and `tkn-genai-chat-search` (`library`) for reading archives and log formats.
+
 ## 0.47.0 - 2026-11-02
 
 - Read Raw archives managed by tkn-genai-chat-archiver without writing to them. A raw_root containing `.tkn-genai-chat-archive.json` is read only: `clone`, `pull` and `scheduled-run` use the latest version of each path from confirmed archive manifests, after checking stored and decoded sizes and SHA-256.

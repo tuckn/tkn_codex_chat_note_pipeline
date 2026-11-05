@@ -19,20 +19,20 @@ CLI results use `key=value` by default; add `--json` for machine consumption.
 [CLI output contract](cli-output.md); saved Review Note JSON is unchanged.
 
 ```shell
-tkn-codex-chat-note pull
-tkn-codex-chat-note review-notes build --period weekly --date 2026-05-18 --dry-run --full-output
-tkn-codex-chat-note review-notes build --period weekly --date 2026-05-18
-tkn-codex-chat-note review-notes build --period monthly --date 2026-05-01
-tkn-codex-chat-note review-notes build --period yearly --date 2026-01-01
-tkn-codex-chat-note review-notes due --dry-run --full-output
-tkn-codex-chat-note scheduled-run
+tkn-genai-chat-note pull
+tkn-genai-chat-note review-notes build --period weekly --date 2026-05-18 --dry-run --full-output
+tkn-genai-chat-note review-notes build --period weekly --date 2026-05-18
+tkn-genai-chat-note review-notes build --period monthly --date 2026-05-01
+tkn-genai-chat-note review-notes build --period yearly --date 2026-01-01
+tkn-genai-chat-note review-notes due --dry-run --full-output
+tkn-genai-chat-note review-notes due
 ```
 
 Omitting --date selects the latest closed period. Weeks start Monday and use ISO week-years;
 months and years are calendar periods. Start is inclusive; end is exclusive. The default
 fixed UTC offset is +540 minutes (Japan); there is no automatic daylight-saving adjustment.
 Open periods are rejected. Build/due read saved catalogs; raw ingest alone does not update
-canonical events or catalogs. Pull or scheduled-run refreshes them.
+canonical events or catalogs. Pull (or the daily scheduled-run) refreshes them.
 
 Weekly reviews use period-filtered canonical events (dialogue, tool calls/results and interruptions). Monthly reviews use
 weekly JSON; yearly reviews use monthly JSON. Missing or invalid months fall back to
@@ -81,11 +81,11 @@ not independent verification. Explanation is not demonstrated learning, silence 
 disinterest, and historical open issues are not automatically current obligations.
 Inference/candidate items require limitations and a next check.
 
-The model response is governed by [output.schema.json](../../src/tkn_codex_chat_note/profiles/default-jp/output.schema.json)
-and [prompt.md](../../src/tkn_codex_chat_note/profiles/default-jp/prompt.md).
+The model response is governed by [output.schema.json](../../src/tkn_genai_chat_note/profiles/default-jp/output.schema.json)
+and [prompt.md](../../src/tkn_genai_chat_note/profiles/default-jp/prompt.md).
 
 ```shell
-tkn-codex-chat-note review-notes validate "C:\path\to\reviews\weekly\2026\2026-W21.json"
+tkn-genai-chat-note review-notes validate "C:\path\to\reviews\weekly\2026\2026-W21.json"
 ```
 
 Validation checks structure, period boundaries, citation IDs and transitive references.
@@ -96,15 +96,15 @@ assuming an unrelated fresh output root has the same identity.
 
 ## Scheduling, cost and preservation
 
-A daily Windows Task Scheduler invocation of scheduled-run captures and normalizes Raw
-without inference, then builds due reviews for each source. Weeks become due Monday, months on the next month's first day, years
-on the next January 1; missed runs catch up on the next invocation.
+Since 0.48.0, scheduled-run only captures and normalizes Raw without inference; it no longer
+builds reviews. Run `review-notes due` explicitly to build closed periods for each source.
+Weeks become due Monday, months on the next month's first day, years on the next January 1;
+periods that were not built catch up on the next explicit `due`. Existing Review Notes are kept.
 
 Due starts with periods containing its first actual run date or sources.<id>.reviews.start_date. Starting
 mid-month/year still reviews that whole calendar period when it closes. There is no implicit
 backfill of all older closed periods. An explicit earlier start_date enables backfill.
-The repository provides a Task Scheduler registration example with -WhatIf; installing this
-package never registers a task.
+Installing this package never registers a scheduled task.
 
 Review max_calls defaults to 12 per source per invocation, including Raw and merge stages. Cached stages
 do not consume calls. Stage checkpoints resume after interruption/budget stops. Call and runtime limits apply independently to each source. Existing API token/cost limits remain effective.
@@ -159,7 +159,7 @@ The final pass uses the same call/time budget and validated cache. A single extr
 one final pass; empty periods need none. Editorial-only changes reuse extraction checkpoints when
 inputs, extraction policy and model settings match. Model/extraction changes invalidate that reuse.
 Editorial policy contributes to the generation fingerprint, and existing reviewed/edited-file protection applies.
-See [synthesis-prompt.md](../../src/tkn_codex_chat_note/profiles/default-jp/synthesis-prompt.md).
+See [synthesis-prompt.md](../../src/tkn_genai_chat_note/profiles/default-jp/synthesis-prompt.md).
 
 ## Automatic editorial verification (0.33)
 
@@ -203,7 +203,7 @@ batch counts depend on composed findings and cannot be known from the initial dr
 All calls, including unsuccessful/repair attempts, belong in usage accounting when usage is available.
 Token cost includes model/runtime overhead, reasoning and output, not just the excerpt text. Large
 restorations can materially increase cost and span multiple scheduled runs under `max_calls`.
-See [quality-prompt.md](../../src/tkn_codex_chat_note/profiles/default-jp/quality-prompt.md).
+See [quality-prompt.md](../../src/tkn_genai_chat_note/profiles/default-jp/quality-prompt.md).
 
 ## Concise verification (0.34)
 
@@ -293,7 +293,7 @@ Windows paths are single-quoted; file URIs use normal string quoting. English co
 flat properties. Unknown scalar values use a bare key; empty description uses `""`.
 Detailed citations/audit records remain in JSON.
 
-Resources live in `src/tkn_codex_chat_note/profiles/default-jp/` and `default-en/`, selected
+Resources live in `src/tkn_genai_chat_note/profiles/default-jp/` and `default-en/`, selected
 by `sources.<id>.reviews.language: ja` or `en`:
 
 - `profile.json`: language and period titles.
@@ -305,14 +305,14 @@ by `sources.<id>.reviews.language: ja` or `en`:
 - `instructions.json`: final Raw-pass, overview and split-budget instructions.
 - `output.schema.json`: model item contract, checked against ReviewDraft's Pydantic schema at initialization.
 
-[Japanese template](../../src/tkn_codex_chat_note/profiles/default-jp/template.md) and
-[English template](../../src/tkn_codex_chat_note/profiles/default-en/template.md) are independent.
+[Japanese template](../../src/tkn_genai_chat_note/profiles/default-jp/template.md) and
+[English template](../../src/tkn_genai_chat_note/profiles/default-en/template.md) are independent.
 Both preserve the tested English generation policy, with Language specifying the output language;
 localized body text and titles live in their respective profiles. Reinstall with
-`uv tool install . --reinstall` after modifying packaged resources. Bridge's
-`generation.profiles` remains a separate execution-profile setting.
+`uv tool install . --reinstall` after modifying packaged resources. The connection used for
+generation (`genai_profiles` selected by `generation.genai_profile`) is a separate setting.
 
-For unchanged inputs/settings, normal review-notes/scheduled-run refreshes stale presentation
+For unchanged inputs/settings, a normal review-notes run refreshes stale presentation
 from saved JSON without inference (`rendered`, counted in `renderedCount`). Dry-run only reports
 `planned` with a reason. Existing output is backed up and edited/reviewed notes are retained.
 Presentation updates preserve JSON/lifecycle dates. Policy, framing and auxiliary-instruction

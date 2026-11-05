@@ -6,8 +6,8 @@ from tkn_genai_bridge import Profile, ProviderError, ResponseMetadata, Runtime, 
 from tkn_genai_bridge import __version__ as BRIDGE_VERSION
 from tkn_genai_bridge.providers.base import ProviderResponse
 
-from tkn_codex_chat_note import inference
-from tkn_codex_chat_note.inference import InferenceExecutionError, invoke_structured
+from tkn_genai_chat_note import inference
+from tkn_genai_chat_note.inference import InferenceExecutionError, invoke_structured
 
 SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}},
           "required": ["answer"], "additionalProperties": False}

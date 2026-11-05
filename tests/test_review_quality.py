@@ -8,10 +8,10 @@ from typing import Any
 import pytest
 from test_reviews import FakeGenerator, config_for, item, seed, weekly
 
-from tkn_codex_chat_note.review_evidence import EvidenceSet
-from tkn_codex_chat_note.review_generation import ReviewGenerator
-from tkn_codex_chat_note.review_model import ReviewDraft, period_for
-from tkn_codex_chat_note.review_quality import (
+from tkn_genai_chat_note.review_evidence import EvidenceSet
+from tkn_genai_chat_note.review_generation import ReviewGenerator
+from tkn_genai_chat_note.review_model import ReviewDraft, period_for
+from tkn_genai_chat_note.review_quality import (
     CoverageResult,
     EvidenceResult,
     _batches,
@@ -135,7 +135,7 @@ def test_invalid_audit_never_replaces_existing_note_and_repair_is_bounded(tmp_pa
 def test_insight_heading_does_not_claim_multiple_chats_for_one_source(
     tmp_path: Path, language: str, heading: str,
 ) -> None:
-    from tkn_codex_chat_note.review_render import render_review
+    from tkn_genai_chat_note.review_render import render_review
 
     cfg = config_for(tmp_path, language=language)
     seed(cfg, [("2026-05-19T00:00:00Z", "A reusable interpretation from one conversation")])
@@ -150,7 +150,7 @@ def test_insight_heading_does_not_claim_multiple_chats_for_one_source(
 
 @pytest.mark.parametrize("kind", ["weekly", "monthly", "yearly"])
 def test_verbose_compose_is_repaired_once_then_cached(tmp_path: Path, kind: Any) -> None:
-    from tkn_codex_chat_note.review_quality import prose_characters
+    from tkn_genai_chat_note.review_quality import prose_characters
 
     cfg = config_for(tmp_path)
     calls = []
@@ -170,7 +170,7 @@ def test_verbose_compose_is_repaired_once_then_cached(tmp_path: Path, kind: Any)
 
 
 def test_audit_rejects_expansion_and_excessive_restoration() -> None:
-    from tkn_codex_chat_note.review_quality import _check_coverage
+    from tkn_genai_chat_note.review_quality import _check_coverage
 
     unit = {"restoreFindings": [], "evidence": [evidence("x", "Reported result", 0)],
             "replacementBudget": {"maxItems": 2, "maxProseCharacters": 400}}
@@ -226,7 +226,7 @@ def test_audit_finds_turn_completion_and_later_correction_beyond_progress_messag
 
 
 def test_split_budget_is_shared_across_rows() -> None:
-    from tkn_codex_chat_note.review_quality import _check_evidence
+    from tkn_genai_chat_note.review_quality import _check_evidence
 
     units = {id: {"restoreFindings": [], "evidence": [evidence("x", "Supported", 0)]} for id in ["D0", "D1"]}
     result = EvidenceResult.model_validate({"decisions": [
@@ -241,7 +241,7 @@ def test_split_budget_is_shared_across_rows() -> None:
 def test_length_repair_resends_only_offending_row_and_its_sources(tmp_path: Path) -> None:
     from functools import partial
 
-    from tkn_codex_chat_note.review_quality import _check_evidence
+    from tkn_genai_chat_note.review_quality import _check_evidence
 
     units = {id: {"id": id, "item": item(eid), "restoreFindings": [],
                   "evidence": [evidence(eid, "Original source", n)],
@@ -274,7 +274,7 @@ def test_length_repair_resends_only_offending_row_and_its_sources(tmp_path: Path
 
 
 def test_shared_citation_does_not_hide_a_distinct_later_decision() -> None:
-    from tkn_codex_chat_note.review_quality import coverage_plan
+    from tkn_genai_chat_note.review_quality import coverage_plan
 
     initial = item("shared", text="The first version used automatic updates.", category="activities")
     correction = item("shared", text="Later the user rejected automatic updates.", category="decisions")
@@ -301,7 +301,7 @@ def test_mapped_findings_bring_distant_correction_and_completion_to_source_audit
 
 @pytest.mark.parametrize("language", ["ja", "en"])
 def test_all_row_budgets_fit_global_limit_even_with_restorations(language: str) -> None:
-    from tkn_codex_chat_note.review_quality import allocate_editorial_budgets, editorial_limits
+    from tkn_genai_chat_note.review_quality import allocate_editorial_budgets, editorial_limits
 
     # The old 350-character floor could overallocate a 33-row Japanese review.
     units = [{"id": f"D{n}", "item": item("x", text="x" * (70 + n * 7)),
@@ -359,7 +359,7 @@ def test_overview_uses_corrected_body_and_citations_after_source_check(tmp_path:
 
 
 def test_overview_rejects_reintroducing_uncited_old_state() -> None:
-    from tkn_codex_chat_note.review_quality import _check_overview
+    from tkn_genai_chat_note.review_quality import _check_overview
 
     original = item("request", category="overview")
     units = {"D0": {"item": original, "restoreFindings": [], "requireReplacement": True,
@@ -372,7 +372,7 @@ def test_overview_rejects_reintroducing_uncited_old_state() -> None:
 
 
 def test_overview_length_repair_retains_the_verified_body(tmp_path: Path) -> None:
-    from tkn_codex_chat_note.review_quality import _audit_overviews
+    from tkn_genai_chat_note.review_quality import _audit_overviews
 
     body = ReviewDraft.model_validate({"items": [item("done", text="Reported completion.")],
                                        "rawRequests": []}).items

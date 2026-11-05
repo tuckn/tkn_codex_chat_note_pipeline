@@ -6,14 +6,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tkn_codex_chat_note.config import (
+from tkn_genai_chat_note.config import (
     CONFIG_SCHEMA_VERSION,
     config_example_text,
     initialize_user_config,
     load_app_config,
     resolve_app_config,
 )
-from tkn_codex_chat_note.runtime import PipelineError
+from tkn_genai_chat_note.runtime import PipelineError
 
 
 def write_yaml(path: Path, value: dict[str, object]) -> None:
@@ -47,10 +47,9 @@ def test_packaged_example_config_uses_portable_home_paths() -> None:
     assert "scopes" not in value
     assert value["schema_version"] == CONFIG_SCHEMA_VERSION
     assert config_example_text().splitlines()[0] == f'schema_version: "{CONFIG_SCHEMA_VERSION}"'
-    generation = value["generation"]
-    assert "session_note_profile" not in generation
-    assert generation["active_profile"] == "codex"
-    assert generation["profiles"]["codex"] == {"bridge_profile": "codex-default"}
+    assert value["generation"] == {"genai_profile": "codex-default"}
+    assert value["genai_profiles"]["codex-default"]["provider"] == "codex"
+    assert all("bridge_profile" not in entry for entry in value["genai_profiles"].values())
     assert "summary_prompt" not in value
 
 
@@ -80,17 +79,17 @@ def test_precedence_and_relative_paths(tmp_path: Path, monkeypatch: pytest.Monke
     explicit = tmp_path / "explicit" / "config.yaml"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     write_yaml(
-        home / ".tkn/codex_chat_note_pipeline/config.yaml",
+        home / ".tkn/genai_chat_note_pipeline/config.yaml",
         {
             "runtime_minutes": 10,
-            "generation": {"providers": {"codex": {"model": "global"}}},
+            "genai_profiles": {"codex-default": {"model": "global"}},
         },
     )
     write_yaml(
         cwd / ".tkn/config.yaml",
         {
             "runtime_minutes": 20,
-            "generation": {"providers": {"codex": {"model": "local"}}},
+            "genai_profiles": {"codex-default": {"model": "local"}},
         },
     )
     write_yaml(
@@ -121,13 +120,13 @@ def test_config_resolution_reports_the_winning_source(
     explicit = tmp_path / "explicit.yaml"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     write_yaml(
-        home / ".tkn/codex_chat_note_pipeline/config.yaml",
-        {"generation": {"providers": {"codex": {"model": "global"}}}},
+        home / ".tkn/genai_chat_note_pipeline/config.yaml",
+        {"genai_profiles": {"codex-default": {"model": "global"}}},
     )
     write_yaml(
         cwd / ".tkn/config.yaml",
         {
-            "generation": {"providers": {"codex": {"model": "project"}}},
+            "genai_profiles": {"codex-default": {"model": "project"}},
             "runtime_minutes": 10,
         },
     )
@@ -142,7 +141,7 @@ def test_config_resolution_reports_the_winning_source(
     assert resolution.config.model == "project"
     assert resolution.config.runtime_minutes == 30
     assert "schema_version" not in resolution.sources
-    assert resolution.sources["generation.profiles.codex.model"].startswith("project:")
+    assert resolution.sources["genai_profiles.codex-default.model"].startswith("project:")
     assert resolution.sources["runtime_minutes"] == "CLI option"
     assert [layer["kind"] for layer in resolution.layers] == [
         "built-in",
@@ -195,8 +194,9 @@ def test_config_file_requires_schema_version(tmp_path: Path) -> None:
         ('"2.0"', "expected a quoted MAJOR.MINOR.PATCH"),
         ('"2.0.0-rc1"', "expected a quoted MAJOR.MINOR.PATCH"),
         ('"1.9.0"', "schema v1 is no longer supported"),
-        ('"9.1.0"', "unsupported newer configuration schema_version"),
-        ('"10.0.0"', "unsupported newer configuration schema_version"),
+        ('"9.0.0"', "config migrate"),
+        ('"10.1.0"', "unsupported newer configuration schema_version"),
+        ('"11.0.0"', "unsupported newer configuration schema_version"),
     ],
 )
 def test_unsupported_schema_versions_are_rejected(
@@ -213,13 +213,13 @@ def test_unsupported_schema_versions_are_rejected(
 
 def test_same_major_minor_newer_patch_is_accepted(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
-    write_yaml(path, {"schema_version": "9.0.7", "runtime_minutes": 10})
+    write_yaml(path, {"schema_version": "10.0.7", "runtime_minutes": 10})
 
     resolution = resolve_app_config(explicit_path=path, cwd=tmp_path)
 
     assert resolution.config.schema_version == CONFIG_SCHEMA_VERSION
     explicit = resolution.layers[-1]
-    assert explicit["schemaVersion"] == "9.0.7"
+    assert explicit["schemaVersion"] == "10.0.7"
     assert explicit["effectiveSchemaVersion"] == CONFIG_SCHEMA_VERSION
     assert explicit["migration"] is None
 
@@ -269,9 +269,9 @@ def test_active_provider_requires_matching_provider_settings(
 ) -> None:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     path = tmp_path / "config.yaml"
-    write_yaml(path, {"generation": {"active_provider": "ollama"}})
+    write_yaml(path, {"generation": {"genai_profile": "ollama"}})
 
-    with pytest.raises(PipelineError, match="matching entry under profiles"):
+    with pytest.raises(PipelineError, match="must name an entry under genai_profiles"):
         load_app_config(explicit_path=path, cwd=tmp_path)
 
 
@@ -283,13 +283,11 @@ def test_cli_can_select_an_already_configured_provider_without_repeating_its_mod
         path,
         {
             "schema_version": CONFIG_SCHEMA_VERSION,
-            "generation": {
-                "providers": {
-                    "claude-code": {
-                        "model": "claude-sonnet-4-6",
-                        "reasoning_effort": "medium",
-                        "executable": "claude",
-                    }
+            "genai_profiles": {
+                "claude-sonnet": {
+                    "provider": "claude-code",
+                    "model": "claude-sonnet-4-6",
+                    "reasoning_effort": "medium",
                 }
             },
         },
@@ -304,8 +302,9 @@ def test_cli_can_select_an_already_configured_provider_without_repeating_its_mod
     assert resolution.config.provider == "claude-code"
     assert resolution.config.model == "claude-sonnet-4-6"
     assert resolution.config.reasoning_effort == "medium"
-    assert resolution.sources["generation.active_profile"] == "CLI option"
-    assert resolution.sources["generation.profiles.claude-code.model"].startswith("explicit:")
+    assert resolution.config.generation.genai_profile == "claude-sonnet"  # Declared wins over claude-default.
+    assert resolution.sources["generation.genai_profile"] == "CLI option"
+    assert resolution.sources["genai_profiles.claude-sonnet.model"].startswith("explicit:")
 
 
 @pytest.mark.parametrize(
@@ -358,18 +357,18 @@ def test_legacy_chat_config_remains_unchanged_when_rejected(
 
 
 def test_source_layers_resolve_paths_and_preserve_generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from tkn_codex_chat_note.config import config_document, write_config
+    from tkn_genai_chat_note.config import config_document, write_config
 
     home = tmp_path / "user"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    global_path = home / ".tkn/codex_chat_note_pipeline/config.yaml"
+    global_path = home / ".tkn/genai_chat_note_pipeline/config.yaml"
     write_yaml(global_path, {"sources": {"pc": {"source_root": "logs"}}})
     project = tmp_path / "work/.tkn/config.yaml"
     write_yaml(
         project,
         {
             "sources": {"pc": {"include_archived": False}},
-            "generation": {"providers": {"claude-code": {"model": "example", "executable": "claude"}}},
+            "genai_profiles": {"claude-default": {"model": "example", "cli": {"executable": "claude"}}},
         },
     )
     explicit = tmp_path / "explicit/config.yaml"
@@ -381,7 +380,7 @@ def test_source_layers_resolve_paths_and_preserve_generation(tmp_path: Path, mon
     assert config.source_root == tmp_path / "work/cli-codex"
     assert config.source_id == "pc" and not config.include_archived
     assert config.data_root == explicit.parent / "data"
-    assert config.generation.profiles["claude-code"].model == "example"
+    assert config.genai_profiles["claude-default"].model == "example"
     assert resolution.sources["sources.pc.source_root"] == "CLI option"
     assert resolution.sources["sources.pc.raw_root"] == "built-in defaults"
     assert resolution.sources["sources.pc.data_root"].startswith("explicit:")
@@ -427,7 +426,7 @@ def test_invalid_source_settings_are_rejected_before_merging(
 def test_unknown_chat_key_in_lower_layer_cannot_be_hidden(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     write_yaml(
-        tmp_path / ".tkn/codex_chat_note_pipeline/config.yaml",
+        tmp_path / ".tkn/genai_chat_note_pipeline/config.yaml",
         {"sources": {"windows": {"hom": "typo"}}},
     )
     with pytest.raises(PipelineError, match="unknown configuration key: sources.windows.hom"):
@@ -459,12 +458,12 @@ def test_sources_have_fixed_codex_identity(tmp_path: Path) -> None:
     write_yaml(path, {"sources": {"pc-main": {"source_root": "~/source"}}})
     config = load_app_config(explicit_path=path, cwd=tmp_path)
     assert config.source_identity == ("codex", "pc-main")
-    assert config.raw_root == Path.home() / ".tkn/codex_chat_note_pipeline/raw/codex/pc-main"
+    assert config.raw_root == Path.home() / ".tkn/genai_chat_note_pipeline/raw/codex/pc-main"
     assert config.source_data_root == config.data_root
 
 
 def test_source_roots_keep_declaring_layer_and_config_list_reports_final_paths(tmp_path: Path) -> None:
-    from tkn_codex_chat_note.config import config_document
+    from tkn_genai_chat_note.config import config_document
 
     work = tmp_path / "work"
     project = work / ".tkn/config.yaml"
@@ -476,7 +475,7 @@ def test_source_roots_keep_declaring_layer_and_config_list_reports_final_paths(t
     config = resolution.config
     assert config.data_root == (project.parent / "project-data").absolute()
     assert config.raw_root == (tmp_path / "raw").absolute()
-    assert config.state_root == Path.home() / ".tkn/codex_chat_note_pipeline/state/codex/machine"
+    assert config.state_root == Path.home() / ".tkn/genai_chat_note_pipeline/state/codex/machine"
     document = config_document(config)
     assert "raw_root" not in document and "state_root" not in document
     assert document["sources"]["machine"]["raw_root"] == str(config.raw_root)
@@ -494,13 +493,13 @@ def test_old_config_reports_upgrade_without_writes(tmp_path: Path, schema: str) 
 
 
 def test_old_global_config_is_not_silently_ignored(tmp_path: Path) -> None:
-    path = Path.home() / ".tkn/genai_chat_note_pipeline/config.yaml"
-    write_yaml(path, {"schema_version": "6.0.0"})
+    path = Path.home() / ".tkn/codex_chat_note_pipeline/config.yaml"
+    write_yaml(path, {"schema_version": "9.0.0"})
     before = path.read_bytes()
-    with pytest.raises(PipelineError, match="legacy user configuration found"):
+    with pytest.raises(PipelineError, match="previous application name.*config migrate"):
         load_app_config(cwd=tmp_path)
     assert path.read_bytes() == before
-    assert not (Path.home() / ".tkn/codex_chat_note_pipeline").exists()
+    assert not (Path.home() / ".tkn/genai_chat_note_pipeline").exists()
     explicit = tmp_path / "new.yaml"
     write_yaml(explicit, {"sources": {"pc": {}}})
     assert load_app_config(explicit_path=explicit, cwd=tmp_path).source_id == "pc"
@@ -515,11 +514,11 @@ def test_old_acquisition_wrappers_are_rejected_in_schema_7(tmp_path: Path, key: 
 
 
 def test_config_init_preserves_existing_old_global_configuration(tmp_path: Path) -> None:
-    old = Path.home() / ".tkn/genai_chat_note_pipeline/config.yaml"
-    write_yaml(old, {"schema_version": "6.0.0", "runtime_minutes": 17})
+    old = Path.home() / ".tkn/codex_chat_note_pipeline/config.yaml"
+    write_yaml(old, {"schema_version": "9.0.0", "runtime_minutes": 17})
     before = old.read_bytes()
-    with pytest.raises(PipelineError, match="legacy user configuration found"):
+    with pytest.raises(PipelineError, match="previous application name"):
         initialize_user_config()
     assert old.read_bytes() == before
-    assert not (Path.home() / ".tkn/codex_chat_note_pipeline").exists()
+    assert not (Path.home() / ".tkn/genai_chat_note_pipeline").exists()
     assert initialize_user_config(tmp_path / "separate.yaml")["status"] == "created"

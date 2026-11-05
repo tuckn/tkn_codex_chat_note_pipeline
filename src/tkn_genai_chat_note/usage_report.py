@@ -18,7 +18,6 @@ from .config import AppConfig
 from .cost_policy import record_usage, usage_fields
 from .generation_usage import metric_records, usage_totals
 from .report_evidence import DIAGNOSTIC_FIELDS, LABEL_FIELDS, ReportEvidence
-from .report_settings import BridgePriceScenario
 from .runtime import PipelineError, atomic_write_text
 from .usage_records import TOKEN_FIELDS, timestamp, token_number
 
@@ -261,7 +260,9 @@ def _validate_destination(config: AppConfig) -> Path:
         raise PipelineError("report_path is not an empty or application-owned report directory")
     if (root / "usage.json").is_file():
         saved = _read(root / "usage.json", [])
-        if saved.get("application") != "tkn-codex-chat-note" or saved.get("schemaVersion") != 1:
+        # Reports written before the 0.48.0 rename keep the previous application identifier.
+        if (saved.get("application") not in {"tkn-genai-chat-note", "tkn-codex-chat-note"}
+                or saved.get("schemaVersion") != 1):
             raise PipelineError("report_path contains an unrecognized usage report")
     return root
 
@@ -293,15 +294,14 @@ def _csv_text(records: list[dict[str, Any]], columns: list[str] | None = None) -
 def build_usage_report(config: AppConfig, *, dry_run: bool = False, no_open: bool = False) -> dict[str, Any]:
     root = _validate_destination(config)
     data = collect_usage(config)
-    scenarios = {name: value.pricing if isinstance(value, BridgePriceScenario) else value
-                 for name, value in config.usage_report.price_scenarios.items()}
+    scenarios = config.price_scenario_pricing()
     for record in data["records"]:
         costs = {name: estimate_cost(record_usage(record), price, basis="scenario")
                  for name, price in scenarios.items()}
         record["referenceCosts"] = {name: cost.amount for name, cost in costs.items()}
         record["referenceCostDetails"] = {name: cost.model_dump(mode="json") for name, cost in costs.items()}
     payload = {
-        "application": "tkn-codex-chat-note",
+        "application": "tkn-genai-chat-note",
         "schemaVersion": 1,
         **data,
         "utcOffsetMinutes": config.usage_report.utc_offset_minutes,
@@ -333,8 +333,8 @@ def build_usage_report(config: AppConfig, *, dry_run: bool = False, no_open: boo
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
     )
-    template = files("tkn_codex_chat_note").joinpath("resources/usage_report.html").read_text(encoding="utf-8")
-    script = files("tkn_codex_chat_note").joinpath("resources/usage_report.js").read_text(encoding="utf-8")
+    template = files("tkn_genai_chat_note").joinpath("resources/usage_report.html").read_text(encoding="utf-8")
+    script = files("tkn_genai_chat_note").joinpath("resources/usage_report.js").read_text(encoding="utf-8")
     totals = payload["usageTotals"]
     static = (
         f"<p>試行 {len(data['records'])} 件 / 取得済み入力 {totals['knownInputTokens']:,} tokens / "

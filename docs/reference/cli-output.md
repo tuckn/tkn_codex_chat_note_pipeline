@@ -50,9 +50,9 @@ inspect its complete plan without persistent changes.
 
 | Commands | Results |
 | --- | --- |
-| `config init`, `config list` | Creation/backup paths or resolved config, sources and schema metadata |
-| `clone`, `pull`, `raw ingest` | Capture/normalization counters, failed and attention records, report paths |
-| `review-notes build`, `review-notes due`, `scheduled-run` | Period results/counts, missing timestamps, stop reasons, pending work and capture/review reports |
+| `config init`, `config list`, `config migrate` | Creation/backup paths, resolved config, sources and schema metadata, or the converted file and its notes |
+| `clone`, `pull`, `raw ingest`, `scheduled-run` | Capture/normalization counters, failed and attention records, report paths (`scheduled-run` adds `reviewsScheduled=false`) |
+| `review-notes build`, `review-notes due` | Period results/counts, missing timestamps, stop reasons, pending work and review reports |
 | `review-notes validate`, `provenance validate` | Existing verification fields or selected-format failure diagnostics |
 | `status` | Last saved coverage/status; no live scan added |
 | `storage migrate` | Existing migration result and file count/details |

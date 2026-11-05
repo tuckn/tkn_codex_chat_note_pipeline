@@ -10,9 +10,9 @@ import pytest
 import yaml
 from test_reviews import FakeGenerator, config_for, seed, weekly
 
-from tkn_codex_chat_note.review_frontmatter import render_frontmatter
-from tkn_codex_chat_note.review_model import period_for
-from tkn_codex_chat_note.runtime import atomic_write_json
+from tkn_genai_chat_note.review_frontmatter import render_frontmatter
+from tkn_genai_chat_note.review_model import period_for
+from tkn_genai_chat_note.runtime import atomic_write_json
 
 
 @pytest.mark.parametrize("kind", ["weekly", "monthly", "yearly"])
@@ -50,7 +50,7 @@ def test_flat_metadata_preserves_dates_types_and_identity(tmp_path, kind, stamp)
 
 @pytest.mark.parametrize("path", ["C:/path/to/it's.json", r"C:\path\to\it's.json", r"\\server\share\file.json"])
 def test_windows_paths_are_single_quoted(path):
-    from tkn_codex_chat_note.review_frontmatter import _scalar
+    from tkn_genai_chat_note.review_frontmatter import _scalar
 
     encoded = _scalar(path)
     assert encoded.startswith("'") and yaml.safe_load(encoded) == path
@@ -116,12 +116,12 @@ def test_note_lifecycle_retains_creation_and_only_updates_changed_content(tmp_pa
     cfg = config_for(tmp_path)
     seed(cfg, [("2026-05-19T00:00:00Z", "Question")])
     model = FakeGenerator()
-    monkeypatch.setattr("tkn_codex_chat_note.reviews.now_iso", lambda: "2026-06-01T10:00:00+09:00")
+    monkeypatch.setattr("tkn_genai_chat_note.reviews.now_iso", lambda: "2026-06-01T10:00:00+09:00")
     result = weekly(cfg, model)
     path = Path(result["results"][0]["jsonPath"])
     original = json.loads(path.read_text("utf-8"))
     assert original["created"] == original["updated"] == original["generatedAt"]
-    monkeypatch.setattr("tkn_codex_chat_note.reviews.now_iso", lambda: "2026-06-02T10:00:00+09:00")
+    monkeypatch.setattr("tkn_genai_chat_note.reviews.now_iso", lambda: "2026-06-02T10:00:00+09:00")
     weekly(cfg, model, force=True)
     unchanged = json.loads(path.read_text("utf-8"))
     assert unchanged["created"] == unchanged["updated"] == original["created"]
@@ -134,7 +134,7 @@ def test_note_lifecycle_retains_creation_and_only_updates_changed_content(tmp_pa
 
 
 def test_request_template_change_triggers_generation_even_with_same_inputs(tmp_path, monkeypatch):
-    from tkn_codex_chat_note.review_profiles import ReviewProfile
+    from tkn_genai_chat_note.review_profiles import ReviewProfile
 
     cfg, model, path, _ = prepare_old_presentation(tmp_path)
     read = ReviewProfile.text
@@ -150,7 +150,7 @@ def test_request_template_change_triggers_generation_even_with_same_inputs(tmp_p
 
 @pytest.mark.parametrize("language", ["ja", "en"])
 def test_external_markdown_template_controls_output_without_model_calls(tmp_path, monkeypatch, language):
-    from tkn_codex_chat_note.review_profiles import ReviewProfile
+    from tkn_genai_chat_note.review_profiles import ReviewProfile
 
     cfg = config_for(tmp_path, language=language)
     seed(cfg, [("2026-05-19T00:00:00Z", "Question")])

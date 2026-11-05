@@ -10,10 +10,10 @@ import pytest
 from test_review_quality import evidence
 from test_reviews import config_for, item
 
-from tkn_codex_chat_note.review_generation import ReviewGenerator
-from tkn_codex_chat_note.review_model import period_for
-from tkn_codex_chat_note.review_quality import EvidenceResult, _audit_batches, _check_evidence, _payload
-from tkn_codex_chat_note.review_transport import evidence_aliases, map_evidence_ids
+from tkn_genai_chat_note.review_generation import ReviewGenerator
+from tkn_genai_chat_note.review_model import period_for
+from tkn_genai_chat_note.review_quality import EvidenceResult, _audit_batches, _check_evidence, _payload
+from tkn_genai_chat_note.review_transport import evidence_aliases, map_evidence_ids
 
 
 def test_alias_roundtrip_preserves_prose_metadata_and_unit_ids() -> None:

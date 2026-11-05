@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tkn-codex-chat-note-pipeline"
-version = "0.47.0"
-description = "Preserve Codex chat evidence and generate source-backed calendar review notes."
+name = "tkn-genai-chat-note-pipeline"
+version = "0.48.0"
+description = "Read archived generative AI chat logs and prepare source-cited proposals for existing notes."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
@@ -15,13 +15,15 @@ dependencies = [
   "PyYAML>=6,<7",
   "Jinja2>=3.1,<4",
   "tkn-genai-bridge @ https://github.com/tuckn/tkn_genai_bridge/archive/9cf534e47159901c3bb05bb802695fad746cc338.zip",
+  "tkn-genai-chat-archiver",
+  "tkn-genai-chat-search",
   "httpx>=0.28,<1",
   "tiktoken>=0.12,<1",
   "zstandard>=0.23,<1",
 ]
 
 [project.scripts]
-tkn-codex-chat-note = "tkn_codex_chat_note.cli:main"
+tkn-genai-chat-note = "tkn_genai_chat_note.cli:main"
 
 [dependency-groups]
 dev = [
@@ -31,10 +33,15 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tkn_codex_chat_note"]
+packages = ["src/tkn_genai_chat_note"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+# TODO(before commit): pin both to a pushed commit, like tkn-genai-bridge above.
+[tool.uv.sources]
+tkn-genai-chat-archiver = { path = "../tkn_genai_chat_archiver", editable = true }
+tkn-genai-chat-search = { path = "../tkn_genai_chat_search", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -49,7 +56,7 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-packages = ["tkn_codex_chat_note"]
+packages = ["tkn_genai_chat_note"]
 
 [[tool.mypy.overrides]]
 module = "yaml"
