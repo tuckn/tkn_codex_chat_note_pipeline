@@ -1,15 +1,15 @@
 # Tkn GenAI Chat Note — 生成AIとの会話ログから、既存のノートへの差分案を作るCLI
 
-`tkn-genai-chat-note` は、[tkn-genai-chat-archiver](https://github.com/tuckn/tkn_genai_chat_archiver) が保管したCodex・Claude Codeの会話ログを読み、作業ノート（Action）や日次のLogなど、**既存のノートへの差分案**を作るCLIです。
+`tkn-genai-chat-note` は、Codex・Claude Codeの会話ログ（各アプリの保存場所、または [tkn-genai-chat-archiver](https://github.com/tuckn/tkn_genai_chat_archiver) のアーカイブ）を読み、作業ノート（Action）や日次のLogなど、**既存のノートへの差分案**を作るCLIです。
 
 > [!NOTE]
-> 役割を作り替えている途中です（[設計案](docs/design/role-redesign_ja.md)）。今は段階0（準備）で、まだノートには何も書きません。
+> 役割を作り替えている途中です（[設計案](docs/design/role-redesign_ja.md)）。今は段階1の前の準備までで、まだノートには何も書きません。
 
 ## 1. これは何か
 
 生成AIとの会話には、本人の判断・依頼・作業の実施記録が多く残っています。一方で、作業ノートの進捗・方針・関係の更新は追いつきません。このCLIは、会話から「既存のノートのどこを、どう変えるか」の候補を少数だけ作り、本人が採否を決める形にします。会話を要約した新しいノートは作りません。
 
-- 根拠は、アーカイブの会話の版（SHA-256）と行で示します。本人の発言からの引用は、プログラムが文字どおり一致するかを確かめます。
+- 根拠は、会話の内容（展開した後のSHA-256）と行で示します。本人の発言からの引用は、プログラムが文字どおり一致するかを確かめます。
 - 既存のノートの本文は、本人が採用するまで変えません。
 - 利用者ごとに違うもの（フォルダ、ファイル名、Frontmatterの項目、記録の行の形、生成AIの接続先）は設定で持ちます。
 
@@ -18,12 +18,12 @@
 | 段階 | 内容 | 状態 |
 | --- | --- | --- |
 | 0. 準備 | 名前の変更、`scheduled-run` から期間レビューを外す、生成AIの接続を `genai_profiles` に移す、会話の要点、会話とActionの対応づけの試行 | 0.48.0で一部（下の注） |
-| 1. Actionの照合 | 既存のActionの差分案のブロック、下書きのAction | 未実装 |
-| 2. Context収集の点検 | AIが資料を探すときのつまずきを数え、週次のレポートにする | 未実装 |
-| 3. Logの記録 | その日の会話の記録を日次のLogに足す | 未実装 |
+| 1. Actionの照合 | 既存のActionの差分案のブロック、下書きのAction | 始める前の準備（読む場所の `mode`、会話の要点のcache、根拠ID）だけ0.50.0で実装 |
+| 2. AIの日記 | AIの側の記録を1日1ファイルで作る | 未実装 |
+| 3. dreams | AIの日記の1週間分を振り返り、残すべき学びの候補を出す | 未実装 |
 | 4. 片付け | 期間レビュー・Raw取得・旧profileを外す | 未実装 |
 
-注：0.48.0でできるのは、名前の変更、`scheduled-run` の変更、`genai_profiles`、会話の要点と、会話とActionの対応づけの試行（`actions link --dry-run`、[3.1節](#31-会話とactionを対応づける試行)）です。ノートにはまだ何も書きません。
+注：今できるのは、名前の変更、`scheduled-run` の変更、`genai_profiles`、会話の要点と、会話とActionの対応づけの試行（`actions link --dry-run`、[3.1節](#31-会話とactionを対応づける試行)）です。ノートにはまだ何も書きません。
 
 ### 1.2. 前提
 
@@ -31,7 +31,7 @@
 
 - 作業ノートの `Notes` に、日付・種類・主体・根拠付きの記録の行を残す運用。この運用をしない場合、Actionの照合の価値は小さくなります。
 - 差分案のブロックはObsidianのcalloutの書き方です。ほかのMarkdownの道具では、ただの引用として見えます。
-- `tkn-genai-chat-archiver` のアーカイブが必要です。
+- 既定ではアプリの保存場所（`~/.codex`・`~/.claude`）を読むので、`tkn-genai-chat-archiver` は要りません。アプリが消した古い会話まで読むには、archiverを使い、読む場所を `auto` にします（[3.1節](#31-会話とactionを対応づける試行)）。
 - CodexとClaude Codeのログの内部形式に依存します。形式はアプリの版によって変わることがあります。
 - 最初は日本語の既定値だけを同梱します。
 
@@ -40,7 +40,7 @@
 | ライブラリ | 使うもの |
 | --- | --- |
 | [tkn_genai_chat_archiver](https://github.com/tuckn/tkn_genai_chat_archiver) | `ArchiveView`：アーカイブを読み取り専用で読む（確定したmanifestだけ、SHA-256の照合、zstdの展開） |
-| [tkn_genai_chat_search](https://github.com/tuckn/tkn_genai_chat_search) | `library`：Codex・Claude Codeのログの読み取り。発言、ツール実行の組（`call_id`・`tool_use_id`）、発言の書き手（`turnOrigin`） |
+| [tkn_genai_chat_search](https://github.com/tuckn/tkn_genai_chat_search) | `library`：Codex・Claude Codeのログの読み取り（アプリの保存場所から読んだバイト列も、アーカイブから読んだバイト列も同じ関数で読む）。発言、ツール実行の組（`call_id`・`tool_use_id`）、発言の書き手（`turnOrigin`） |
 | [tkn_genai_bridge](https://github.com/tuckn/tkn_genai_bridge) | 生成AIの呼び出し（期間レビュー。段階1からActionの照合でも使う） |
 
 ログの形式の変化への対応は、読み取りを持つこれらのリポジトリで行います。
@@ -71,7 +71,7 @@ tkn-genai-chat-note config init
 設定ファイルは `~/.tkn/genai_chat_note/config.yaml` です。優先順位は、既定値 → ユーザー設定 → 作業ディレクトリの `.tkn/config.yaml` → `--config` → CLIオプションです。`config init` は編集済みのファイルを守り、`--force` を付けたときだけバックアップして置き換えます。
 
 ```yaml
-schema_version: "10.0.0"
+schema_version: "11.0.0"
 sources:
   my-pc:
     enabled: true
@@ -96,14 +96,22 @@ model_timeout_seconds: 1800
 
 source IDと、使っているRaw・data・stateの保存先は変えないでください。保存先を省略すると `~/.tkn/genai_chat_note/<kind>/codex/<source_id>` を使います。ほかの項目は[設定例](src/tkn_genai_chat_note/resources/config.example.yaml)を参照してください。
 
-`actions link` には、読むアーカイブとVaultの約束を設定します。Vaultのフォルダ名・Frontmatterの項目名・status・見出し・記録の行の形は、すべて設定で変えられます。
+`actions link` には、会話を読む場所（`chat_sources`）とVaultの約束を設定します。Vaultのフォルダ名・Frontmatterの項目名・status・見出し・記録の行の形は、すべて設定で変えられます。
 
 ```yaml
-archives:
+chat_sources:
   codex-my-pc:
-    root: C:/path/to/archives/Codex/my-pc-windows
+    app: codex                  # codex / claude-code
+    source_id: my-pc-windows    # 根拠IDの一部。アーカイブも読むなら、その所有マーカーの sourceId
+    mode: auto                  # app（既定）/ archive / auto
+    root: ~/.codex              # アプリの保存場所。省略すると ~/.codex・~/.claude
+    archive: C:/path/to/archives/Codex/my-pc-windows  # archive・auto のときだけ
   claude-code-my-pc:
-    root: C:/path/to/archives/Claude Code/my-pc-windows
+    app: claude-code
+    source_id: my-pc-windows
+    mode: app
+digests:
+  cache: true                   # false：会話の要点を保存せず、毎回作る
 utc_offset_minutes: 540
 path_aliases:
   - ["D:/path/to/work", "C:/path/to/work"]  # 同じ場所を指す別の書き方。先頭が正
@@ -157,7 +165,19 @@ tkn-genai-chat-note actions link --dry-run
 tkn-genai-chat-note actions link --dry-run --days 14 --as-of 2026-11-05
 ```
 
-archiverのアーカイブ（`archives`）から直近の会話を読み、Vaultの作業ノート（`vault.actions`）と対応づけて、結果を `processes.state_root/actions-link/<実行ID>/` に書きます（`report.md`・`report.json`・`links.jsonl`）。Vaultには何も書かず、生成AIも使いません。この版では `--dry-run` が必須です。
+設定の `chat_sources` の場所から直近の会話を読み、Vaultの作業ノート（`vault.actions`）と対応づけて、結果を `processes.state_root/actions-link/<実行ID>/` に書きます（`report.md`・`report.json`・`links.jsonl`）。Vaultには何も書かず、生成AIも使いません。この版では `--dry-run` が必須です。
+
+読む場所は、アプリと取得元ごとに `mode` で選びます。どの場所も読み取り専用で、何も書きません。
+
+| `mode` | 読むもの | 向いている場面 |
+| --- | --- | --- |
+| `app`（既定） | 各アプリの保存場所（`root`。既定 `~/.codex`・`~/.claude`） | 下準備なしで始めたい。archiverを使っていない |
+| `archive` | `tkn-genai-chat-archiver` のアーカイブ（`archive`）だけ | アプリの保存場所が別のPCにある・読めない |
+| `auto` | アプリの保存場所を先に読み、そこにない会話（アプリが消した、圧縮・移動で名前が変わった）はアーカイブから読む。同じ会話が両方にあればアプリの保存場所の方（新しい追記を含むため） | archiverも使っていて、古い会話も確実に読みたい |
+
+- アーカイブは、所有マーカーの `profile`・`sourceId` が設定の `app`・`source_id` と一致するときだけ読みます。確定したmanifestだけを読み、相対パスごとの最新の版を使い、保存ファイルと展開後の内容のSHA-256を照合します。
+- `auto` で一方の場所が読めないときは、もう一方だけを読み、レポートに示します。`app`・`archive` で場所が読めない取得元は飛ばします。
+- `processes.data_root`・`processes.state_root` と会話の要点のcacheは、Vaultと、`chat_sources` に書いたすべての場所（modeで読まない場所や、無効にした取得元の場所も含む）と重ねられません。
 
 使う手がかりは次の4つです。
 
@@ -172,9 +192,9 @@ archiverのアーカイブ（`archives`）から直近の会話を読み、Vault
 - Dが複数のActionに一致した会話は「曖昧」とし、段階1で生成AIに選ばせます。
 - どれにも対応しない会話で、作業フォルダの名前が終了したActionの `repositories`（なければtitle。titleで比べるのは `_` か `-` を含む名前だけ）に一致したものは「続き」とします。段階1では、そのActionを再開せず、新しいActionの候補にします。
 - A(実行)だけの手がかりは、レポートに「弱い」と示します。
-- 会話ごとに「会話の要点」（本人の発言、各ターンの最後の回答、ツール実行、開いたVaultのノート、commitなどの事実）をJSONで作り、`processes.data_root/digests/` に置きます。アーカイブの同じ版からは作り直さず再利用します。消してもかまいません。
+- 会話ごとに「会話の要点」（本人の発言、各ターンの最後の回答、ツール実行、開いたVaultのノート、commitなどの事実）をJSONで作り、作り直せるcacheとして `<cache_root>/digests/` に置きます。会話の内容のSHA-256・設定・このCLIの版が変わったら作り直します。消してもかまいません。`digests.cache: false` なら保存せず、毎回作ります。
 - 本人の発言の判定：Claude Codeは `turnOrigin` が `human` 以外の発言（別のセッションからの依頼など）、sidechain、引数のないスラッシュコマンド、アプリが書いた行を除きます。`turnOrigin` のない古い記録は確度を1段下げて含めます。Codexは、アプリが足すブロック（`<external_…>`・`<user_action>` など）だけの発言を除きます。貼り付け（`<pasted_content>`）は本人の発言に含めます。
-- 根拠ID：`<アプリ>/<source_id>/<セッションID>@<版のSHA-256の先頭12桁>#L<行>`。アーカイブの版は変わらないので、元の行に戻れます。
+- 根拠ID：`<アプリ>/<source_id>/<セッションID>@<展開した後の内容のSHA-256の先頭12桁>#L<行>`。Codexが `.jsonl` を `.jsonl.zst` に圧縮しても、アプリの保存場所から読んでもアーカイブから読んでも、同じ内容なら同じIDです。`app` だけで読む場合、アプリが後で会話を消したり書き足したりすると、古いIDの内容は確かめられなくなります。後から確かめたいなら `auto` にします。
 
 ### 3.2. 定期実行
 

@@ -7,6 +7,16 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.50.0 - 2026-11-06
+
+Preparation for stage 1 of the role redesign (design 3.1, 3.2 and 3.4).
+
+- Reading locations: `chat_sources` replaces `archives`. Each entry names `app` (`codex` or `claude-code`), `source_id`, `mode`, `root` and `archive`. `mode: app` (default) reads the application's folder (`root`, default `~/.codex` or `~/.claude`) read only; `archive` reads only a tkn-genai-chat-archiver archive (finished manifests, the latest version of each relative path, SHA-256 checked) whose marker names the same app and source; `auto` reads the application's folder first and takes the conversations it no longer has from the archive (a conversation in both is read from the folder; Codex rollouts are matched by file name without `.zst`, Claude Code transcripts by session and agent below the project folder). Neither location is written. An unreadable location is reported; `auto` continues with the other one.
+- Session digests move from `processes.data_root/digests/` to the rebuildable cache `<cache_root>/digests/` (digest schema 2.0.0: `file` depends only on the content, `location` says where the copy was read). They are rebuilt when the decoded content's SHA-256, the settings or the application version changes, and for Codex when the thread's names in `session_index.jsonl` differ. `digests.cache: false` keeps no cache. The same content in two files of one run is digested once. Existing `processes.data_root/digests/` folders are no longer read and are not deleted.
+- Evidence IDs use the first 12 hex of the decoded content's SHA-256, so `.jsonl` and `.jsonl.zst`, and the application's folder and the archive, give the same ID for the same content.
+- `actions link` report schema 2.0.0: `sources`, `skippedSources`, `digestCache` and `readFrom` replace `archives` and `skippedArchives`; each row's `digest` names `source`, `location`, `relativePath` and `contentSha256`. Work folders and the digest cache must not overlap the Vault or any folder named under `chat_sources`, whatever its mode and even when the entry is disabled.
+- Configuration schema 11.0.0 (`archives` removed, `chat_sources` and `digests` added). Files of schema 10 stop with an error and are not converted. Layer validation errors name the key.
+
 ## 0.49.0 - 2026-11-06
 
 - Align the names with the repository `tkn_genai_chat_note`: distribution `tkn-genai-chat-note` (was `tkn-genai-chat-note-pipeline`), user directory `~/.tkn/genai_chat_note` and cache `~/.cache/genai_chat_note` (were `…_pipeline`). The CLI `tkn-genai-chat-note` and the package `tkn_genai_chat_note` are unchanged.

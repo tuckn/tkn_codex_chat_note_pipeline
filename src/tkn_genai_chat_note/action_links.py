@@ -7,8 +7,9 @@ strong and link directly; a unique D links with medium strength; several D candi
 the later AI step. An A that only names the file in a command's arguments is weak: it links only
 together with another clue for the same Action. A conversation that links to nothing, but whose
 repository matches a finished Action, is reported as follow-up work, a candidate for a new Action.
-Nothing is written to the Vault and no generative AI is called. The report and digest cache are
-written under `processes.state_root` and `processes.data_root`.
+Conversations are read where `chat_sources` says (the application's folder, the archive or both).
+Nothing is written to the Vault, an application's folder or an archive, and no generative AI is
+called. The report goes below `processes.state_root`, the digest cache below `<cache_root>/digests/`.
 """
 
 from __future__ import annotations
@@ -24,15 +25,15 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .chat_archives import conversation_files, open_archives
+from .chat_sources import conversation_files, open_sources
 from .config import AppConfig
-from .digests import DigestContext, load_or_build
+from .digests import DigestContext, DigestStore, digest_cache_root
 from .path_text import PathText
 from .runtime import PipelineError, atomic_write_json, atomic_write_text
 from .vault_actions import ActionNote, load_actions
 
 LOGGER = logging.getLogger(__name__)
-REPORT_SCHEMA_VERSION = "1.1.0"
+REPORT_SCHEMA_VERSION = "2.0.0"
 DECISIONS = ("linked", "ambiguous", "followup", "unlinked")
 WIKILINK = re.compile(r"\[\[([^\]|#^]+)")
 
@@ -102,15 +103,25 @@ def _window(config: AppConfig, as_of: date | None, days: int) -> tuple[date, dat
 
 
 def _check_roots(config: AppConfig, paths: PathText) -> None:
-    """Refuse work folders that overlap an archive or the Vault, as written and as the file system resolves
-    them (`..`, junctions and symbolic links of the existing part of a path)."""
+    """Refuse work folders that overlap a folder this command only reads (an application's folder, an
+    archive or the Vault), as written and as the file system resolves them (`..`, junctions and
+    symbolic links of the existing part of a path)."""
     vault = config.vault.root
-    protected = [settings.root for settings in config.archives.values()] + ([vault] if vault else [])
-    for kind, root in (("data_root", config.processes.data_root), ("state_root", config.processes.state_root)):
+    protected: list[Path] = [vault] if vault else []
+    # Every configured location counts, whatever the mode and even when the entry is disabled.
+    for settings in config.chat_sources.values():
+        protected.append(settings.app_root.expanduser())
+        if settings.archive is not None:
+            protected.append(settings.archive)
+    work = [("processes.data_root", config.processes.data_root), ("processes.state_root", config.processes.state_root)]
+    if config.digests.cache:
+        work.append(("the digest cache (cache_root/digests)", digest_cache_root(config.cache_root)))
+    for kind, root in work:
         for folder in protected:
             for left, right in ((str(root), str(folder)), (str(root.resolve()), str(folder.resolve()))):
                 if paths.is_within(left, right) or paths.is_within(right, left):
-                    raise PipelineError(f"processes.{kind} must not overlap an archive or the Vault: {root}")
+                    raise PipelineError(f"{kind} must not overlap an application's folder, an archive or "
+                                        f"the Vault: {root}")
 
 
 PASTED_TAG = re.compile(r"</?pasted_content\b[^>]*>", re.IGNORECASE)
@@ -185,21 +196,26 @@ def link_actions(config: AppConfig, *, dry_run: bool, as_of: date | None = None,
     context = DigestContext(config.utc_offset_minutes, paths, vault_root, actions_dir,
                             tuple(tuple(group) for group in config.path_aliases))
     index = ActionIndex(actions, actions_dir, vault.actions.min_name_chars)
-    scan = open_archives(config)
+    scan = open_sources(config)
+    store = DigestStore(context, config.cache_root if config.digests.cache else None)
     run_id = datetime.now().astimezone().strftime("%Y%m%dT%H%M%S%z") + "-" + uuid4().hex[:6]
     digests: list[dict[str, Any]] = []
     digest_status: Counter[str] = Counter()
+    read_from: Counter[str] = Counter()
     unreadable: list[dict[str, str]] = []
-    for archive in scan.archives:
-        files = conversation_files(archive, modified_since=since)
-        LOGGER.info("Archive %s (%s): %s conversation files changed since %s",
-                    archive.name, archive.app, len(files), since.date().isoformat())
+    for source in scan.sources:
+        files = conversation_files(source, modified_since=since)
+        LOGGER.info("Chat source %s (%s, %s): %s conversation files changed since %s",
+                    source.name, source.app, source.settings.mode, len(files), since.date().isoformat())
         for log in files:
-            digest, status = load_or_build(log, archive, context, config.processes.data_root)
+            digest, status = store.load(source, log)
             digest_status[status.split(":", 1)[0]] += 1
             if digest is None:
-                unreadable.append({"archive": log.archive, "relativePath": log.relative_path, "detail": status})
+                if status.startswith("unreadable"):
+                    unreadable.append({"source": log.source, "location": log.location,
+                                       "relativePath": log.relative_path, "detail": status})
                 continue
+            read_from[log.location] += 1
             if digest.get("session") is not None:
                 digests.append(digest)
     conversations: dict[tuple[str, str, str], Conversation] = {}
@@ -315,7 +331,8 @@ def link_actions(config: AppConfig, *, dry_run: bool, as_of: date | None = None,
             if decision == "ambiguous" else [],
             "finishedActions": [{"action": a.relative_path, "title": a.title, "status": a.status}
                                 for a in finished_candidates],
-            "digest": {"archive": conversation.digest["file"]["archive"],
+            "digest": {"source": conversation.digest["location"]["source"],
+                       "location": conversation.digest["location"]["location"],
                        "relativePath": conversation.digest["file"]["relativePath"],
                        "contentSha256": conversation.digest["file"]["contentSha256"]},
         })
@@ -333,10 +350,11 @@ def link_actions(config: AppConfig, *, dry_run: bool, as_of: date | None = None,
         "lookbackDays": window_days,
         "vaultWritten": False,
         "generativeAiUsed": False,
-        "archives": [{"name": a.name, "app": a.app, "sourceId": a.view.source_id,
-                      "ignoredManifests": len(a.view.ignored_manifests)} for a in scan.archives],
-        "skippedArchives": scan.skipped,
+        "sources": [source.describe() for source in scan.sources],
+        "skippedSources": scan.skipped,
         "digests": dict(digest_status),
+        "digestCache": config.digests.cache,
+        "readFrom": {location: read_from.get(location, 0) for location in ("app", "archive")},
         "unreadableFiles": unreadable,
         "sessionKinds": dict(kinds),
         "duplicateSessions": duplicates,
@@ -399,6 +417,8 @@ def render_markdown(report: dict[str, Any], targets: list[ActionNote]) -> str:
         f"{report['linkedActionCount']} |",
         f"| 会話の要点（作った・再利用・読めない） | {report['digests'].get('built', 0)}・"
         f"{report['digests'].get('cached', 0)}・{report['digests'].get('unreadable', 0)} |",
+        f"| 読んだ場所（アプリの保存場所・アーカイブ） | {report['readFrom']['app']}・"
+        f"{report['readFrom']['archive']} |",
         "",
         "対象のAction：statusが作業中、期間内に更新日時が変わった、または期間内の会話が開いた・変えたもの（終了したものを除く）。"
         "A・B・Cは対象の外のActionにも対応づける（表の「対象外」）。",
@@ -461,7 +481,10 @@ def render_markdown(report: dict[str, Any], targets: list[ActionNote]) -> str:
         "- 続き：どのActionにも対応しない会話で、作業フォルダの名前が終了したActionの `repositories`"
         "（なければtitle。titleで比べるのは `_` か `-` を含む名前だけ）に一致したもの。"
         "段階1では、そのActionを再開する案ではなく、新しいActionの候補にする。",
-        "- 会話はアーカイブから読むので、archiverがまだ取り込んでいない会話（使用中など）は入らない。",
+        "- 会話は `chat_sources` の読む場所から読む（`app`：アプリの保存場所、`archive`：アーカイブだけ、"
+        "`auto`：アプリの保存場所を先に、ない会話はアーカイブから）。`archive` だけの取得元では、"
+        "archiverがまだ取り込んでいない会話（使用中など）は入らない。"
+        "`app` だけの取得元では、アプリが消した会話は入らない。",
         "- 本人の発言：Claude Codeは `turnOrigin` が `human` 以外の依頼文（別のセッションからの依頼など）を除く。"
         "古い記録でこの欄がないものは本人の発言として扱い、確度を1段下げる。",
         "- 詳細はこのフォルダの `report.json` と `links.jsonl`（会話ごとの手がかりと根拠ID）にある。",

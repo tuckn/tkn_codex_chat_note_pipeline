@@ -146,9 +146,10 @@ def build_parser() -> argparse.ArgumentParser:
     link = action_sub.add_parser(
         "link",
         help="Match recent conversations to Action notes with clues A-D; write a report, never the Vault",
-        description="Reads tkn-genai-chat-archiver archives and the Vault's Action notes. With --dry-run it "
-                    "writes only its report under processes.state_root and the digest cache under "
-                    "processes.data_root. It never writes the Vault and never calls generative AI.",
+        description="Reads the conversations of chat_sources (application folders and/or tkn-genai-chat-archiver "
+                    "archives, read only) and the Vault's Action notes. With --dry-run it writes only its report "
+                    "under processes.state_root and the digest cache under <cache_root>/digests (none when "
+                    "digests.cache is false). It never writes the Vault and never calls generative AI.",
     )
     link.add_argument("--dry-run", action="store_true", help="Required in this version: report only")
     link.add_argument("--days", type=int, help="Days back from --as-of (default: processes.actions.lookback_days)")

@@ -99,7 +99,7 @@ def version(sha: str, relation: str | None) -> ArchiveVersion:
 
 def test_evidence_ids_and_continuation() -> None:
     first, second, third = version("a" * 64, None), version("b" * 64, "appended"), version("c" * 64, "rewritten")
-    assert evidence_id("codex", "pc", "s1", second, 12) == "codex/pc/s1@bbbbbbbbbbbb#L12"
+    assert evidence_id("codex", "pc", "s1", "b" * 64, 12) == "codex/pc/s1@bbbbbbbbbbbb#L12"
     assert continuation([first], None, 0) == {"fromLine": 1, "rewritten": False}
     assert continuation([first], "a" * 64, 7) == {"fromLine": 8, "rewritten": False}
     assert continuation([first, second], "a" * 64, 7) == {"fromLine": 8, "rewritten": False}

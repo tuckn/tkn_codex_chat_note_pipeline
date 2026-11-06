@@ -2,8 +2,11 @@
 
 A digest keeps the person's requests, each turn's final answer, tool executions, the Vault
 notes the conversation opened or changed and mechanically known facts. Every item carries an
-evidence ID `<app>/<source_id>/<session_id>@<sha12>#L<line>` that points at an immutable
-archived version and its line. Digests can be rebuilt from the archive at any time.
+evidence ID `<app>/<source_id>/<session_id>@<sha12>#L<line>`, where `sha12` starts the SHA-256 of
+the decoded content: a `.jsonl` and its `.jsonl.zst`, or the application's folder and the
+archive, give the same ID for the same content. A digest is an intermediate form, not data to
+keep: it is cached below `<cache_root>/digests/` (unless `digests.cache` is false) and rebuilt
+whenever the content, the settings or the application version changes.
 """
 
 from __future__ import annotations
@@ -18,14 +21,15 @@ from pathlib import Path
 from typing import Any
 
 from tkn_genai_chat_archiver.view import ArchiveError, ArchiveVersion
-from tkn_genai_chat_search.library import Session, ToolEvent, read_claude_code, read_codex
+from tkn_genai_chat_search.library import Session, Title, ToolEvent, read_claude_code, read_codex
 
 from . import __version__
-from .chat_archives import LogFile, OpenArchive
+from .chat_sources import LogFile, OpenSource, SourceReadError
 from .path_text import PathText, last_folder_name
 from .runtime import PipelineError, atomic_write_json
 
-DIGEST_SCHEMA_VERSION = "1.0.0"
+DIGEST_SCHEMA_VERSION = "2.0.0"
+CACHE_FOLDER = "digests"
 REQUEST_CHARS = 4000
 FINAL_ANSWER_CHARS = 1000
 TARGET_CHARS = 300
@@ -91,8 +95,9 @@ class DigestContext:
         return parsed.astimezone(timezone(timedelta(minutes=self.utc_offset_minutes)))
 
 
-def evidence_id(app: str, source_id: str, session_id: str, version: ArchiveVersion, line: int) -> str:
-    return f"{app}/{source_id}/{session_id}@{version.identity_sha256[:12]}#L{line}"
+def evidence_id(app: str, source_id: str, session_id: str, content_sha256: str, line: int) -> str:
+    """`<app>/<source_id>/<session_id>@<first 12 hex of the decoded content's SHA-256>#L<line>`."""
+    return f"{app}/{source_id}/{session_id}@{content_sha256[:12]}#L{line}"
 
 
 def line_count(data: bytes) -> int:
@@ -287,20 +292,34 @@ def _human_requests(session: Session, app: str) -> tuple[list[tuple[Any, str, st
     return kept, excluded
 
 
-def build_digest(log: LogFile, data: bytes, archive: OpenArchive, context: DigestContext) -> dict[str, Any]:
-    """Digest one conversation file. A file that is not a conversation gives `session: null`."""
+def titles_sha256(app: str, codex_titles: dict[str, list[Title]] | None, session_id: str | None) -> str | None:
+    """What a Codex digest's title depends on besides the content: the thread's names in
+    `session_index.jsonl`, which differ between locations and change when a thread is renamed."""
+    if app != "codex" or not session_id:
+        return None
+    entries = (codex_titles or {}).get(session_id.casefold(), [])
+    value = json.dumps([[entry.kind, entry.title] for entry in entries], ensure_ascii=False)
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def build_digest(log: LogFile, data: bytes, content_sha256: str, context: DigestContext,
+                 codex_titles: dict[str, list[Title]] | None = None) -> dict[str, Any]:
+    """Digest one conversation file's decoded content. A file that is not a conversation gives `session: null`.
+
+    `file` depends only on the content; `location` says where this copy was read (app or archive).
+    """
     if log.app == "codex":
-        result = read_codex(data, log.relative_path, titles=archive.codex_titles)
+        result = read_codex(data, log.relative_path, titles=codex_titles or {})
     else:
         result = read_claude_code(data, log.relative_path)
     session = result.session
     base: dict[str, Any] = {
         "schemaVersion": DIGEST_SCHEMA_VERSION,
         "settingsSha256": context.signature(),
-        "file": {"archive": log.archive, "app": log.app, "sourceId": log.source_id,
-                 "relativePath": log.relative_path, "contentSha256": log.version.identity_sha256,
-                 "storedSha256": log.version.sha256, "capturedAt": log.version.captured_at,
-                 "previousRelation": log.version.previous_relation, "lineCount": line_count(data)},
+        "titlesSha256": titles_sha256(log.app, codex_titles, session.session_id if session else None),
+        "file": {"app": log.app, "sourceId": log.source_id, "relativePath": log.relative_path,
+                 "contentSha256": content_sha256, "lineCount": line_count(data)},
+        "location": log.location_record(),
     }
     coverage = result.coverage.to_dict()
     base["coverage"] = {"error": result.error, "parserWarnings": coverage["parser_warnings"],
@@ -312,7 +331,7 @@ def build_digest(log: LogFile, data: bytes, archive: OpenArchive, context: Diges
     cwd = context.paths.folder(session.cwd) if session.cwd else ""
 
     def evidence(line: int) -> str:
-        return evidence_id(app, source_id, session_id, log.version, line)
+        return evidence_id(app, source_id, session_id, content_sha256, line)
 
     requests, excluded = _human_requests(session, app)
     human_lines = [message.line_number for message, _t, _c, _p in requests]
@@ -400,35 +419,85 @@ def build_digest(log: LogFile, data: bytes, archive: OpenArchive, context: Diges
     }
 
 
-def _cache_path(data_root: Path, log: LogFile) -> Path:
-    key = hashlib.sha256(f"{log.archive}\0{log.relative_path}".encode()).hexdigest()[:32]
-    root = data_root.resolve()
-    path = (data_root / "digests" / log.app / log.source_id / f"{key}.json").resolve()
-    if not path.is_relative_to(root):
-        raise PipelineError(f"digest cache path leaves processes.data_root: {path}")
-    return path
+def digest_cache_root(cache_root: Path) -> Path:
+    return cache_root / CACHE_FOLDER
 
 
-def load_or_build(log: LogFile, archive: OpenArchive, context: DigestContext, data_root: Path,
-                  *, write_cache: bool = True) -> tuple[dict[str, Any] | None, str]:
-    """Reuse a cached digest of the same archived content and settings; else rebuild it."""
-    path = _cache_path(data_root, log)
-    try:
-        cached = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
-    except (OSError, ValueError):
-        cached = None
-    if (isinstance(cached, dict) and cached.get("schemaVersion") == DIGEST_SCHEMA_VERSION
-            and cached.get("settingsSha256") == context.signature()
-            and cached.get("file", {}).get("contentSha256") == log.version.identity_sha256):
-        return cached, "cached"
-    try:
-        data = archive.view.read_content(log.version)
-    except ArchiveError as exc:
-        return None, f"unreadable: {exc}"
-    digest = build_digest(log, data, archive, context)
-    if write_cache:
-        atomic_write_json(path, digest)
-    return digest, "built"
+class DigestStore:
+    """Load session digests, reusing the cache when the content, settings and version match (design 3.2),
+    and for Codex also the thread's names, which live outside the rollout.
+
+    `cache_root` None (`digests.cache: false`) reads and writes no cache. The same content read
+    twice in one run (a `.jsonl` and its `.jsonl.zst`, or both locations of `auto`) is digested once.
+    """
+
+    def __init__(self, context: DigestContext, cache_root: Path | None) -> None:
+        self.context = context
+        self.signature = context.signature()
+        self.root = digest_cache_root(cache_root) if cache_root is not None else None
+        self.seen: set[tuple[str, str, str]] = set()
+
+    def path(self, log: LogFile) -> Path:
+        if self.root is None:
+            raise PipelineError("the digest cache is off (digests.cache: false)")
+        key = hashlib.sha256(log.relative_path.encode()).hexdigest()[:32]
+        root = self.root.resolve()
+        path = (self.root / log.app / log.source_id / f"{key}.json").resolve()
+        if not path.is_relative_to(root):
+            raise PipelineError(f"digest cache path leaves {root}: {path}")
+        return path
+
+    def _cached(self, log: LogFile, content_sha256: str,
+                codex_titles: dict[str, list[Title]]) -> dict[str, Any] | None:
+        if self.root is None:
+            return None
+        path = self.path(log)
+        try:
+            cached = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+        except (OSError, ValueError):
+            return None
+        file = cached.get("file") if isinstance(cached, dict) else None
+        if not (isinstance(cached, dict) and isinstance(file, dict)
+                and cached.get("schemaVersion") == DIGEST_SCHEMA_VERSION
+                and cached.get("settingsSha256") == self.signature
+                and file.get("contentSha256") == content_sha256
+                and (file.get("app"), file.get("sourceId"), file.get("relativePath"))
+                == (log.app, log.source_id, log.relative_path)):
+            return None
+        session = cached.get("session")
+        reference = session.get("sessionRef") if isinstance(session, dict) else None
+        session_id = reference.get("sessionId") if isinstance(reference, dict) else None
+        if cached.get("titlesSha256") != titles_sha256(log.app, codex_titles, session_id):
+            return None  # A Codex thread's name changed, or this location's index names it differently.
+        # The content is the same; only where this copy was read may differ.
+        return {**cached, "location": log.location_record()}
+
+    def load(self, source: OpenSource, log: LogFile) -> tuple[dict[str, Any] | None, str]:
+        """(digest, `cached` or `built`), `(None, "same-content")` or `(None, "unreadable: ...")`."""
+        known = log.known_content_sha256
+        if known is not None:
+            if (log.app, log.source_id, known) in self.seen:
+                return None, "same-content"
+            cached = self._cached(log, known, source.codex_titles)
+            if cached is not None:
+                self.seen.add((log.app, log.source_id, known))
+                return cached, "cached"
+        try:
+            data, content_sha256 = source.read(log)
+        except (ArchiveError, SourceReadError) as exc:
+            return None, f"unreadable: {exc}"
+        key = (log.app, log.source_id, content_sha256)
+        if key in self.seen:
+            return None, "same-content"
+        self.seen.add(key)
+        if known is None:
+            cached = self._cached(log, content_sha256, source.codex_titles)
+            if cached is not None:
+                return cached, "cached"
+        digest = build_digest(log, data, content_sha256, self.context, source.codex_titles)
+        if self.root is not None:
+            atomic_write_json(self.path(log), digest)
+        return digest, "built"
 
 
 def continuation(versions: list[ArchiveVersion], processed_sha256: str | None, processed_lines: int) -> dict[str, Any]:

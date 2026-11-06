@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, get_args, get_origin
 
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 
 def validate_config_layer(model: type[BaseModel], value: dict[str, Any], prefix: str = "") -> None:
@@ -47,6 +47,13 @@ def validate_config_layer(model: type[BaseModel], value: dict[str, Any], prefix:
                         selected = candidates[0] if "genai_profile" in nested_value else candidates[-1]
                         validate_config_layer(selected, nested_value, f"{location}.{nested_key}")
                 else:
-                    TypeAdapter(field.rebuild_annotation()).validate_python(item)
+                    _validate_value(field.rebuild_annotation(), item, location)
         else:
-            TypeAdapter(field.rebuild_annotation()).validate_python(item)
+            _validate_value(field.rebuild_annotation(), item, location)
+
+
+def _validate_value(annotation: Any, item: Any, location: str) -> None:
+    try:
+        TypeAdapter(annotation).validate_python(item)
+    except ValidationError as exc:
+        raise ValueError(f"{location}: {exc}") from exc

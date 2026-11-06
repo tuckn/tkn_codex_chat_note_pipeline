@@ -1,6 +1,6 @@
 # Data contract: chat evidence and calendar reviews
 
-CLI 0.49.0 · config 10.0.0 · storage 5 · catalog/provenance 1.0.0 · Review Note 1.0.0
+CLI 0.50.0 · config 11.0.0 · storage 5 · catalog/provenance 1.0.0 · Review Note 1.0.0
 
 Terminal results follow the [CLI output contract](cli-output.md): copyable
 `key=value` by default, explicit `--json`, independent `--full-output` detail.
@@ -31,23 +31,46 @@ does not imply that reviews have been generated. When
 tkn-genai-chat-archiver manages raw_root, these commands read its archive instead of
 capturing (see [Archive-managed Raw](#archive-managed-raw)) and `raw ingest` is refused.
 
-## Note processes (stage 0): digests and the link report
+## Note processes (stage 0): reading locations, digests and the link report
 
-`actions link --dry-run` reads tkn-genai-chat-archiver archives (`archives`, read only through
-the archiver's `ArchiveView`) and the Vault's Action notes (`vault`, read only). It writes only
-below `processes.data_root` and `processes.state_root`, which must not overlap an archive or the
-Vault. It calls no generative AI.
+`actions link --dry-run` reads conversations where `chat_sources` says and the Vault's Action notes
+(`vault`, read only). It writes only below `processes.state_root` and the digest cache
+`<cache_root>/digests/`; both, and `processes.data_root`, must not overlap the Vault or any folder
+named under `chat_sources` (an application's folder or an archive, whatever the entry's mode and even
+when it is disabled). It calls no generative AI.
 
-- Session digests: `<data_root>/digests/<app>/<source_id>/<key>.json`, one per archived conversation
-  file, schemaVersion 1.0.0. `file` names the archive, relative path, decoded content SHA-256 and line
-  count; `session` holds sessionRef, kind, parentSessionId, normalized cwd and repo, title, local dates,
-  `userRequests`, `excludedUserMessages`, `assistantFinals`, `toolEvents`, `vaultTouches` and `facts`;
-  `coverage` counts parser warnings and ignored record types. A digest is reused only for the same
-  content SHA-256, settings and application version; it is a cache and may be deleted.
-- Evidence IDs: `<app>/<source_id>/<session_id>@<first 12 hex of the version's content SHA-256>#L<line>`.
-  Archived versions never change, so an ID resolves to one line of one version.
+- Reading locations: each `chat_sources.<name>` entry has `app` (`codex` or `claude-code`),
+  `source_id`, `mode`, `root` (the application's folder; default `~/.codex` or `~/.claude`),
+  `archive` (a tkn-genai-chat-archiver archive root) and `enabled`. `mode: app` (default) reads the
+  application's folder; `archive` reads only the archive; `auto` reads the application's folder and
+  takes from the archive only the conversations the folder no longer has (Codex rollouts are matched
+  by file name without `.zst`, so compressed or moved rollouts count as present; Claude Code
+  transcripts by the path below the project folder, that is the session and agent, because the
+  project folder changes with the working folder). Neither location is written. An archive is read only through the
+  archiver's `ArchiveView`, only when its marker names the same `app` (profile) and `source_id`:
+  finished manifests only, the latest version of each relative path, stored and decoded SHA-256
+  checked. One `app` and `source_id` pair may appear in one entry only.
+- Session digests: a cache, not data to keep. `<cache_root>/digests/<app>/<source_id>/<key>.json`,
+  one per conversation file (`key` derives from the relative path), schemaVersion 2.0.0. `file` holds
+  app, sourceId, relativePath, the decoded content's SHA-256 and the line count, and depends only on
+  the content; `location` names the chat source and whether this copy was read from the application's
+  folder (`app`) or the archive (`archive`, with the stored SHA-256, capture time and previous
+  relation). `session` holds sessionRef, kind, parentSessionId, normalized cwd and repo, title, local
+  dates, `userRequests`, `excludedUserMessages`, `assistantFinals`, `toolEvents`, `vaultTouches` and
+  `facts`; `coverage` counts parser warnings and ignored record types. A digest is reused only for the
+  same content SHA-256, settings and application version (and, for Codex, the same thread names from
+  `session_index.jsonl`, recorded as `titlesSha256`), and may be deleted at any time.
+  `digests.cache: false` reads and writes no cache. The same content in two files of one run is
+  digested once.
+- Evidence IDs: `<app>/<source_id>/<session_id>@<first 12 hex of the decoded content's SHA-256>#L<line>`.
+  The same content gives the same ID whether it was read as `.jsonl` or `.jsonl.zst`, from the
+  application's folder or from the archive. Archived versions never change; a conversation read only
+  from the application's folder can later be deleted or extended there, after which an older ID can
+  no longer be checked (`auto` keeps it checkable through the archive).
 - Report: `<state_root>/actions-link/<runId>/report.md` (for people), `report.json` (summary counts,
-  per-conversation rows and per-Action links; schemaVersion 1.1.0) and `links.jsonl` (one row per
+  per-conversation rows and per-Action links; schemaVersion 2.0.0: `sources`, `skippedSources`,
+  `digestCache` and `readFrom` replace `archives` and `skippedArchives`, and each row's `digest`
+  names `source`, `location`, `relativePath` and `contentSha256`) and `links.jsonl` (one row per
   conversation with its clues, evidence IDs and decision `linked`, `ambiguous`, `followup` or
   `unlinked`). An A clue that only names the file in a command's arguments is listed under
   `weakLinks` and links only together with another clue for the same Action. `followup` rows list
@@ -59,7 +82,9 @@ Vault. It calls no generative AI.
 `sources` is an ID-keyed map. Each source has source_root, optional raw_root/data_root/
 state_root, enabled/include_archived, and reviews settings. Source IDs identify acquisition
 environments, not inference providers. Preserve their spelling across configuration updates.
-The source provider is `codex`. Generation profiles are configured separately.
+The source provider is `codex`. Generation profiles are configured separately. `sources` serves
+the capture, normalization and review commands, which stay until stage 4; the note processes read
+conversations through `chat_sources` instead.
 
 Source IDs allow ASCII letters/digits/._-, starting with a letter or digit. Windows device
 names, trailing dots, duplicate YAML keys and case-only duplicate IDs are rejected.
@@ -71,11 +96,12 @@ independently; sources are not merged into one calendar note. Review settings be
 `sources.<id>.reviews`. Review outputs are `<data_root>/reviews`; review state is
 `<state_root>/reviews`. Review-specific output roots are not configurable.
 
-Every configuration file states `schema_version: "10.0.0"` (a newer patch is accepted). Another
-major or a newer minor stops with an error; older files are not converted. Schema 10 defines
-every GenAI connection in this file under `genai_profiles` (tkn_genai_bridge profiles plus this
-application's `limits` and Ollama `model_digest`) and selects the review connection with
-`generation.genai_profile`; no shared Bridge configuration is read. Only `~/.tkn/genai_chat_note`
+Every configuration file states `schema_version: "11.0.0"` (a newer patch is accepted). Another
+major or a newer minor stops with an error; older files are not converted. Schema 11 replaces
+`archives` with `chat_sources` and adds `digests`. Since schema 10, every GenAI connection is
+defined in this file under `genai_profiles` (tkn_genai_bridge profiles plus this application's
+`limits` and Ollama `model_digest`) and `generation.genai_profile` selects the review connection;
+no shared Bridge configuration is read. Only `~/.tkn/genai_chat_note`
 is the user directory; earlier application directories are not read.
 
 ## Stable identities and references

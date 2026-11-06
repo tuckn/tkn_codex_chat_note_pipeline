@@ -1,4 +1,4 @@
-schema_version: "10.0.0"
+schema_version: "11.0.0"
 # One shared cache base; codex/source_id partitions are automatic.
 cache_root: ~/.cache/genai_chat_note
 
@@ -85,20 +85,36 @@ usage_report:
   #     model: <deployment-name>
 
 # --- Note processes (role redesign; stage 0 runs `actions link --dry-run` only) ---
-# tkn-genai-chat-archiver archive roots to read (profiles codex and claude-code). Read only;
-# each root's profile and source ID come from its ownership marker.
-archives: {}
+# Where conversations are read, one entry per application and source. Both places are read only.
+#   mode: app      the application's folder (root; default ~/.codex or ~/.claude). Default.
+#   mode: archive  only a tkn-genai-chat-archiver archive (archive; its marker must name the
+#                  same app and source_id)
+#   mode: auto     the application's folder first; conversations it no longer has come from the archive
+# source_id is part of every evidence ID; keep its spelling. Use the archive marker's sourceId.
+chat_sources: {}
 #  codex-my-pc:
-#    root: C:/path/to/archives/Codex/my-pc-windows
+#    app: codex
+#    source_id: my-pc-windows
+#    mode: auto
+#    root: ~/.codex
+#    archive: C:/path/to/archives/Codex/my-pc-windows
 #  claude-code-my-pc:
-#    root: C:/path/to/archives/Claude Code/my-pc-windows
+#    app: claude-code
+#    source_id: my-pc-windows
+#    mode: app
+#    root: ~/.claude
+# Session digests are a cache below <cache_root>/digests/, rebuilt when the content, the settings or
+# the application version changes. false: keep no cache and rebuild them every run.
+digests:
+  cache: true
 utc_offset_minutes: 540  # Local dates of conversations; 540 = Japan. No daylight-saving adjustment.
 # Folder prefixes that name the same place (drive letters, junctions, WSL mounts); the first is canonical.
 path_aliases: []
 #  - ["D:/path/to/work", "C:/path/to/work"]
 processes:
-  data_root: ~/.tkn/genai_chat_note/processes/data  # Session digests; a cache rebuilt from archives.
-  state_root: ~/.tkn/genai_chat_note/processes/state  # Reports. Must not lie in an archive or the Vault.
+  data_root: ~/.tkn/genai_chat_note/processes/data  # Kept data of later stages. Not used by stage 0.
+  # Reports. Must not lie in an application's folder, an archive or the Vault.
+  state_root: ~/.tkn/genai_chat_note/processes/state
   actions:
     lookback_days: 14
 # The Vault's conventions. Nothing here is written by stage 0.

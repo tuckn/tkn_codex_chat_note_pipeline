@@ -135,17 +135,22 @@ def codex_archive(root: Path) -> Path:
     return archive
 
 
-def configure(root: Path) -> tuple[Path, Path, list[Path]]:
+def configure(root: Path, **settings: Any) -> tuple[Path, Path, list[Path]]:
     vault_root = vault(root)
     archives = [claude_archive(root, vault_root), codex_archive(root)]
     path = root / "config.yaml"
     path.write_text(yaml.safe_dump({
-        "schema_version": "10.0.0",
-        "archives": {"claude": {"root": str(archives[0])}, "codex": {"root": str(archives[1])}},
+        "schema_version": "11.0.0",
+        "chat_sources": {
+            "claude": {"app": "claude-code", "source_id": "pc-claude", "mode": "archive", "archive": str(archives[0])},
+            "codex": {"app": "codex", "source_id": "pc-codex", "mode": "archive", "archive": str(archives[1])},
+        },
+        "cache_root": str(root / "work" / "cache"),
         "utc_offset_minutes": 540,
         "path_aliases": [[str(vault_root), "X:/elsewhere/vault"]],
         "processes": {"data_root": str(root / "work" / "data"), "state_root": str(root / "work" / "state")},
         "vault": {"root": str(vault_root), "actions": {"dir": "notes/actions"}},
+        **settings,
     }), encoding="utf-8")
     return path, vault_root, archives
 
@@ -285,15 +290,16 @@ def test_work_roots_are_checked_after_resolving_parent_steps(tmp_path: Path) -> 
     assert not (vault_root / "cache").exists()
 
 
-def test_archive_with_an_unsafe_source_id_is_skipped(tmp_path: Path) -> None:
+def test_archive_of_another_source_is_skipped(tmp_path: Path) -> None:
     path, _vault_root, archives = configure(tmp_path)
     marker = archives[1] / ".tkn-genai-chat-archive.json"
     value = json.loads(marker.read_text(encoding="utf-8"))
     marker.write_text(json.dumps({**value, "sourceId": "../escape"}), encoding="utf-8")
     config = load_app_config(explicit_path=path, cwd=tmp_path)
     result = link_actions(config, dry_run=True, as_of=date(2026, 11, 5))
-    assert [item["reason"] for item in result["skippedArchives"]] == ["unsafe-source-id"]
-    assert not (tmp_path / "work" / "data" / "digests" / "escape").exists()
+    assert [(item["source"], item["reason"]) for item in result["skippedSources"]] == [("codex", "unreadable")]
+    assert result["conversationCount"] == 4
+    assert not (tmp_path / "work" / "cache" / "digests" / "codex").exists()
 
 
 def test_short_stems_and_paths_outside_the_vault_are_not_clues(tmp_path: Path) -> None:

@@ -19,7 +19,7 @@ from tkn_genai_bridge.models import PROVIDER_NAMES
 
 from .config_validation import validate_config_layer
 from .genai_profiles import GenAIProfileConfig, default_genai_profiles
-from .process_settings import ArchiveSettings, ProcessSettings, VaultSettings
+from .process_settings import ChatSourceSettings, DigestSettings, ProcessSettings, VaultSettings
 from .report_settings import GenAIPriceScenario, UsageReportSettings
 from .review_settings import ReviewSettings
 from .runtime import (
@@ -31,8 +31,8 @@ from .runtime import (
     atomic_write_text,
 )
 
-CONFIG_SCHEMA_VERSION: Literal["10.0.0"] = "10.0.0"
-_CONFIG_SCHEMA_VERSION_PARTS = (10, 0, 0)
+CONFIG_SCHEMA_VERSION: Literal["11.0.0"] = "11.0.0"
+_CONFIG_SCHEMA_VERSION_PARTS = (11, 0, 0)
 _CONFIG_SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 APP_DIRECTORY_NAME = "genai_chat_note"
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
@@ -126,7 +126,7 @@ class AppConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["10.0.0"] = CONFIG_SCHEMA_VERSION
+    schema_version: Literal["11.0.0"] = CONFIG_SCHEMA_VERSION
     sources: dict[SourceId, CodexSourceConfig] = Field(default_factory=lambda: {DEFAULT_SOURCE_ID: CodexSourceConfig()})
     cache_root: Path = Field(default_factory=default_user_cache_root)
     report_path: Path = Field(default_factory=lambda: default_app_root() / "reports")
@@ -135,8 +135,9 @@ class AppConfig(BaseModel):
     generation: GenerationConfig = Field(default_factory=GenerationConfig)
     runtime_minutes: int = Field(default=DEFAULT_RUNTIME_MINUTES, gt=0)
     model_timeout_seconds: int = Field(default=DEFAULT_MODEL_TIMEOUT_SECONDS, gt=0)
-    # Note processes (role redesign): tkn-genai-chat-archiver archives, the Vault and work folders.
-    archives: dict[SourceId, ArchiveSettings] = Field(default_factory=dict)
+    # Note processes (role redesign): where conversations are read, the Vault and work folders.
+    chat_sources: dict[SourceId, ChatSourceSettings] = Field(default_factory=dict)
+    digests: DigestSettings = Field(default_factory=DigestSettings)
     utc_offset_minutes: int = Field(default=540, ge=-720, le=840)
     path_aliases: list[list[str]] = Field(default_factory=list)
     processes: ProcessSettings = Field(default_factory=ProcessSettings)
@@ -148,6 +149,17 @@ class AppConfig(BaseModel):
     def unique_source_ids(self) -> Self:
         if len({name.casefold() for name in self.sources}) != len(self.sources):
             raise ValueError("source_id keys must be unique ignoring case")
+        return self
+
+    @model_validator(mode="after")
+    def unique_chat_sources(self) -> Self:
+        seen: dict[tuple[str, str], str] = {}
+        for name, settings in self.chat_sources.items():
+            key = (settings.app, settings.source_id.casefold())
+            if key in seen:
+                raise ValueError(f"chat_sources {seen[key]} and {name} both name {settings.app} "
+                                 f"source {settings.source_id}; evidence IDs and digests need one entry each")
+            seen[key] = name
         return self
 
     @model_validator(mode="after")
@@ -516,11 +528,13 @@ def _resolve_paths(value: dict[str, Any], base: Path) -> dict[str, Any]:
             for key in keys:
                 if isinstance(settings.get(key), str) and settings[key].strip():
                     settings[key] = resolve(settings[key])
-    archives = result.get("archives")
-    if isinstance(archives, dict):
-        for settings in archives.values():
-            if isinstance(settings, dict) and isinstance(settings.get("root"), str) and settings["root"].strip():
-                settings["root"] = resolve(settings["root"])
+    chat_sources = result.get("chat_sources")
+    if isinstance(chat_sources, dict):
+        for settings in chat_sources.values():
+            if isinstance(settings, dict):
+                for key in ("root", "archive"):
+                    if isinstance(settings.get(key), str) and settings[key].strip():
+                        settings[key] = resolve(settings[key])
     profiles = result.get("genai_profiles")
     if isinstance(profiles, dict):
         for settings in profiles.values():
