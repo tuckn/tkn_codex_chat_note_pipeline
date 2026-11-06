@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .archive_reader import validate_archive_marker
-from .config import AppConfig, global_config_path, legacy_app_root
+from .config import AppConfig, global_config_path
 from .initialization import (
     ROOT_KINDS,
     ROOT_OWNERSHIP_MARKER,
@@ -34,14 +34,6 @@ def read_json(path: Path, default: dict[str, Any] | None = None) -> dict[str, An
     if not isinstance(value, dict):
         raise PipelineError(f"pipeline state must be an object: {path}")
     return value
-
-
-def legacy_storage_pending(config: AppConfig) -> bool:
-    receipt = read_json(config.state_root / "migration.json")
-    if receipt and receipt.get("status") != "complete":
-        return True
-    metadata = read_json(config.state_root / "pipeline.json")
-    return bool(metadata and metadata.get("storageVersion") != STORAGE_VERSION)
 
 
 def validate_source_layout(config: AppConfig) -> None:
@@ -75,30 +67,8 @@ def validate_source_layout(config: AppConfig) -> None:
                 raise PipelineError("configured output root overlaps a chat source root")
 
 
-def _reject_stranded_legacy_defaults(config: AppConfig) -> None:
-    """Never start an empty store while omitted roots still hold data at the previous default location."""
-    settings = config.source_settings
-    current = config.source_storage_paths()
-    for kind in ("raw", "data", "state"):
-        if getattr(settings, kind + "_root") is not None:
-            continue
-        legacy = legacy_app_root() / kind / "codex" / config.source_id
-        if not current[kind].exists() and legacy.exists():
-            raise PipelineError(
-                f"{kind} storage of source {config.source_id} is still at the previous default location "
-                f"{legacy}; set sources.{config.source_id}.{kind}_root to that path (`config migrate` does this), "
-                f"or move the folder to {current[kind]}"
-            )
-
-
-def validate_storage(
-    config: AppConfig,
-    config_path: Path | None = None,
-    *,
-    allow_legacy: bool = False,
-) -> tuple[Path, ...]:
+def validate_storage(config: AppConfig, config_path: Path | None = None) -> tuple[Path, ...]:
     config.require_supported_chat_sources()
-    _reject_stranded_legacy_defaults(config)
     roots = validate_reset_targets(config, config_path or global_config_path())
     for path in (config.data_root, config.state_root, config.raw_root, config.source_cache_root):
         if path.is_symlink():
@@ -124,8 +94,8 @@ def validate_storage(
     identity = {"sourceProvider": config.source_provider, "sourceId": config.source_id}
     for root in roots:
         marker = read_json(root / ROOT_OWNERSHIP_MARKER)
-        if marker and any(marker.get(key) not in (None, value) for key, value in identity.items()):
-            raise PipelineError(f"storage root belongs to a different source identity: {root}")
+        if marker and any(marker.get(key) != value for key, value in identity.items()):
+            raise PipelineError(f"storage root belongs to a different source identity or names none: {root}")
     descriptor = read_json(config.data_root / "store.json")
     if descriptor and (
         descriptor.get("schemaVersion") != "1.0.0"
@@ -135,25 +105,9 @@ def validate_storage(
     ):
         raise PipelineError("store descriptor has an unsupported version or different source identity")
     validate_source_layout(config)
-    if not allow_legacy:
-        for root in (config.raw_root, config.data_root, config.state_root):
-            marker = read_json(root / ROOT_OWNERSHIP_MARKER)
-            if (
-                marker
-                and any(marker.get(key) is None for key in identity)
-                and any(item.name not in {ROOT_OWNERSHIP_MARKER, ".pipeline.lock"} for item in root.iterdir())
-            ):
-                raise PipelineError(
-                    "legacy storage requires fresh roots and storage migrate --from-config <old-config>"
-                )
-        metadata = read_json(config.state_root / "pipeline.json")
-        if metadata.get("storageVersion") == STORAGE_VERSION and not descriptor:
-            raise PipelineError("source store descriptor is missing; restore store.json before processing")
-    if not allow_legacy and legacy_storage_pending(config):
-        raise PipelineError(
-            "legacy storage layout requires fresh roots and "
-            "`storage migrate --from-config <old-config> --dry-run` first"
-        )
+    metadata = read_json(config.state_root / "pipeline.json")
+    if metadata.get("storageVersion") == STORAGE_VERSION and not descriptor:
+        raise PipelineError("source store descriptor is missing; restore store.json before processing")
     return roots
 
 
@@ -207,10 +161,6 @@ def pipeline_storage(
         metadata.get("sourceId") != config.source_id or metadata.get("sourceProvider") != config.source_provider
     ):
         raise PipelineError("source identity differs from this namespace")
-    if not metadata and (config.data_root / "project-registry.jsonl").exists():
-        raise PipelineError(
-            "legacy Project storage cannot be used by clone; choose fresh roots; existing data is retained"
-        )
     if dry_run:
         yield
         return

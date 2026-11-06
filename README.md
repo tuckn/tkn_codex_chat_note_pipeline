@@ -1,9 +1,9 @@
-# Tkn GenAI Chat Note Pipeline — 生成AIとの会話ログから、既存のノートへの差分案を作るCLI
+# Tkn GenAI Chat Note — 生成AIとの会話ログから、既存のノートへの差分案を作るCLI
 
 `tkn-genai-chat-note` は、[tkn-genai-chat-archiver](https://github.com/tuckn/tkn_genai_chat_archiver) が保管したCodex・Claude Codeの会話ログを読み、作業ノート（Action）や日次のLogなど、**既存のノートへの差分案**を作るCLIです。
 
 > [!NOTE]
-> 役割を作り替えている途中です（[設計案](docs/design/role-redesign_ja.md)）。0.48.0は段階0（準備）で、まだノートには何も書きません。0.47.0までの名前は `tkn_codex_chat_note_pipeline`（CLI `tkn-codex-chat-note`）でした。移行は[2.3節](#23-0470tkn_codex_chat_note_pipelineからの移行)を参照してください。
+> 役割を作り替えている途中です（[設計案](docs/design/role-redesign_ja.md)）。今は段階0（準備）で、まだノートには何も書きません。
 
 ## 1. これは何か
 
@@ -23,7 +23,7 @@
 | 3. Logの記録 | その日の会話の記録を日次のLogに足す | 未実装 |
 | 4. 片付け | 期間レビュー・Raw取得・旧profileを外す | 未実装 |
 
-注：0.48.0でできるのは、名前の変更、`scheduled-run` の変更、`genai_profiles`、`config migrate`、会話の要点と、会話とActionの対応づけの試行（`actions link --dry-run`、[3.1節](#31-会話とactionを対応づける試行)）です。ノートにはまだ何も書きません。
+注：0.48.0でできるのは、名前の変更、`scheduled-run` の変更、`genai_profiles`、会話の要点と、会話とActionの対応づけの試行（`actions link --dry-run`、[3.1節](#31-会話とactionを対応づける試行)）です。ノートにはまだ何も書きません。
 
 ### 1.2. 前提
 
@@ -50,7 +50,7 @@
 | 機能 | コマンド | 扱い |
 | --- | --- | --- |
 | 週・月・年のReview Note | `review-notes build`・`due`・`validate` | 手動で実行するときだけ動きます。`scheduled-run` からは外しました。新しい機能は足しません。生成済みのノートは消しません。[Review Noteの仕様](docs/reference/review-note-format_ja.md) |
-| Rawの取得・正規化 | `clone`・`pull`・`raw ingest` | Rawの保管はarchiverに移りました。archiverのアーカイブは読むだけです（[4.3節](#43-tkn-genai-chat-archiverのアーカイブを読む)） |
+| Rawの取得・正規化 | `clone`・`pull`・`raw ingest` | Rawの保管はarchiverに移りました。archiverのアーカイブは読むだけです（[4.2節](#42-tkn-genai-chat-archiverのアーカイブを読む)） |
 | 利用量レポート | `build-report` | 残します |
 
 ## 2. セットアップ
@@ -68,7 +68,7 @@ tkn-genai-chat-note config init
 
 ### 2.1. 設定
 
-設定ファイルは `~/.tkn/genai_chat_note_pipeline/config.yaml` です。優先順位は、既定値 → ユーザー設定 → 作業ディレクトリの `.tkn/config.yaml` → `--config` → CLIオプションです。`config init` は編集済みのファイルを守り、`--force` を付けたときだけバックアップして置き換えます。
+設定ファイルは `~/.tkn/genai_chat_note/config.yaml` です。優先順位は、既定値 → ユーザー設定 → 作業ディレクトリの `.tkn/config.yaml` → `--config` → CLIオプションです。`config init` は編集済みのファイルを守り、`--force` を付けたときだけバックアップして置き換えます。
 
 ```yaml
 schema_version: "10.0.0"
@@ -94,7 +94,7 @@ runtime_minutes: 230
 model_timeout_seconds: 1800
 ```
 
-source IDと、使っているRaw・data・stateの保存先は変えないでください。保存先を省略すると `~/.tkn/genai_chat_note_pipeline/<kind>/codex/<source_id>` を使います。ほかの項目は[設定例](src/tkn_genai_chat_note/resources/config.example.yaml)を参照してください。
+source IDと、使っているRaw・data・stateの保存先は変えないでください。保存先を省略すると `~/.tkn/genai_chat_note/<kind>/codex/<source_id>` を使います。ほかの項目は[設定例](src/tkn_genai_chat_note/resources/config.example.yaml)を参照してください。
 
 `actions link` には、読むアーカイブとVaultの約束を設定します。Vaultのフォルダ名・Frontmatterの項目名・status・見出し・記録の行の形は、すべて設定で変えられます。
 
@@ -146,22 +146,6 @@ generation:
 - API型（Azure OpenAI・Ollama）は、このCLIの予算 `limits`（呼び出し回数・費用・トークン）を同じ項目に書けます。APIキーは値を書かず、Bridgeの `api_key_env` で環境変数の名前だけを指定します。
 - 利用量レポートの参考価格は、`usage_report.price_scenarios.<名前>` に `genai_profile` と `model` を書くと、その接続の `pricing` を使います。
 
-### 2.3. 0.47.0（tkn_codex_chat_note_pipeline）からの移行
-
-0.47.0までは、設定が `~/.tkn/codex_chat_note_pipeline/config.yaml` にあり、生成AIの接続はBridgeの共通の設定を名前で読んでいました（`generation.profiles.<名前>.bridge_profile`）。`config migrate` で新しい設定を作ります。
-
-```shell
-tkn-genai-chat-note config migrate --dry-run
-tkn-genai-chat-note config migrate
-tkn-genai-chat-note config list
-```
-
-- 旧い設定と、そこから参照しているBridgeの共通の設定（既定 `~/.tkn/genai_bridge/config.yaml`、`--bridge-config` で変更）を一度だけ読み、新しい場所に `schema_version: "10.0.0"` の設定を書きます。旧いファイルは変えません。コメントは引き継ぎません。
-- 参照していたBridgeのprofileは、内容を変えずに `genai_profiles` へ写します（写した結果が元と一致するかを確かめます）。`limits`・`pricing`・`overrides` も移します。
-- 保存先を省略していたsourceで、旧い既定の場所（`~/.tkn/codex_chat_note_pipeline/<kind>/codex/<source_id>`）にデータがあるものは、その場所を設定に書きます。設定を移さずに使うと、空の保存先を作らずに止まります。
-- 旧い設定に書いた `cache_root` はそのまま残ります。cacheは作り直せるので、新しい名前の場所に変えてもかまいません。
-- 旧いCLIは `uv tool uninstall tkn-codex-chat-note-pipeline` で外せます。Task Schedulerに登録している場合は、プログラムを `tkn-genai-chat-note.exe` に変えてください。
-
 ## 3. 実行する
 
 共通オプション（`--source`・`--config`・`--profile` など）は、コマンドの前にも後ろにも書けます。同じオプションを複数回書いた場合は後の値を使います。`--profile` と `--provider`、`--quiet` と `--verbose` は一緒に使えません。
@@ -179,13 +163,15 @@ archiverのアーカイブ（`archives`）から直近の会話を読み、Vault
 
 | 手がかり | 強さ | 内容 |
 | --- | --- | --- |
-| A | 強 | 会話中にAIがActionのファイルを開いた・変えた（サブエージェントを含む） |
+| A | 強 | 会話中にAIがActionのファイルを開いた・変えた（サブエージェントを含む）。コマンドの引数に出ただけ（A(実行)）は弱く、同じActionにほかの手がかりがあるときだけ使う |
 | B | 強 | ActionのNotesの記録の行の根拠に、その会話のセッションIDがある（`同上` は前の行の根拠） |
 | C | 強 | 本人の発言にActionのWikiLink・ファイル名・title・`aliases` がある |
 | D | 中 | 作業フォルダの最後のフォルダ名が、対象のActionの `repositories`（なければtitle）に1件だけ一致する |
 
 - 対象のActionは、statusが作業中、期間内に更新日時が変わった、または期間内の会話が開いた・変えたもの（終了したものを除く）。A・B・Cは対象の外のActionにも対応づけ、そう表示します。
 - Dが複数のActionに一致した会話は「曖昧」とし、段階1で生成AIに選ばせます。
+- どれにも対応しない会話で、作業フォルダの名前が終了したActionの `repositories`（なければtitle。titleで比べるのは `_` か `-` を含む名前だけ）に一致したものは「続き」とします。段階1では、そのActionを再開せず、新しいActionの候補にします。
+- A(実行)だけの手がかりは、レポートに「弱い」と示します。
 - 会話ごとに「会話の要点」（本人の発言、各ターンの最後の回答、ツール実行、開いたVaultのノート、commitなどの事実）をJSONで作り、`processes.data_root/digests/` に置きます。アーカイブの同じ版からは作り直さず再利用します。消してもかまいません。
 - 本人の発言の判定：Claude Codeは `turnOrigin` が `human` 以外の発言（別のセッションからの依頼など）、sidechain、引数のないスラッシュコマンド、アプリが書いた行を除きます。`turnOrigin` のない古い記録は確度を1段下げて含めます。Codexは、アプリが足すブロック（`<external_…>`・`<user_action>` など）だけの発言を除きます。貼り付け（`<pasted_content>`）は本人の発言に含めます。
 - 根拠ID：`<アプリ>/<source_id>/<セッションID>@<版のSHA-256の先頭12桁>#L<行>`。アーカイブの版は変わらないので、元の行に戻れます。
@@ -259,11 +245,7 @@ tkn-genai-chat-note review-notes due --dry-run --json --full-output
 
 `--quiet` / `--verbose` は標準エラーのログの量だけを変えます。表示の形式は、TTY・パイプ・リダイレクトで自動では変わりません。詳細は[CLI出力契約](docs/reference/cli-output.md)を参照してください。
 
-### 4.2. 保存先の名前
-
-0.48.0で名前を変えましたが、既存の保存先の所有の印（storage 5のマーカーとstore.json）は変えていません。0.47.0で作った保存先・利用量レポートはそのまま使えます。
-
-### 4.3. tkn-genai-chat-archiverのアーカイブを読む
+### 4.2. tkn-genai-chat-archiverのアーカイブを読む
 
 `raw_root` に `.tkn-genai-chat-archive.json` があると、そのフォルダはarchiverが保管するRawのアーカイブとして扱い、このCLIは読むだけにします。
 

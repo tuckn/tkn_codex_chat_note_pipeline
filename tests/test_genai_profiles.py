@@ -199,11 +199,11 @@ def test_config_document_round_trips(tmp_path):
     assert rebuilt.genai_profiles == cfg.genai_profiles
 
 
-def test_schema9_bridge_references_are_rejected_with_migration_guidance(tmp_path):
+def test_schema9_bridge_references_are_rejected_without_conversion(tmp_path):
     path = tmp_path / "old.yaml"
     path.write_text(yaml.safe_dump({"schema_version": "9.0.0", "generation": {
         "active_profile": "notes", "profiles": {"notes": {"bridge_profile": "shared-notes"}}}}), encoding="utf-8")
-    with pytest.raises(PipelineError, match="config migrate"):
+    with pytest.raises(PipelineError, match="does not convert older files"):
         load_app_config(explicit_path=path, cwd=tmp_path)
 
 

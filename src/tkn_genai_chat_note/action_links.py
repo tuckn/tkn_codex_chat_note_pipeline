@@ -4,8 +4,11 @@ Clues (design 4.2): A the conversation opened or changed the Action file; B the 
 the conversation's session ID; C the person's request names the Action (WikiLink, file name, title
 or alias); D the working folder's repository name matches exactly one target Action. A, B and C are
 strong and link directly; a unique D links with medium strength; several D candidates are left for
-the later AI step. Nothing is written to the Vault and no generative AI is called. The report and
-digest cache are written under `processes.state_root` and `processes.data_root`.
+the later AI step. An A that only names the file in a command's arguments is weak: it links only
+together with another clue for the same Action. A conversation that links to nothing, but whose
+repository matches a finished Action, is reported as follow-up work, a candidate for a new Action.
+Nothing is written to the Vault and no generative AI is called. The report and digest cache are
+written under `processes.state_root` and `processes.data_root`.
 """
 
 from __future__ import annotations
@@ -29,7 +32,8 @@ from .runtime import PipelineError, atomic_write_json, atomic_write_text
 from .vault_actions import ActionNote, load_actions
 
 LOGGER = logging.getLogger(__name__)
-REPORT_SCHEMA_VERSION = "1.0.0"
+REPORT_SCHEMA_VERSION = "1.1.0"
+DECISIONS = ("linked", "ambiguous", "followup", "unlinked")
 WIKILINK = re.compile(r"\[\[([^\]|#^]+)")
 
 
@@ -141,7 +145,8 @@ def _clue_c(conversation: Conversation, index: ActionIndex) -> dict[str, list[di
 
 
 def _clue_d(
-    conversation: Conversation, targets: list[ActionNote], paths: PathText, vault_root: str
+    conversation: Conversation, targets: list[ActionNote], paths: PathText, vault_root: str,
+    *, title_needs_identifier: bool = False,
 ) -> list[ActionNote]:
     session = conversation.session
     repo, cwd = session.get("repo") or "", session.get("cwd") or ""
@@ -149,7 +154,17 @@ def _clue_d(
         return []
     token = _token(repo)
     declared = [a for a in targets if any(_nfc(value) == _nfc(repo) for value in a.repositories)]
-    return declared or [a for a in targets if not a.repositories and token.search(_nfc(a.title))]
+    if declared:
+        return declared
+    # Among the many finished Actions, a plain word such as "windows" would match unrelated titles.
+    if title_needs_identifier and not re.search(r"[_-]", repo):
+        return []
+    return [a for a in targets if not a.repositories and token.search(_nfc(a.title))]
+
+
+def _command_only(items: list[dict[str, Any]]) -> bool:
+    """Only A clues that name the file in a command's arguments, without reading or changing it."""
+    return all(item["clue"] == "A" and item["via"] == "command" for item in items)
 
 
 def link_actions(config: AppConfig, *, dry_run: bool, as_of: date | None = None, days: int | None = None,
@@ -221,6 +236,8 @@ def link_actions(config: AppConfig, *, dry_run: bool, as_of: date | None = None,
     touched_keys: set[str] = set()
     for conversation in selected:
         for touch in conversation.touches():
+            if touch["access"] == "command":
+                continue  # Naming a file in a command's arguments does not make its Action a target.
             action = index.by_touch(touch["path"])
             if action is not None:
                 touched_keys.add(action.key())
@@ -229,6 +246,7 @@ def link_actions(config: AppConfig, *, dry_run: bool, as_of: date | None = None,
     targets = [a for a in actions if not a.closed and (
         a.in_progress or (a.updated is not None and a.updated >= window_start) or a.key() in touched_keys)]
     target_keys = {a.key() for a in targets}
+    finished = [a for a in actions if a.closed]
     by_key = {a.key(): a for a in actions}
     rows: list[dict[str, Any]] = []
     clue_counts: Counter[str] = Counter()
@@ -250,24 +268,33 @@ def link_actions(config: AppConfig, *, dry_run: bool, as_of: date | None = None,
             clues.setdefault(key, []).extend(items)
         d_candidates = _clue_d(conversation, targets, paths, vault_root)
         links: list[dict[str, Any]] = []
+        weak: dict[str, dict[str, Any]] = {}
         for key, items in clues.items():
             action = by_key[key]
-            links.append({"action": action.relative_path, "title": action.title, "status": action.status,
-                          "target": key in target_keys, "strength": "strong",
-                          "clues": sorted({item["clue"] for item in items}), "details": items})
+            link: dict[str, Any] = {"action": action.relative_path, "title": action.title, "status": action.status,
+                    "target": key in target_keys, "strength": "strong",
+                    "clues": sorted({item["clue"] for item in items}), "details": items}
+            if _command_only(items):
+                weak[key] = {**link, "strength": "weak"}
+            else:
+                links.append(link)
+        finished_candidates: list[ActionNote] = []
         if links:
             decision = "linked"
         elif len(d_candidates) == 1:
             decision = "linked"
             action = d_candidates[0]
+            details: list[dict[str, Any]] = [{"clue": "D", "via": "repositories" if action.repositories
+                                              else "title", "repo": session["repo"]}]
+            supporting = weak.pop(action.key(), None)  # A command naming the same Action backs the match.
             links.append({"action": action.relative_path, "title": action.title, "status": action.status,
-                          "target": True, "strength": "medium", "clues": ["D"],
-                          "details": [{"clue": "D", "via": "repositories" if action.repositories else "title",
-                                       "repo": session["repo"]}]})
+                          "target": True, "strength": "medium", "clues": ["A", "D"] if supporting else ["D"],
+                          "details": (supporting["details"] if supporting else []) + details})
         elif d_candidates:
             decision = "ambiguous"
         else:
-            decision = "unlinked"
+            finished_candidates = _clue_d(conversation, finished, paths, vault_root, title_needs_identifier=True)
+            decision = "followup" if finished_candidates else "unlinked"
         decisions[decision] += 1
         for link in links:
             clue_counts.update(link["clues"])
@@ -283,9 +310,11 @@ def link_actions(config: AppConfig, *, dry_run: bool, as_of: date | None = None,
                                                                 for s in conversation.subagents),
             "subagentCount": len(conversation.subagents),
             "firstRequest": _first_line(requests[0]["text"], 100) if requests else "",
-            "decision": decision, "links": links,
+            "decision": decision, "links": links, "weakLinks": list(weak.values()),
             "dCandidates": [{"action": a.relative_path, "title": a.title} for a in d_candidates]
             if decision == "ambiguous" else [],
+            "finishedActions": [{"action": a.relative_path, "title": a.title, "status": a.status}
+                                for a in finished_candidates],
             "digest": {"archive": conversation.digest["file"]["archive"],
                        "relativePath": conversation.digest["file"]["relativePath"],
                        "contentSha256": conversation.digest["file"]["contentSha256"]},
@@ -313,7 +342,8 @@ def link_actions(config: AppConfig, *, dry_run: bool, as_of: date | None = None,
         "duplicateSessions": duplicates,
         "orphanSubagents": orphan_subagents,
         "conversationCount": len(rows),
-        "decisions": {key: decisions.get(key, 0) for key in ("linked", "ambiguous", "unlinked")},
+        "decisions": {key: decisions.get(key, 0) for key in DECISIONS},
+        "conversationsWithWeakLinks": sum(1 for r in rows if r["weakLinks"]),
         "linkedStrong": sum(1 for r in rows if any(link["strength"] == "strong" for link in r["links"])),
         "linkedMediumOnly": sum(1 for r in rows if r["links"] and all(link["strength"] == "medium"
                                                                          for link in r["links"])),
@@ -360,7 +390,9 @@ def render_markdown(report: dict[str, Any], targets: list[ActionNote]) -> str:
         f"| 対応づいた（A・B・Cのどれか） | {report['linkedStrong']} |",
         f"| 対応づいた（Dが1件だけ） | {report['linkedMediumOnly']} |",
         f"| 決まらない（Dが複数。段階1で生成AIに選ばせる） | {decisions['ambiguous']} |",
+        f"| 終了したActionの続き（段階1で新しいActionの候補にする） | {decisions['followup']} |",
         f"| 対応なし | {decisions['unlinked']} |",
+        f"| A(実行)だけの弱い手がかりがあった会話（対応にしない） | {report['conversationsWithWeakLinks']} |",
         f"| うち本人の発言のない会話 | {report['conversationsWithoutHumanRequests']} |",
         f"| 手がかりの件数（A・B・C・D） | {', '.join(f'{k} {v}' for k, v in report['clueCounts'].items()) or '0'} |",
         f"| Action（全体・対象・対応づいた） | {report['actionCount']}・{report['targetActionCount']}・"
@@ -376,7 +408,7 @@ def render_markdown(report: dict[str, Any], targets: list[ActionNote]) -> str:
         "| 最後の発言 | アプリ | タイトル | リポジトリ | 判定 | Action（手がかり） | 最初の依頼 |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
-    labels = {"linked": "対応", "ambiguous": "曖昧", "unlinked": "なし"}
+    labels = {"linked": "対応", "ambiguous": "曖昧", "followup": "続き", "unlinked": "なし"}
     access_labels = {"read": "読", "edit": "変", "command": "実行"}
 
     def clue_text(link: dict[str, Any]) -> str:
@@ -398,6 +430,11 @@ def render_markdown(report: dict[str, Any], targets: list[ActionNote]) -> str:
         )
         if row["decision"] == "ambiguous":
             actions = "候補：" + "<br>".join(f"[[{_stem(c['action'])}]]" for c in row["dCandidates"][:5])
+        if row["decision"] == "followup":
+            actions = "終了：" + "<br>".join(f"[[{_stem(a['action'])}]]（{a['status']}）"
+                                           for a in row["finishedActions"][:3])
+        weak = "<br>".join(f"弱い：[[{_stem(link['action'])}]]（A(実行)）" for link in row["weakLinks"])
+        actions = "<br>".join(part for part in (actions, weak) if part)
         when = (row["lastLocalTime"] or "")[:16].replace("T", " ")
         lines.append(
             f"| {when} | {row['app']} | {_cell(row['title'] or row['sessionId'])} | {_cell(row['repo'])} | "
@@ -419,6 +456,11 @@ def render_markdown(report: dict[str, Any], targets: list[ActionNote]) -> str:
         "B：ActionのNotesの根拠にこの会話のセッションIDがある。"
         "C：本人の発言にActionのファイル名・WikiLink・title・aliasesがある。"
         "D：作業フォルダの最後のフォルダ名が、対象のActionの `repositories`（なければtitle）に1件だけ一致する。",
+        "- A(実行)だけの手がかりは弱い。そのActionにほかの手がかりがあるときだけ対応にし、なければ「弱い」と示す。"
+        "検索・一覧のコマンドで出たファイルは「読」に数える。",
+        "- 続き：どのActionにも対応しない会話で、作業フォルダの名前が終了したActionの `repositories`"
+        "（なければtitle。titleで比べるのは `_` か `-` を含む名前だけ）に一致したもの。"
+        "段階1では、そのActionを再開する案ではなく、新しいActionの候補にする。",
         "- 会話はアーカイブから読むので、archiverがまだ取り込んでいない会話（使用中など）は入らない。",
         "- 本人の発言：Claude Codeは `turnOrigin` が `human` 以外の依頼文（別のセッションからの依頼など）を除く。"
         "古い記録でこの欄がないものは本人の発言として扱い、確度を1段下げる。",

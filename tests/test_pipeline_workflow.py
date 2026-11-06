@@ -10,6 +10,7 @@ from chat_fixtures import write_chat
 
 from tkn_genai_chat_note.catalog import thread_key
 from tkn_genai_chat_note.config import AppConfig
+from tkn_genai_chat_note.initialization import ROOT_OWNER_APPLICATION_ID, ROOT_OWNERSHIP_MARKER
 from tkn_genai_chat_note.pipeline import pipeline_status, run_pipeline
 from tkn_genai_chat_note.provenance import validate_provenance
 from tkn_genai_chat_note.runtime import PipelineError
@@ -291,36 +292,31 @@ def test_clone_completion_and_catalog_describe_normalized_evidence(tmp_path: Pat
     assert "noteRef" not in entry
 
 
-def test_explicit_legacy_store_requires_migration_without_modifying_files(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("earlier-marker", "refusing unowned"),
+        ("marker-without-identity", "different source identity or names none"),
+        ("earlier-storage-version", "unsupported pipeline storage version"),
+    ],
+)
+def test_earlier_stores_stop_without_modifying_files(tmp_path: Path, case: str, message: str) -> None:
+    """Earlier store formats are not converted or adopted; processing stops before any write."""
     config = config_for(tmp_path)
-    for kind, root in (
-        ("data", config.data_root),
-        ("state", config.state_root),
-        ("cache", config.cache_root),
-        ("raw", config.raw_root),
-    ):
+    for kind, root in (("data", config.data_root), ("state", config.state_root), ("raw", config.raw_root)):
         root.mkdir()
-        (root / ".tkn-codex-context-root.json").write_text(
-            json.dumps(
-                {
-                    "schemaVersion": 1,
-                    "applicationId": "tkn-codex-context-pipeline",
-                    "rootKind": kind,
-                }
-            ),
-            encoding="utf-8",
-        )
+        name = ROOT_OWNERSHIP_MARKER
+        marker: dict[str, Any] = {"schemaVersion": 1, "applicationId": ROOT_OWNER_APPLICATION_ID, "rootKind": kind}
+        if case == "earlier-marker":
+            name, marker["applicationId"] = ".tkn-codex-context-root.json", "tkn-codex-context-pipeline"
+        elif case == "earlier-storage-version":
+            marker.update(sourceProvider="codex", sourceId=config.source_id)
+        (root / name).write_text(json.dumps(marker), encoding="utf-8")
     (config.state_root / "pipeline.json").write_text(
-        json.dumps(
-            {
-                "storageVersion": 2,
-                "sourceId": config.source_id,
-            }
-        ),
-        encoding="utf-8",
+        json.dumps({"storageVersion": 2, "sourceId": config.source_id}), encoding="utf-8"
     )
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
-    with pytest.raises(PipelineError, match="storage migrate"):
+    with pytest.raises(PipelineError, match=message):
         with pipeline_storage(config, initialize=False, dry_run=True):
             pass
     assert before == {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}

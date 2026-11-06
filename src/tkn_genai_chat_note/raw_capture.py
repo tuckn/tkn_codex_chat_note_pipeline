@@ -269,8 +269,6 @@ def ingest_raw_sources(
     ):
         raise RawCaptureError(f"raw_root and source sessions root must not overlap: {raw}")
     owned_source_root = _source_root(raw, source_id)
-    if (raw / source_id / "manifest.jsonl").exists() and not (owned_source_root / "manifest.jsonl").exists():
-        raise RawCaptureError("legacy Raw layout requires `storage migrate --from-config <old-config> --dry-run` first")
     _ensure_raw_root(raw, dry_run=dry_run)
     manifest_path = owned_source_root / "manifest.jsonl"
     records = _read_manifest(manifest_path, source_id)

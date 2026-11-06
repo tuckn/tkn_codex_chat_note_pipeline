@@ -43,12 +43,12 @@ def test_model_change_during_generation_rejected_but_actual_usage_retained(fake_
     assert client.records[-1]["inputTokens"] == 100
 
 
-def test_legacy_schema_requires_explicit_migration_without_writes(tmp_path):
+def test_older_schema_stops_without_conversion_or_writes(tmp_path):
     from tkn_genai_chat_note.runtime import PipelineError
 
-    path = tmp_path / "legacy.yaml"
+    path = tmp_path / "old.yaml"
     path.write_text('schema_version: "7.1.0"\n', encoding="utf-8")
     before = path.read_bytes()
-    with pytest.raises(PipelineError, match="requires schema 9 first"):
+    with pytest.raises(PipelineError, match="does not convert older files"):
         resolve_app_config(explicit_path=path, cwd=tmp_path, overrides={"model": "other"})
     assert path.read_bytes() == before

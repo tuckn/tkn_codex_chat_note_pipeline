@@ -11,7 +11,6 @@ from tkn_genai_chat_note.cli import build_parser
     ["scheduled-run"], ["review-notes", "due"],
     ["review-notes", "build", "--period", "weekly"],
     ["review-notes", "validate", "review.json"],
-    ["storage", "migrate", "--from-config", "old.yaml"],
     ["status"], ["provenance", "validate"], ["raw", "ingest"],
 ])
 @pytest.mark.parametrize("options", [

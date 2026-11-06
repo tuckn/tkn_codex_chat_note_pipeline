@@ -56,10 +56,6 @@ def _ownership_marker_document(kind: str) -> dict[str, str | int]:
 
 def _inspect_root_ownership(kind: str, path: Path) -> dict[str, Any]:
     marker = path / ROOT_OWNERSHIP_MARKER
-    legacy_marker = path / ".tkn-codex-context-root.json"
-    legacy = not marker.exists() and legacy_marker.exists()
-    if legacy:
-        marker = legacy_marker
     report: dict[str, Any] = {
         "kind": kind,
         "path": str(path),
@@ -95,8 +91,6 @@ def _inspect_root_ownership(kind: str, path: Path) -> dict[str, Any]:
         report.update(status="invalid-marker", reason=f"cannot read ownership marker: {exc}")
         return report
     expected = _ownership_marker_document(kind)
-    if legacy:
-        expected["applicationId"] = "tkn-codex-context-pipeline"
     if not isinstance(value, dict) or any(value.get(key) != expected_value for key, expected_value in expected.items()):
         report.update(
             status="invalid-marker",

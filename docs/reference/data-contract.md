@@ -1,6 +1,6 @@
 # Data contract: chat evidence and calendar reviews
 
-CLI 0.48.0 · config 10.0.0 · storage 5 · catalog/provenance 1.0.0 · Review Note 1.0.0
+CLI 0.49.0 · config 10.0.0 · storage 5 · catalog/provenance 1.0.0 · Review Note 1.0.0
 
 Terminal results follow the [CLI output contract](cli-output.md): copyable
 `key=value` by default, explicit `--json`, independent `--full-output` detail.
@@ -47,8 +47,11 @@ Vault. It calls no generative AI.
 - Evidence IDs: `<app>/<source_id>/<session_id>@<first 12 hex of the version's content SHA-256>#L<line>`.
   Archived versions never change, so an ID resolves to one line of one version.
 - Report: `<state_root>/actions-link/<runId>/report.md` (for people), `report.json` (summary counts,
-  per-conversation rows and per-Action links; schemaVersion 1.0.0) and `links.jsonl` (one row per
-  conversation with its clues, evidence IDs and decision `linked`, `ambiguous` or `unlinked`).
+  per-conversation rows and per-Action links; schemaVersion 1.1.0) and `links.jsonl` (one row per
+  conversation with its clues, evidence IDs and decision `linked`, `ambiguous`, `followup` or
+  `unlinked`). An A clue that only names the file in a command's arguments is listed under
+  `weakLinks` and links only together with another clue for the same Action. `followup` rows list
+  the finished Actions whose repository matched under `finishedActions`.
   `<state_root>/actions-link/last-run.json` names the latest report.
 
 ## Source identity and configuration
@@ -68,15 +71,12 @@ independently; sources are not merged into one calendar note. Review settings be
 `sources.<id>.reviews`. Review outputs are `<data_root>/reviews`; review state is
 `<state_root>/reviews`. Review-specific output roots are not configurable.
 
-Configuration 10 rejects earlier schemas during ordinary commands with migration guidance.
-Schema 10 defines every GenAI connection in this file under `genai_profiles` (tkn_genai_bridge
-profiles plus this application's `limits` and Ollama `model_digest`) and selects the review
-connection with `generation.genai_profile`; no shared Bridge configuration is read. `config
-migrate` converts a schema-9 file (copying the referenced shared Bridge profiles once) and moves
-the previous application's user config; it never modifies the old files. Schemas 7/8 first need
-the schema-9 changes: move top-level reviews into each source, remove its data_root/state_root/
-session_note_limit, and remove generation.session_note_profile, idle_minutes and installed_at.
-Preserve source IDs and final Raw/data/state paths. Existing storage 5 needs no rewrite.
+Every configuration file states `schema_version: "10.0.0"` (a newer patch is accepted). Another
+major or a newer minor stops with an error; older files are not converted. Schema 10 defines
+every GenAI connection in this file under `genai_profiles` (tkn_genai_bridge profiles plus this
+application's `limits` and Ollama `model_digest`) and selects the review connection with
+`generation.genai_profile`; no shared Bridge configuration is read. Only `~/.tkn/genai_chat_note`
+is the user directory; earlier application directories are not read.
 
 ## Stable identities and references
 
@@ -125,7 +125,7 @@ profile `codex` and this sourceId; otherwise processing stops before any write.
   versions. Titles fall back to source_root when the archive has no readable index.
 - Nothing is written below raw_root: no copy, manifest.jsonl, metadata/, ownership marker or
   lock. Confirmed manifests and their versions never change, so reads need no lock.
-  `raw ingest` and `storage migrate` refuse archive-managed roots.
+  `raw ingest` refuses archive-managed roots.
 - The capture report has mode `archive-read`, zero capture counts, per-input aliasRefs and an
   `archive` object with manifest counts, ignored manifests, alias and pruned counts, and the
   latest archive run. A latest run that is not complete or recovered adds a warning.
@@ -135,7 +135,7 @@ profile `codex` and this sourceId; otherwise processing stops before any write.
 | Artifact | Contract |
 | --- | --- |
 | Raw manifest | Reads 1/2/3; writes 3, with refs, hashes, byte counts and capture metadata. Archive-managed Raw: reads archive manifests 1.x, writes none |
-| store.json | 1.0.0; storageVersion 5, source identity, Raw prefix and legacy aliases |
+| store.json | 1.0.0; storageVersion 5, source identity, Raw prefix and reference aliases (empty in new stores) |
 | catalog/threads.json | 1.0.0; asOf and threads |
 | Canonical export | 1.0.0; parser 2, event locators, source metadata and diagnostics |
 | Provenance entities, activities, index | 1.0.0; versioned artifacts and normalization lineage |
@@ -188,13 +188,14 @@ observe different generations and must reject inconsistent combinations. `raw in
 does not republish the derived index. `provenance validate` checks structure, identities,
 snapshot hashes/lengths and current artifacts; it does not prove semantic accuracy.
 
-## Storage and migration
+## Storage
 
-Omitted source roots resolve to `~/.tkn/genai_chat_note_pipeline/<kind>/codex/<source_id>`.
-0.47.0 and earlier (named tkn_codex_chat_note_pipeline) used `~/.tkn/codex_chat_note_pipeline`;
-when an omitted root is still only there, processing stops instead of starting an empty store,
-and `config migrate` pins such roots explicitly. Configured roots are final paths. Roots may share a parent but must not overlap one another
-or input directories. Ownership markers bind source identity; locks protect actual roots.
+Omitted source roots resolve to `~/.tkn/genai_chat_note/<kind>/codex/<source_id>`. Configured
+roots are final paths. Roots may share a parent but must not overlap one another or input
+directories. Ownership markers bind source identity; locks protect actual roots. A root is used
+only when it is missing, empty, or carries this application's ownership marker with this source's
+provider and ID. Stores of other layouts or storage versions are not converted; processing stops
+before any write.
 
 - Raw: sessions/, archived_sessions/, manifest.jsonl and metadata/. An archive-managed
   raw_root also has manifests/ and snapshots/, all owned by tkn-genai-chat-archiver.
@@ -207,22 +208,11 @@ Raw/data/state together. Review state is needed for restart and edit protection.
 regenerable. Review stage cache lives at cache_root/reviews, keyed by generation signature
 and exact prompt. Hash/schema/citation validation precedes reuse.
 
-store.json rawRefAliases/dataRefAliases translate legacy locators longest-prefix first,
-once, rejecting traversal before and after translation. Immutable snapshots retain bytes.
-The storage-5 ownership filename and applicationId remain legacy identifiers deliberately;
-a package rename does not change ownership of existing stores.
-
-`storage migrate --from-config <old-config> --dry-run` plans a copy into fresh destination
-roots. The source configuration is standalone. Historical config schemas 2 through 8 and
-current 9 are supported by the explicit migration reader, subject to supported minor
-versions; ordinary runtime configuration only accepts 9. Source stores 2/3/4 and completed
-5 are supported. Preserve source identity and stop concurrent source writers.
-
-Migration copies Raw, canonical data, provenance, reviews, historical notes and state.
-Mutable locators are translated, while immutable snapshots and old note bytes remain
-unchanged. Source data/configuration are not modified. Conflicts fail closed; interrupted
-copies resume from their plan and write errors roll back destination changes. Review IDs
-bind location: migration is not a promise of automatic review identity regeneration.
+store.json rawRefAliases/dataRefAliases, when present, translate locators longest-prefix
+first, once, rejecting traversal before and after translation. Immutable snapshots retain
+bytes. The ownership marker `.tkn-genai-chat-note-root.json` keeps applicationId
+`tkn-genai-chat-note-pipeline` deliberately; a package rename does not change ownership of
+existing stores or of archives that tkn-genai-chat-archiver adopted.
 
 ## Review generation and usage
 

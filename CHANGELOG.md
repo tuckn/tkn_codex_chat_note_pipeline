@@ -7,6 +7,14 @@
 現在のパッケージ名になった 0.15.0 以降を対象とし、それ以前の前身プロジェクトの履歴は Git を参照してください。
 Git で独立したバージョン更新を確認できない 0.19.x、0.26.x、0.27.x などは個別に掲載していません。
 
+## 0.49.0 - 2026-11-06
+
+- Align the names with the repository `tkn_genai_chat_note`: distribution `tkn-genai-chat-note` (was `tkn-genai-chat-note-pipeline`), user directory `~/.tkn/genai_chat_note` and cache `~/.cache/genai_chat_note` (were `…_pipeline`). The CLI `tkn-genai-chat-note` and the package `tkn_genai_chat_note` are unchanged.
+- Ownership markers keep `applicationId: tkn-genai-chat-note-pipeline`, so existing stores and archives stay readable. New normalization records name the software `tkn-genai-chat-note`.
+- Remove the migration support, since the CLI has no other users and the only existing setup already uses the new names: the `config migrate` and `storage migrate` commands (and the `storage` command group), the detection of earlier application directories and their default storage, the in-memory handling of older configuration schemas and retired keys (`summary_prompt`), and the acceptance of earlier store layouts (migration receipts, the earlier ownership marker `.tkn-codex-context-root.json`, markers without a source identity, Raw layouts of storage 2-4).
+- `actions link`: an A clue that only names the Action file in a command's arguments no longer links by itself; it is reported as a weak link and counts only together with another clue for the same Action, and it no longer makes the Action a target. A conversation that links to nothing, but whose repository matches a finished Action, is reported as `followup` (a candidate for a new Action in stage 1). Report schema 1.1.0.
+- A configuration file must state schema 10.0.0; an older schema stops with an error and is not converted. `status` no longer reports `migrationRequired`, and `config list` no longer reports `configSchema.hasInMemoryMigrations` or `layers[].migration`.
+
 ## 0.48.0 - 2026-11-05
 
 Stage 0 of the role redesign: the CLI moves from calendar reviews toward source-cited proposals for existing notes (see `docs/design/role-redesign_ja.md`).

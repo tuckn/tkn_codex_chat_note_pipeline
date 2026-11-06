@@ -202,9 +202,7 @@ def test_config_list_reports_source_reviews_without_summary_profile(
     assert output["config"]["sources"]["windows"]["reviews"]["language"] == "ja"
     assert "reviews" not in output["config"]
     assert output["config"]["schema_version"] == CONFIG_SCHEMA_VERSION
-    assert output["configSchema"] == {
-        "effectiveVersion": CONFIG_SCHEMA_VERSION, "hasInMemoryMigrations": False,
-    }
+    assert output["configSchema"] == {"effectiveVersion": CONFIG_SCHEMA_VERSION}
     assert output["sources"]["generation.genai_profile"] == "built-in defaults"
     assert output["sources"]["genai_profiles.codex-default.provider"] == "built-in defaults"
     assert [layer["kind"] for layer in output["layers"]] == ["built-in", "global", "project"]
@@ -217,7 +215,7 @@ def test_config_init_cli_creates_then_keeps_the_user_config(
     capsys: CaptureFixture[str],
 ) -> None:
     home = tmp_path / "home"
-    target = home / ".tkn/genai_chat_note_pipeline/config.yaml"
+    target = home / ".tkn/genai_chat_note/config.yaml"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
 

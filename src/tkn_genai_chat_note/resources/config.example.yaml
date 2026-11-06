@@ -1,6 +1,6 @@
 schema_version: "10.0.0"
 # One shared cache base; codex/source_id partitions are automatic.
-cache_root: ~/.cache/genai_chat_note_pipeline
+cache_root: ~/.cache/genai_chat_note
 
 # Every source is a local Codex directory. Map keys are stable source_id values.
 # Recommended: lowercase ASCII kebab-case, e.g. laptop-windows or laptop-wsl-ubuntu.
@@ -13,8 +13,7 @@ sources:
     include_archived: true
 
     # Optional final directories; no codex/source_id suffix is added.
-    # Omit roots for ~/.tkn/genai_chat_note_pipeline/<kind>/codex/<source_id>.
-    # When upgrading, explicitly retain the old final raw/data/state paths.
+    # Omit roots for ~/.tkn/genai_chat_note/<kind>/codex/<source_id>.
     raw_root: C:/path/to/codex/raw
     data_root: C:/path/to/codex/data
     state_root: C:/path/to/codex/state
@@ -74,7 +73,7 @@ runtime_minutes: 230
 model_timeout_seconds: 1800
 
 # Offline usage reports; no inference or price lookup occurs during build-report.
-report_path: ~/.tkn/genai_chat_note_pipeline/reports
+report_path: ~/.tkn/genai_chat_note/reports
 usage_report:
   utc_offset_minutes: 0  # Use 540 for Japan; execution dates, not original chat dates.
   price_scenarios: {}
@@ -98,8 +97,8 @@ utc_offset_minutes: 540  # Local dates of conversations; 540 = Japan. No dayligh
 path_aliases: []
 #  - ["D:/path/to/work", "C:/path/to/work"]
 processes:
-  data_root: ~/.tkn/genai_chat_note_pipeline/processes/data  # Session digests; a cache rebuilt from archives.
-  state_root: ~/.tkn/genai_chat_note_pipeline/processes/state  # Reports. Must not lie in an archive or the Vault.
+  data_root: ~/.tkn/genai_chat_note/processes/data  # Session digests; a cache rebuilt from archives.
+  state_root: ~/.tkn/genai_chat_note/processes/state  # Reports. Must not lie in an archive or the Vault.
   actions:
     lookback_days: 14
 # The Vault's conventions. Nothing here is written by stage 0.

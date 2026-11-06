@@ -22,7 +22,7 @@ not reset values selected by parent parsers. `--` retains its normal meaning.
 | Field | Meaning |
 | --- | --- |
 | `command` | Full parsed command name; null when argument parsing cannot finish |
-| `status` | `success`, `failed`, `incomplete`, `interrupted`; operations with their own status retain it (e.g. config `created`/`unchanged`, migration `planned`/`migrated`/`already-migrated`) |
+| `status` | `success`, `failed`, `incomplete`, `interrupted`; operations with their own status retain it (e.g. config `created`/`unchanged`/`replaced`) |
 | `exitCode` | Actual CLI exit code, independent of output format and verbosity |
 | `ok`, `complete`, `dryRun` | Original operation fields, when applicable; a successful dry-run need not represent a completed persistent run |
 | `threadCounts`, `generatedCount`, `pendingPeriods`, etc. | Original counters, when applicable |
@@ -37,8 +37,7 @@ not reset values selected by parent parsers. `--` retains its normal meaning.
 Without `--full-output`, current/unchanged/excluded/skipped-empty records can be
 summarized, except when they carry errors, warnings or coverage gaps. Planned,
 deferred, blocked, preserved, failed and other non-routine records remain visible.
-Migration file operations are summarized by count; `--full-output` includes every
-source and destination. Configuration sources are never summarized. Raw capture
+Configuration sources are never summarized. Raw capture
 source records use the same routine-item rule. Nested multi-source capture/review
 reports receive the same projection, without changing the saved report.
 
@@ -50,12 +49,11 @@ inspect its complete plan without persistent changes.
 
 | Commands | Results |
 | --- | --- |
-| `config init`, `config list`, `config migrate` | Creation/backup paths, resolved config, sources and schema metadata, or the converted file and its notes |
+| `config init`, `config list` | Creation/backup paths, or resolved config, sources and schema metadata |
 | `clone`, `pull`, `raw ingest`, `scheduled-run` | Capture/normalization counters, failed and attention records, report paths (`scheduled-run` adds `reviewsScheduled=false`) |
 | `review-notes build`, `review-notes due` | Period results/counts, missing timestamps, stop reasons, pending work and review reports |
 | `review-notes validate`, `provenance validate` | Existing verification fields or selected-format failure diagnostics |
 | `status` | Last saved coverage/status; no live scan added |
-| `storage migrate` | Existing migration result and file count/details |
 | `build-report` | Existing usage report counters, warnings and artifact paths |
 
 ## Exit codes and error handling

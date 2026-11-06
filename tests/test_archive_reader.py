@@ -24,7 +24,6 @@ from tkn_genai_chat_note.pipeline import run_pipeline
 from tkn_genai_chat_note.provenance import validate_provenance
 from tkn_genai_chat_note.raw_capture import RawCaptureError, ingest_raw_sources
 from tkn_genai_chat_note.runtime import PipelineError
-from tkn_genai_chat_note.storage_migration import migrate_storage
 
 SOURCE = "windows"
 
@@ -374,7 +373,5 @@ def test_raw_writers_refuse_an_archive_managed_root(tmp_path: Path) -> None:
         run_pipeline(config, mode="raw")
     with pytest.raises(RawCaptureError, match="read-only"):
         ingest_raw_sources(config.sessions_root, config.raw_root, SOURCE, dry_run=False, captured_at="now")
-    with pytest.raises(PipelineError, match="storage migrate"):
-        migrate_storage(config, from_config=tmp_path / "old.yaml", dry_run=False)
 
     assert tree(tmp_path) == before

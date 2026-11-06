@@ -178,7 +178,7 @@ def test_link_uses_clues_a_to_d_and_writes_only_its_report(tmp_path: Path) -> No
     assert codex["title"] == "Check the importer" and codex["firstRequest"] == "Check it"
     assert [Path(link["action"]).stem for link in codex["links"]] == [A1]
     assert codex["excludedUserMessages"] == {"codex-app-block": 1}
-    assert result["decisions"] == {"linked": 5, "ambiguous": 0, "unlinked": 0}
+    assert result["decisions"] == {"linked": 5, "ambiguous": 0, "followup": 0, "unlinked": 0}
     report = Path(result["reportPath"]).read_text(encoding="utf-8")
     assert f"[[{A1}]]（A(変・読)" in report and "Vaultには書いていない" in report
     assert len(Path(result["linksPath"]).read_text(encoding="utf-8").splitlines()) == 5
@@ -196,6 +196,65 @@ def test_several_repository_matches_are_left_for_the_ai_step(tmp_path: Path) -> 
     row = next(r for r in json.loads(Path(result["reportJsonPath"]).read_text("utf-8"))["conversations"]
                if r["sessionId"] == S3)
     assert row["decision"] == "ambiguous" and len(row["dCandidates"]) == 2
+
+
+S5 = "55555555-5555-4555-8555-555555555555"
+S6 = "66666666-6666-4666-8666-666666666666"
+S7 = "77777777-7777-4777-8777-777777777777"
+S8 = "88888888-8888-4888-8888-888888888888"
+
+
+def run_command(session: str, cwd: str, request: str, command: str | None) -> bytes:
+    records = [claude("user", request, session, cwd, "2026-11-04T01:00:00Z", turnOrigin="human")]
+    if command is not None:
+        records += [
+            claude("assistant", [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": command}}],
+                   session, cwd, "2026-11-04T01:01:00Z"),
+            claude("user", [{"type": "tool_result", "tool_use_id": "b1", "content": "ok"}],
+                   session, cwd, "2026-11-04T01:02:00Z"),
+        ]
+    return lines(*records)
+
+
+def test_command_mentions_are_weak_and_finished_repositories_are_follow_ups(tmp_path: Path) -> None:
+    path, vault_root, archives = configure(tmp_path)
+    folder = vault_root / "notes" / "actions" / "2026"
+    action(folder, "20261001 Ship tkn_tool", "Completed")
+    action(folder, "20261002 Fix windows", "Completed")
+    dormant = action(folder, "20260901 Dormant tkn_other", "NotStarted", updated="2026-09-01T10:00:00+09:00")
+    trip, docs = folder / f"{A4}.md", folder / f"{A3}.md"
+    run = ArchiveRun(archives[0], "pc-claude", "20261105T030000+0900", "2026-11-05T03:00:00+09:00")
+    conversations = {
+        S5: run_command(S5, str(vault_root), "Commit the notes", f'git add "{trip}" "{dormant}"'),
+        S6: run_command(S6, "C:\\path\\to\\tkn_tool", "Add a flag", None),
+        S7: run_command(S7, "C:\\path\\to\\windows", "Why is it slow", None),
+        S8: run_command(S8, "C:\\path\\to\\tkn_sample", "Fix the docs build", f'git add "{docs}"'),
+    }
+    for session, data in conversations.items():
+        run.version(f"projects/C--work/{session}.jsonl", data)
+    run.commit()
+    config = load_app_config(explicit_path=path, cwd=tmp_path)
+
+    result = link_actions(config, dry_run=True, as_of=date(2026, 11, 5))
+
+    rows = {row["sessionId"]: row for row in json.loads(Path(result["reportJsonPath"]).read_text("utf-8"))[
+        "conversations"]}
+    s5 = rows[S5]
+    assert s5["decision"] == "unlinked" and s5["links"] == []
+    assert {Path(link["action"]).stem for link in s5["weakLinks"]} == {A4, "20260901 Dormant tkn_other"}
+    assert {link["strength"] for link in s5["weakLinks"]} == {"weak"}
+    assert result["targetActionCount"] == 3  # A command naming the dormant Action does not make it a target.
+    s6 = rows[S6]
+    assert s6["decision"] == "followup" and [a["title"] for a in s6["finishedActions"]] == ["Ship tkn_tool"]
+    assert rows[S7]["decision"] == "unlinked"  # "windows" is a plain word, not compared with titles.
+    s8 = rows[S8]["links"]
+    assert len(s8) == 1 and s8[0]["clues"] == ["A", "D"] and s8[0]["strength"] == "medium"
+    assert rows[S8]["weakLinks"] == []
+    assert result["decisions"] == {"linked": 6, "ambiguous": 0, "followup": 1, "unlinked": 2}
+    assert result["conversationsWithWeakLinks"] == 1
+    report = Path(result["reportPath"]).read_text(encoding="utf-8")
+    assert "| 続き | 終了：[[20261001 Ship tkn_tool]]（Completed） |" in report
+    assert f"弱い：[[{A4}]]（A(実行)）" in report
 
 
 def test_dry_run_is_required_and_work_roots_must_not_overlap(tmp_path: Path) -> None:

@@ -1,4 +1,4 @@
-"""Command-line interface for Tkn GenAI Chat Note Pipeline."""
+"""Command-line interface for Tkn GenAI Chat Note."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from typing import Any, NoReturn, TypeVar, overload
 from . import __version__
 from .config import (
     config_document,
+    global_config_path,
     initialize_user_config,
     load_app_config,
     resolve_app_config,
@@ -132,18 +133,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="List effective values and their sources",
         description="Read-only configuration listing as key=value lines; does not write files.",
     )
-    migrate_config = sub.add_parser(
-        "migrate",
-        help="Convert a schema-9 config, or the previous location's config, into this version's file",
-        description="Reads the old configuration (and the shared Bridge configuration it references) once, "
-                    "never modifies them, and writes --config or the default user config path.",
-    )
-    migrate_config.add_argument("--from-config", type=Path,
-                                help="Old configuration (default: the previous application's user config)")
-    migrate_config.add_argument("--bridge-config", type=Path,
-                                help="Shared Bridge configuration referenced by bridge_profile entries")
-    migrate_config.add_argument("--dry-run", action="store_true", help="Show the converted file without writing")
-    migrate_config.add_argument("--force", action="store_true", help="Back up and replace an existing target")
     for name, help_text in (
         ("clone", "Initialize and process all available history; resume safely when repeated"),
         ("pull", "Capture new/changed logs and refresh canonical events without inference"),
@@ -182,17 +171,6 @@ def build_parser() -> argparse.ArgumentParser:
     review_due.add_argument("--as-of", type=date.fromisoformat, help="Calendar date to evaluate (default: today)")
     review_validate = review_sub.add_parser("validate", help="Validate review JSON, periods and source IDs offline")
     review_validate.add_argument("artifact", type=Path)
-    storage = commands.add_parser("storage", help="Inspect or migrate storage layout")
-    migrate = storage.add_subparsers(dest="storage_command", required=True).add_parser(
-        "migrate", help="Copy one source store into fresh provider-local roots; retain original evidence"
-    )
-    migrate.add_argument(
-        "--from-config",
-        type=Path,
-        required=True,
-        help="Standalone source config (schema 2-8); --config selects the fresh destination",
-    )
-    migrate.add_argument("--dry-run", action="store_true", help="Show exact migration files without writing")
     commands.add_parser("status", help="Show last-run coverage and pending work without a live source scan")
     provenance = commands.add_parser("provenance", help="Inspect downstream evidence integrity")
     provenance.add_subparsers(dest="provenance_command", required=True).add_parser(
@@ -290,19 +268,6 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
                 LOGGER.info("Configuration backup: %s", report["backupPath"])
             save({"command": "config init", **report})
             return 0
-        if args.config_command == "migrate":
-            if _overrides(args):
-                raise PipelineError("runtime configuration options cannot be used with config migrate")
-            from .config_migration import migrate_config
-
-            report = migrate_config(from_config=args.from_config, target=args.config,
-                                    bridge_config=args.bridge_config, dry_run=args.dry_run, force=args.force)
-            for note in report.get("notes", []):
-                LOGGER.info("%s", note)
-            if report["status"] in {"created", "replaced"}:
-                log_success(LOGGER, "Configuration %s: %s", report["status"], report["configPath"])
-            save({"command": "config migrate", **report})
-            return 0
         LOGGER.info("Showing resolved configuration")
         resolution = resolve_app_config(
             explicit_path=args.config,
@@ -336,7 +301,6 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
             },
             "configSchema": {
                 "effectiveVersion": resolution.effective_schema_version,
-                "hasInMemoryMigrations": resolution.has_in_memory_migrations,
             },
             "sources": resolution.sources,
             "layers": list(resolution.layers),
@@ -397,8 +361,9 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
         result = link_actions(config, dry_run=args.dry_run, as_of=args.as_of, days=args.days)
         save(result)
         decisions = result["decisions"]
-        log_success(LOGGER, "actions link: %s conversations; linked %s, ambiguous %s, unlinked %s",
-                    result["conversationCount"], decisions["linked"], decisions["ambiguous"], decisions["unlinked"])
+        log_success(LOGGER, "actions link: %s conversations; linked %s, ambiguous %s, follow-up %s, unlinked %s",
+                    result["conversationCount"], decisions["linked"], decisions["ambiguous"], decisions["followup"],
+                    decisions["unlinked"])
         LOGGER.info("Report: %s", result["reportPath"])
         return 0
     if args.command == "build-report":
@@ -424,11 +389,6 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
             if len(results) == 1
             else {"ok": all(result["ok"] for result in results), "sourceResults": results}
         )
-        return 0
-    if args.command == "storage":
-        from .storage_migration import migrate_storage
-
-        save(migrate_storage(config, from_config=args.from_config, dry_run=args.dry_run, config_path=args.config))
         return 0
     if args.command == "status":
         save(pipeline_status(config))
@@ -467,7 +427,7 @@ def _run(args: argparse.Namespace, pending: list[dict[str, Any]], targets: dict[
 
 
 def _command_name(args: argparse.Namespace) -> str:
-    keys = ("command", "config_command", "actions_command", "review_command", "storage_command",
+    keys = ("command", "config_command", "actions_command", "review_command",
             "provenance_command", "raw_command")
     return " ".join(str(getattr(args, key)) for key in keys if getattr(args, key, None))
 
@@ -487,9 +447,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = parser.parse_args(argv)
         json_output = bool(args.json)
         _configure_logging(args)
-        targets["configPaths"] = [str(Path.home() / ".tkn/genai_chat_note_pipeline/config.yaml"),
+        targets["configPaths"] = [str(global_config_path()),
                                   str(Path.cwd() / ".tkn/config.yaml")]
-        for key in ("config", "artifact", "from_config"):
+        for key in ("config", "artifact"):
             path = getattr(args, key, None)
             if path is not None:
                 targets[key + "Path"] = str(path.expanduser().absolute())

@@ -34,12 +34,10 @@ from .runtime import (
 CONFIG_SCHEMA_VERSION: Literal["10.0.0"] = "10.0.0"
 _CONFIG_SCHEMA_VERSION_PARTS = (10, 0, 0)
 _CONFIG_SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
-APP_DIRECTORY_NAME = "genai_chat_note_pipeline"
-# 0.47.0 and earlier were named tkn_codex_chat_note_pipeline. Their configuration and
-# default storage live under this directory until the user moves them.
-LEGACY_APP_DIRECTORY_NAME = "codex_chat_note_pipeline"
+APP_DIRECTORY_NAME = "genai_chat_note"
 CONFIG_EXAMPLE_RESOURCE = "resources/config.example.yaml"
-LEGACY_GENERATION_KEYS = frozenset(
+# Command-line options that adjust the selected GenAI profile instead of a configuration key.
+GENERATION_OPTION_KEYS = frozenset(
     {
         "provider",
         "model",
@@ -66,19 +64,10 @@ class ConfigResolution:
     sources: dict[str, str]
     layers: tuple[dict[str, Any], ...]
     effective_schema_version: str
-    has_in_memory_migrations: bool
 
 
 def default_app_root() -> Path:
     return Path.home() / ".tkn" / APP_DIRECTORY_NAME
-
-
-def legacy_app_root() -> Path:
-    return Path.home() / ".tkn" / LEGACY_APP_DIRECTORY_NAME
-
-
-def legacy_global_config_path() -> Path:
-    return legacy_app_root() / "config.yaml"
 
 
 def default_user_cache_root() -> Path:
@@ -468,95 +457,34 @@ def _default_config_document() -> dict[str, Any]:
     return document
 
 
-def _reject_legacy_generation_config(value: dict[str, Any], path: Path) -> None:
-    legacy_keys = sorted(LEGACY_GENERATION_KEYS.intersection(value))
-    schema_version = value.get("schema_version")
-    schema_v1 = schema_version == 1 or (isinstance(schema_version, str) and schema_version.partition(".")[0] == "1")
-    if schema_v1 or legacy_keys:
-        detail = f"; retired keys: {', '.join(legacy_keys)}" if legacy_keys else ""
-        raise PipelineError(
-            f"configuration schema v1 is no longer supported: {path}{detail}; "
-            f'set schema_version: "{CONFIG_SCHEMA_VERSION}", define connections under genai_profiles '
-            "and select one with generation.genai_profile"
-        )
-
-
 def _inspect_config_schema(value: dict[str, Any], path: Path) -> dict[str, Any]:
+    """Accept only this application's schema; older files are not converted."""
     if "schema_version" not in value:
         raise PipelineError(
             f'configuration schema_version is required: {path}; set schema_version: "{CONFIG_SCHEMA_VERSION}"'
         )
     raw_version = value["schema_version"]
-    if raw_version == 2 or isinstance(raw_version, str) and re.fullmatch(r"[234]\.[0-9]+\.[0-9]+", raw_version):
-        raise PipelineError(
-            "legacy configuration requires a new schema-7 config with source-local roots; "
-            "use `storage migrate --from-config <old-config> --dry-run` with the new --config; "
-            "the old configuration and data are not modified"
-        )
-
-    if isinstance(raw_version, str) and re.fullmatch(r"[56]\.[0-9]+\.[0-9]+", raw_version):
-        raise PipelineError(
-            "configuration schema 5/6 requires an explicit config-only update: "
-            "move chat.providers.codex.sources to top-level sources (for schema 5, "
-            "key the Codex entry by its source_id and rename home to source_root); "
-            'remove chat and set schema_version to "7.0.0"; retain IDs and final raw/data/state roots, '
-            "including old default paths; storage 5 needs no data migration. "
-            "Generation providers remain under generation.providers"
-        )
     if not isinstance(raw_version, str) or not _CONFIG_SCHEMA_VERSION_PATTERN.fullmatch(raw_version):
         raise PipelineError(
             f"invalid configuration schema_version {raw_version!r}: {path}; "
             f'expected a quoted MAJOR.MINOR.PATCH value such as "{CONFIG_SCHEMA_VERSION}"'
         )
-    parts = tuple(int(part) for part in raw_version.split("."))
     current_major, current_minor, _current_patch = _CONFIG_SCHEMA_VERSION_PARTS
-    major, minor, _patch = parts
-    if major in {7, 8}:
-        raise PipelineError(
-            "configuration requires schema 9 first: move reviews settings under sources.<id>.reviews; "
-            "review data/state now use each source root's reviews subdirectory; remove "
-            "generation.session_note_profile, idle_minutes, installed_at and reviews.session_note_limit. "
-            "Preserve source IDs and raw/data/state roots. Existing artifacts are not deleted. "
-            f"Then convert schema 9 to {CONFIG_SCHEMA_VERSION} with `config migrate --dry-run`."
-        )
-    if major == 9:
-        raise PipelineError(
-            f"configuration schema {raw_version} reads the shared tkn_genai_bridge configuration, which is no "
-            f"longer used: {path}; schema {CONFIG_SCHEMA_VERSION} defines connections in this file under "
-            "genai_profiles and selects one with generation.genai_profile. Run "
-            "`tkn-genai-chat-note config migrate --dry-run` to preview a converted file; the old configuration "
-            "and data are not modified"
-        )
-    if major != current_major:
-        direction = "newer" if major > current_major else "older"
-        action = (
-            "upgrade tkn-genai-chat-note"
-            if major > current_major
-            else "migrate the configuration explicitly; no migration path is available"
-        )
-        raise PipelineError(
-            f"unsupported {direction} configuration schema_version {raw_version!r}: {path}; "
-            f"this application supports schema versions through {CONFIG_SCHEMA_VERSION} "
-            f"within major {current_major}; {action}"
-        )
-    if minor > current_minor:
+    major, minor, _patch = (int(part) for part in raw_version.split("."))
+    if major > current_major or (major == current_major and minor > current_minor):
         raise PipelineError(
             f"unsupported newer configuration schema_version {raw_version!r}: {path}; "
-            f"this application supports schema versions through {CONFIG_SCHEMA_VERSION}; "
-            "upgrade tkn-genai-chat-note"
+            f"this application supports schema {CONFIG_SCHEMA_VERSION}; upgrade tkn-genai-chat-note"
         )
-    migration: dict[str, Any] | None = None
-    if minor < current_minor:
-        migration = {
-            "kind": "compatible-version-normalization",
-            "fromVersion": raw_version,
-            "toVersion": CONFIG_SCHEMA_VERSION,
-            "persistentConfigUpdated": False,
-        }
+    if major != current_major:
+        raise PipelineError(
+            f"unsupported older configuration schema_version {raw_version!r}: {path}; this application "
+            f"reads schema {CONFIG_SCHEMA_VERSION} only and does not convert older files; write the file "
+            "for this schema (`config init` creates an example)"
+        )
     return {
         "schemaVersion": raw_version,
         "effectiveSchemaVersion": CONFIG_SCHEMA_VERSION,
-        "migration": migration,
     }
 
 
@@ -614,43 +542,7 @@ def _resolve_paths(value: dict[str, Any], base: Path) -> dict[str, Any]:
                         if isinstance(settings[key], str) and not settings[key].strip():
                             raise PipelineError("source paths must not be empty")
                         settings[key] = resolve(settings[key])
-    chat = result.get("chat")
-    providers = chat.get("providers") if isinstance(chat, dict) else None
-    if isinstance(providers, dict):
-        for provider in providers.values():
-            if isinstance(provider, dict):
-                # Legacy standalone migration readers still resolve home here.
-                entries = provider.get("sources", {"legacy": provider})
-                if not isinstance(entries, dict):
-                    continue
-                if "sources" in provider and len({str(key).casefold() for key in entries}) != len(entries):
-                    raise PipelineError("source_id keys must be unique ignoring case within a provider")
-                for settings in entries.values():
-                    if not isinstance(settings, dict):
-                        continue
-                    for key in ("source_root", "home", "raw_root", "data_root", "state_root"):
-                        if settings.get(key) is not None:
-                            if isinstance(settings[key], str) and not settings[key].strip():
-                                raise PipelineError("chat source paths must not be empty")
-                            settings[key] = resolve(settings[key])
     return result
-
-
-def _without_retired_user_prompt(
-    value: dict[str, Any],
-    *,
-    remove_configured: bool,
-) -> tuple[dict[str, Any], bool]:
-    result = dict(value)
-    if "summary_prompt" not in result:
-        return result, False
-    configured = result.pop("summary_prompt")
-    if configured is not None and not remove_configured:
-        raise PipelineError(
-            "summary_prompt is no longer supported; remove it from config because "
-            "summary profiles are application-owned"
-        )
-    return result, True
 
 
 def _apply_runtime_overrides(
@@ -664,7 +556,7 @@ def _apply_runtime_overrides(
         raise PipelineError("schema_version is configuration-source metadata and cannot be a CLI override")
     resolved = _resolve_paths(overrides, working)
     options = {key: resolved.pop(key) for key in tuple(resolved)
-               if key in LEGACY_GENERATION_KEYS or key == "profile"}
+               if key in GENERATION_OPTION_KEYS or key == "profile"}
     _deep_merge(merged, resolved)
     _mark_sources(sources, resolved, "CLI option")
     if not options:
@@ -737,18 +629,6 @@ def resolve_app_config(
     """Load defaults, global, project, explicit, then CLI overrides."""
 
     working = (cwd or Path.cwd()).absolute()
-    legacy_global = legacy_global_config_path()
-    if (
-        not global_config_path().exists()
-        and legacy_global.is_file()
-        and explicit_path is None
-        and not project_config_path(working).exists()
-    ):
-        raise PipelineError(
-            f"configuration of the previous application name found: {legacy_global}; run "
-            "`tkn-genai-chat-note config migrate --dry-run`, then without --dry-run, to write "
-            f"{global_config_path()}; the old configuration and data are not modified"
-        )
     merged = _default_config_document()
     sources: dict[str, str] = {}
     _mark_sources(sources, _config_properties(merged), "built-in defaults")
@@ -767,7 +647,6 @@ def resolve_app_config(
             "exists": True,
             "schemaVersion": CONFIG_SCHEMA_VERSION,
             "effectiveSchemaVersion": CONFIG_SCHEMA_VERSION,
-            "migration": None,
         }
     ]
     for kind, path in layer_specs:
@@ -779,20 +658,14 @@ def resolve_app_config(
             "exists": path.is_file(),
             "schemaVersion": None,
             "effectiveSchemaVersion": None,
-            "migration": None,
         }
         layer_report.append(report)
         if kind == "explicit" and not report["exists"]:
             raise PipelineError(f"explicit configuration file not found: {path}")
         if report["exists"]:
             raw_layer = _read_layer(path)
-            _reject_legacy_generation_config(raw_layer, path)
-            schema_report = _inspect_config_schema(raw_layer, path)
-            report.update(schema_report)
-            layer, _removed = _without_retired_user_prompt(
-                _config_properties(raw_layer),
-                remove_configured=False,
-            )
+            report.update(_inspect_config_schema(raw_layer, path))
+            layer = _config_properties(raw_layer)
             try:
                 validate_config_layer(AppConfig, layer)
             except ValueError as exc:
@@ -822,7 +695,6 @@ def resolve_app_config(
         sources=sources,
         layers=tuple(layer_report),
         effective_schema_version=CONFIG_SCHEMA_VERSION,
-        has_in_memory_migrations=any(layer["migration"] is not None for layer in layer_report),
     )
 
 
@@ -858,12 +730,6 @@ def initialize_user_config(
     """Create the user config safely from the packaged example."""
 
     target = (path or global_config_path()).expanduser().absolute()
-    legacy_global = legacy_global_config_path()
-    if path is None and not target.exists() and legacy_global.is_file():
-        raise PipelineError(
-            f"configuration of the previous application name found: {legacy_global}; use "
-            "`config migrate` to move it here, or `--config <new-path> config init` for a separate file"
-        )
     example = config_example_text()
     expected = example.encode("utf-8")
     backup_path: Path | None = None
@@ -909,9 +775,8 @@ def validate_config_file_document(value: Any, path: Path) -> AppConfig:
     if not isinstance(value, dict):
         raise PipelineError(f"config must contain a YAML mapping: {path}")
     value = {str(key): item for key, item in value.items()}
-    _reject_legacy_generation_config(value, path)
     _inspect_config_schema(value, path)
-    layer, _removed = _without_retired_user_prompt(_config_properties(value), remove_configured=False)
+    layer = _config_properties(value)
     try:
         validate_config_layer(AppConfig, layer)
     except ValueError as exc:

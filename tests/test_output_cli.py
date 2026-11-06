@@ -24,7 +24,6 @@ def fake_commands(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     import tkn_genai_chat_note.pipeline as pipeline
     import tkn_genai_chat_note.provenance as provenance
     import tkn_genai_chat_note.reviews as reviews
-    import tkn_genai_chat_note.storage_migration as storage
     import tkn_genai_chat_note.usage_report as usage
 
     value = {"ok": True, "complete": True, "status": "success", "threadCounts": {}, "failed": [],
@@ -36,7 +35,7 @@ def fake_commands(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     for module, name in (
         (pipeline, "run_pipeline"), (pipeline, "pipeline_status"), (reviews, "run_reviews"),
         (pipeline, "run_scheduled"), (reviews, "validate_review"), (provenance, "validate_provenance"),
-        (storage, "migrate_storage"), (usage, "build_usage_report"), (cli, "initialize_user_config"),
+        (usage, "build_usage_report"), (cli, "initialize_user_config"),
     ):
         monkeypatch.setattr(module, name, lambda *a, **kw: copy.deepcopy(value))
     return value
@@ -45,8 +44,7 @@ def fake_commands(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 @pytest.mark.parametrize("args", [
     ["clone"], ["pull"], ["raw", "ingest"], ["scheduled-run"], ["status"], ["build-report"],
     ["review-notes", "due"], ["review-notes", "build", "--period", "weekly"],
-    ["review-notes", "validate", "review.json"], ["provenance", "validate"],
-    ["storage", "migrate", "--from-config", "old.yaml"], ["config", "init"],
+    ["review-notes", "validate", "review.json"], ["provenance", "validate"], ["config", "init"],
 ])
 @pytest.mark.parametrize("json_mode", [False, True])
 def test_every_command_emits_one_copyable_final_result(
@@ -250,7 +248,7 @@ def test_subprocess_pipe_and_redirect_use_explicit_format_only(tmp_path: Path, j
     assert not (tmp_path / "user").exists() and not (tmp_path / "cache").exists()
 
 
-@pytest.mark.parametrize("args,expected", [(["--json", "--version"], "0.48.0"),
+@pytest.mark.parametrize("args,expected", [(["--json", "--version"], "0.49.0"),
                                          (["raw", "ingest", "--json", "--help"], "--full-output")])
 def test_help_and_version_keep_guidance_even_with_json(
     capsys: pytest.CaptureFixture[str], args: list[str], expected: str,

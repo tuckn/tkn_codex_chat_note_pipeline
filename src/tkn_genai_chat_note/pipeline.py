@@ -13,7 +13,7 @@ from .config import AppConfig
 from .provenance import ProvenanceStore
 from .raw_capture import RawCaptureError, archive_managed
 from .runtime import PipelineError, atomic_write_json, now_iso, now_local
-from .storage import legacy_storage_pending, pipeline_storage, read_json, validate_source_layout
+from .storage import pipeline_storage, read_json, validate_source_layout
 
 Progress = Callable[[dict[str, Any]], None]
 
@@ -127,7 +127,6 @@ def _source_status(config: AppConfig) -> dict[str, Any]:
     last = read_json(config.source_state_root / "last-run.json")
     return {
         "initialized": (config.source_state_root / "pipeline.json").is_file(),
-        "migrationRequired": legacy_storage_pending(config),
         "sourceProvider": config.source_provider,
         "sourceId": config.source_id,
         "storageRoot": str(config.source_state_root),
@@ -267,6 +266,5 @@ def pipeline_status(config: AppConfig, *, source_id: str | None = None) -> dict[
         "sourceResults": results,
         "liveSourceScan": False,
         "initialized": all(result["initialized"] for result in results),
-        "migrationRequired": any(result["migrationRequired"] for result in results),
         "complete": all(result["complete"] for result in results),
     }

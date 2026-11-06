@@ -12,7 +12,7 @@ from .config_output import config_lines
 
 # Only these item collections can be summarized. Diagnostics, sources in config,
 # report paths and provenance are never removed by a generic list-size limit.
-_DETAIL_COLLECTIONS = {"threads", "results", "files"}
+_DETAIL_COLLECTIONS = {"threads", "results"}
 _ROUTINE_STATUSES = {"current", "unchanged", "archived", "excluded", "skipped-empty"}
 
 
@@ -76,7 +76,7 @@ def public_result(value: dict[str, Any], *, full_output: bool) -> dict[str, Any]
                 result[key + "Counts"] = dict(counts)
                 retained = []
                 for entry in child:
-                    routine = (key == "files" or isinstance(entry, dict)
+                    routine = (isinstance(entry, dict)
                                and entry.get("status") in _ROUTINE_STATUSES
                                and not any(entry.get(field) for field in ("error", "warnings", "gaps")))
                     if routine:

@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 from chat_fixtures import write_chat
 from pydantic import ValidationError
 from test_config import write_yaml
@@ -16,7 +15,6 @@ from tkn_genai_chat_note.config import AppConfig, config_document, load_app_conf
 from tkn_genai_chat_note.pipeline import pipeline_status, run_pipeline
 from tkn_genai_chat_note.provenance import validate_provenance
 from tkn_genai_chat_note.runtime import PipelineError
-from tkn_genai_chat_note.storage_migration import migrate_storage
 
 
 def multi_config(root: Path) -> AppConfig:
@@ -93,7 +91,7 @@ def test_duplicate_yaml_key_is_rejected_without_writes(tmp_path: Path) -> None:
 
 
 def test_sources_merge_by_id_without_an_implicit_default_source(tmp_path: Path) -> None:
-    global_path = Path.home() / ".tkn/genai_chat_note_pipeline/config.yaml"
+    global_path = Path.home() / ".tkn/genai_chat_note/config.yaml"
     write_yaml(
         global_path,
         {
@@ -270,35 +268,9 @@ def test_cli_multi_source_show_status_selection_and_compact_output(
     assert json.loads(capsys.readouterr().out)["sourceId"] == "pc-windows"
 
 
-@pytest.mark.parametrize("schema", ["5.0.0", "6.0.0", "7.0.0"])
-def test_storage_5_relocation_accepts_old_and_multi_source_configs(tmp_path: Path, schema: str) -> None:
-    config = multi_config(tmp_path / "old")
-    source_chats(config)
-    run_pipeline(config, mode="clone")
-    document = config_document(config)
-    selected_id = "pc-wsl-ubuntu"
-    if schema == "5.0.0":
-        sources = document.pop("sources")
-        codex = {"source_id": selected_id, **sources[selected_id]}
-        codex["home"] = codex.pop("source_root")
-        document["chat"] = {"providers": {"codex": codex}}
-    elif schema == "6.0.0":
-        document["chat"] = {"providers": {"codex": {"sources": document.pop("sources")}}}
-    document["schema_version"] = schema
-    path = tmp_path / "old.yaml"
-    path.write_text(yaml.safe_dump(document), encoding="utf-8")
-    destination = multi_config(tmp_path / "new").for_source(selected_id)
-    before = snapshot(tmp_path / "old")
-    result = migrate_storage(destination, from_config=path, dry_run=False)
-    assert result["status"] == "migrated"
-    assert snapshot(tmp_path / "old") == before
-    assert validate_provenance(destination.data_root)["ok"]
-    assert not (tmp_path / "new/pc-windows").exists()
-
-
 def test_case_collision_in_lower_layer_cannot_be_hidden(tmp_path: Path) -> None:
     write_yaml(
-        Path.home() / ".tkn/genai_chat_note_pipeline/config.yaml",
+        Path.home() / ".tkn/genai_chat_note/config.yaml",
         {
             "sources": {"pc": {}, "PC": {}},
         },

@@ -8,6 +8,7 @@ import yaml
 
 from tkn_genai_chat_note.config import (
     CONFIG_SCHEMA_VERSION,
+    AppConfig,
     config_example_text,
     initialize_user_config,
     load_app_config,
@@ -79,7 +80,7 @@ def test_precedence_and_relative_paths(tmp_path: Path, monkeypatch: pytest.Monke
     explicit = tmp_path / "explicit" / "config.yaml"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     write_yaml(
-        home / ".tkn/genai_chat_note_pipeline/config.yaml",
+        home / ".tkn/genai_chat_note/config.yaml",
         {
             "runtime_minutes": 10,
             "genai_profiles": {"codex-default": {"model": "global"}},
@@ -120,7 +121,7 @@ def test_config_resolution_reports_the_winning_source(
     explicit = tmp_path / "explicit.yaml"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     write_yaml(
-        home / ".tkn/genai_chat_note_pipeline/config.yaml",
+        home / ".tkn/genai_chat_note/config.yaml",
         {"genai_profiles": {"codex-default": {"model": "global"}}},
     )
     write_yaml(
@@ -150,24 +151,14 @@ def test_config_resolution_reports_the_winning_source(
         "explicit",
     ]
     assert all(layer["effectiveSchemaVersion"] == CONFIG_SCHEMA_VERSION for layer in resolution.layers)
-    assert not resolution.has_in_memory_migrations
+    assert all("migration" not in layer for layer in resolution.layers)
 
 
-def test_retired_null_summary_prompt_is_ignored(
-    tmp_path: Path,
-) -> None:
-    cwd = tmp_path / "work"
-    write_yaml(cwd / ".tkn/config.yaml", {"summary_prompt": None})
+@pytest.mark.parametrize("value", [None, "custom.md"])
+def test_retired_summary_prompt_is_an_unknown_key(tmp_path: Path, value: object) -> None:
+    write_yaml(tmp_path / ".tkn/config.yaml", {"summary_prompt": value})
 
-    config = load_app_config(cwd=cwd)
-
-    assert "summary_prompt" not in config.model_dump()
-
-
-def test_retired_configured_summary_prompt_is_rejected(tmp_path: Path) -> None:
-    write_yaml(tmp_path / ".tkn/config.yaml", {"summary_prompt": "custom.md"})
-
-    with pytest.raises(PipelineError, match="summary profiles are application-owned"):
+    with pytest.raises(PipelineError, match="unknown configuration key: summary_prompt"):
         load_app_config(cwd=tmp_path)
 
 
@@ -193,8 +184,8 @@ def test_config_file_requires_schema_version(tmp_path: Path) -> None:
         ('"2"', "expected a quoted MAJOR.MINOR.PATCH"),
         ('"2.0"', "expected a quoted MAJOR.MINOR.PATCH"),
         ('"2.0.0-rc1"', "expected a quoted MAJOR.MINOR.PATCH"),
-        ('"1.9.0"', "schema v1 is no longer supported"),
-        ('"9.0.0"', "config migrate"),
+        ('"1.9.0"', "unsupported older configuration schema_version"),
+        ('"9.0.0"', "does not convert older files"),
         ('"10.1.0"', "unsupported newer configuration schema_version"),
         ('"11.0.0"', "unsupported newer configuration schema_version"),
     ],
@@ -221,14 +212,29 @@ def test_same_major_minor_newer_patch_is_accepted(tmp_path: Path) -> None:
     explicit = resolution.layers[-1]
     assert explicit["schemaVersion"] == "10.0.7"
     assert explicit["effectiveSchemaVersion"] == CONFIG_SCHEMA_VERSION
-    assert explicit["migration"] is None
 
 
-def test_legacy_config_requires_explicit_copy_migration(tmp_path: Path) -> None:
-    path = tmp_path / "legacy.yaml"
-    path.write_text('schema_version: "4.1.0"\nraw_root: old-raw\n', encoding="utf-8")
+@pytest.mark.parametrize(
+    ("schema_version", "settings"),
+    [
+        ("1.0.0", {"provider": "codex", "model": "gpt-5.6-sol"}),
+        ("2.2.1", {"raw_root": "old-raw"}),
+        ("3.0.0", {"chat": {"providers": {}}}),
+        ("4.1.0", {"codex_home": "old"}),
+        ("5.0.0", {"chat": {"providers": {"codex": {}}}}),
+        ("6.0.0", {"chat": {"providers": {"codex": {"sources": {}}}}}),
+        ("7.2.0", {"reviews": {}}),
+        ("8.4.0", {"runtime_minutes": 10}),
+        ("9.0.0", {"generation": {"profiles": {"codex": {"bridge_profile": "codex-default"}}}}),
+    ],
+)
+def test_older_schema_files_stop_without_conversion(
+    tmp_path: Path, schema_version: str, settings: dict[str, object]
+) -> None:
+    path = tmp_path / "old.yaml"
+    write_yaml(path, {"schema_version": schema_version, **settings})
     before = path.read_bytes()
-    with pytest.raises(PipelineError, match="storage migrate --from-config"):
+    with pytest.raises(PipelineError, match="does not convert older files"):
         load_app_config(explicit_path=path, cwd=tmp_path)
     assert path.read_bytes() == before
 
@@ -241,26 +247,9 @@ def test_source_id_must_be_safe_for_storage(tmp_path: Path) -> None:
         load_app_config(explicit_path=path, cwd=tmp_path)
 
 
-def test_legacy_integer_schema_v2_requires_explicit_migration(tmp_path: Path) -> None:
-    path = tmp_path / "legacy.yaml"
-    path.write_text("schema_version: 2\nraw_root: old-raw\n", encoding="utf-8")
-    before = path.read_bytes()
-    with pytest.raises(PipelineError, match="storage migrate --from-config"):
-        load_app_config(explicit_path=path, cwd=tmp_path)
-    assert path.read_bytes() == before
-
-
 def test_schema_version_cannot_be_overridden_as_a_setting(tmp_path: Path) -> None:
     with pytest.raises(PipelineError, match="cannot be a CLI override"):
         load_app_config(cwd=tmp_path, overrides={"schema_version": "2.0.7"})
-
-
-def test_schema_v1_flat_generation_settings_are_rejected(tmp_path: Path) -> None:
-    path = tmp_path / "config.yaml"
-    write_yaml(path, {"schema_version": "1.0.0", "provider": "codex", "model": "gpt-5.6-sol"})
-
-    with pytest.raises(PipelineError, match="schema v1 is no longer supported"):
-        load_app_config(explicit_path=path, cwd=tmp_path)
 
 
 def test_active_provider_requires_matching_provider_settings(
@@ -344,24 +333,12 @@ def test_remote_ollama_endpoint_is_rejected(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.parametrize("schema_version", [2, "2.2.1", "3.0.0", "3.0.7"])
-def test_legacy_chat_config_remains_unchanged_when_rejected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schema_version: object
-) -> None:
-    path = tmp_path / "legacy.yaml"
-    write_yaml(path, {"schema_version": schema_version, "raw_root": "old-raw"})
-    before = path.read_bytes()
-    with pytest.raises(PipelineError, match="storage migrate --from-config"):
-        load_app_config(explicit_path=path, cwd=tmp_path)
-    assert path.read_bytes() == before
-
-
 def test_source_layers_resolve_paths_and_preserve_generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tkn_genai_chat_note.config import config_document, write_config
 
     home = tmp_path / "user"
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-    global_path = home / ".tkn/genai_chat_note_pipeline/config.yaml"
+    global_path = home / ".tkn/genai_chat_note/config.yaml"
     write_yaml(global_path, {"sources": {"pc": {"source_root": "logs"}}})
     project = tmp_path / "work/.tkn/config.yaml"
     write_yaml(
@@ -426,7 +403,7 @@ def test_invalid_source_settings_are_rejected_before_merging(
 def test_unknown_chat_key_in_lower_layer_cannot_be_hidden(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     write_yaml(
-        tmp_path / ".tkn/genai_chat_note_pipeline/config.yaml",
+        tmp_path / ".tkn/genai_chat_note/config.yaml",
         {"sources": {"windows": {"hom": "typo"}}},
     )
     with pytest.raises(PipelineError, match="unknown configuration key: sources.windows.hom"):
@@ -436,29 +413,12 @@ def test_unknown_chat_key_in_lower_layer_cannot_be_hidden(tmp_path: Path, monkey
         )
 
 
-@pytest.mark.parametrize(
-    "schema_version,settings,message",
-    [
-        ("4.0.0", {"codex_home": "old"}, "legacy configuration"),
-        ("5.0.0", {"chat": {"providers": {}}}, "config-only update"),
-        ("3.0.0", {"chat": {"providers": {}}}, "legacy configuration"),
-    ],
-)
-def test_chat_schema_cannot_mix_old_and_new_forms(
-    tmp_path: Path, schema_version: str, settings: dict[str, object], message: str
-) -> None:
-    target = tmp_path / "config.yaml"
-    write_yaml(target, {"schema_version": schema_version, **settings})
-    with pytest.raises(PipelineError, match=message):
-        load_app_config(explicit_path=target, cwd=tmp_path)
-
-
 def test_sources_have_fixed_codex_identity(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
     write_yaml(path, {"sources": {"pc-main": {"source_root": "~/source"}}})
     config = load_app_config(explicit_path=path, cwd=tmp_path)
     assert config.source_identity == ("codex", "pc-main")
-    assert config.raw_root == Path.home() / ".tkn/genai_chat_note_pipeline/raw/codex/pc-main"
+    assert config.raw_root == Path.home() / ".tkn/genai_chat_note/raw/codex/pc-main"
     assert config.source_data_root == config.data_root
 
 
@@ -475,34 +435,25 @@ def test_source_roots_keep_declaring_layer_and_config_list_reports_final_paths(t
     config = resolution.config
     assert config.data_root == (project.parent / "project-data").absolute()
     assert config.raw_root == (tmp_path / "raw").absolute()
-    assert config.state_root == Path.home() / ".tkn/genai_chat_note_pipeline/state/codex/machine"
+    assert config.state_root == Path.home() / ".tkn/genai_chat_note/state/codex/machine"
     document = config_document(config)
     assert "raw_root" not in document and "state_root" not in document
     assert document["sources"]["machine"]["raw_root"] == str(config.raw_root)
     assert resolution.sources["sources.machine.data_root"].startswith("project:")
 
 
-@pytest.mark.parametrize("schema", ["5.0.0", "6.0.0"])
-def test_old_config_reports_upgrade_without_writes(tmp_path: Path, schema: str) -> None:
-    path = tmp_path / "old.yaml"
-    write_yaml(path, {"schema_version": schema, "chat": {"providers": {"codex": {}}}})
-    before = path.read_bytes()
-    with pytest.raises(PipelineError, match="top-level sources"):
-        load_app_config(explicit_path=path, cwd=tmp_path)
-    assert path.read_bytes() == before
+def test_earlier_application_directories_are_not_read(tmp_path: Path) -> None:
+    """Only ~/.tkn/genai_chat_note is the user directory; earlier directories are neither read nor changed."""
+    earlier = [Path.home() / ".tkn" / name / "config.yaml"
+               for name in ("genai_chat_note_pipeline", "codex_chat_note_pipeline")]
+    write_yaml(earlier[0], {"runtime_minutes": 17})
+    write_yaml(earlier[1], {"schema_version": "9.0.0", "runtime_minutes": 18})
+    before = [path.read_bytes() for path in earlier]
 
-
-def test_old_global_config_is_not_silently_ignored(tmp_path: Path) -> None:
-    path = Path.home() / ".tkn/codex_chat_note_pipeline/config.yaml"
-    write_yaml(path, {"schema_version": "9.0.0"})
-    before = path.read_bytes()
-    with pytest.raises(PipelineError, match="previous application name.*config migrate"):
-        load_app_config(cwd=tmp_path)
-    assert path.read_bytes() == before
-    assert not (Path.home() / ".tkn/genai_chat_note_pipeline").exists()
-    explicit = tmp_path / "new.yaml"
-    write_yaml(explicit, {"sources": {"pc": {}}})
-    assert load_app_config(explicit_path=explicit, cwd=tmp_path).source_id == "pc"
+    assert load_app_config(cwd=tmp_path).runtime_minutes == AppConfig().runtime_minutes
+    assert initialize_user_config()["status"] == "created"
+    assert (Path.home() / ".tkn/genai_chat_note/config.yaml").read_text(encoding="utf-8") == config_example_text()
+    assert [path.read_bytes() for path in earlier] == before
 
 
 @pytest.mark.parametrize("key", ["chat", "providers", "codex"])
@@ -511,14 +462,3 @@ def test_old_acquisition_wrappers_are_rejected_in_schema_7(tmp_path: Path, key: 
     write_yaml(path, {key: {}})
     with pytest.raises(PipelineError, match="unknown configuration key"):
         load_app_config(explicit_path=path, cwd=tmp_path)
-
-
-def test_config_init_preserves_existing_old_global_configuration(tmp_path: Path) -> None:
-    old = Path.home() / ".tkn/codex_chat_note_pipeline/config.yaml"
-    write_yaml(old, {"schema_version": "9.0.0", "runtime_minutes": 17})
-    before = old.read_bytes()
-    with pytest.raises(PipelineError, match="previous application name"):
-        initialize_user_config()
-    assert old.read_bytes() == before
-    assert not (Path.home() / ".tkn/genai_chat_note_pipeline").exists()
-    assert initialize_user_config(tmp_path / "separate.yaml")["status"] == "created"

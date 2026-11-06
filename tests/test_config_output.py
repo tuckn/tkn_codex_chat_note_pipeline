@@ -34,7 +34,7 @@ def test_config_list_text_and_json_preserve_layers_and_are_readonly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], flags: list[str],
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    global_config = Path.home() / ".tkn/genai_chat_note_pipeline/config.yaml"
+    global_config = Path.home() / ".tkn/genai_chat_note/config.yaml"
     project_config = tmp_path / ".tkn/config.yaml"
     explicit_config = tmp_path / "explicit.yaml"
     for path, settings in (
@@ -64,7 +64,6 @@ def test_config_list_text_and_json_preserve_layers_and_are_readonly(
     assert f"sources.model_timeout_seconds=project: {project_config}" in lines
     assert f"layers[1].schemaVersion={CONFIG_SCHEMA_VERSION}" in lines
     assert f"configSchema.effectiveVersion={CONFIG_SCHEMA_VERSION}" in lines
-    assert "configSchema.hasInMemoryMigrations=false" in lines
     assert "generationResolved.profile=codex-default" in lines
     assert "summaryProfile" not in report
     assert all("=" in line for line in lines)
